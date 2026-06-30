@@ -1,0 +1,95 @@
+{
+  "scene_id": "dual_world_gallery",
+  "scene_name": "Dual World Gallery",
+  "coordinate_system": "Unity X-Z ground plane, Y-up",
+  "exhibits": [
+    {
+      "id": "E1",
+      "name": "Introduction",
+      "semantic_role": "introduction",
+      "position": [0, 0, 2.0],
+      "viewpoint": [0, 0, 1.2],
+      "gaze_target": [0, 1.5, 2.0],
+      "tags": ["intro", "overview", "start"],
+      "related_exhibits": ["E2", "E3", "E4"],
+      "description": "An introductory exhibit that gives visitors an overview of the gallery."
+    },
+    {
+      "id": "E2",
+      "name": "Early Development",
+      "semantic_role": "forward_next",
+      "position": [0, 0, 4.2],
+      "viewpoint": [0, 0, 3.3],
+      "gaze_target": [0, 1.5, 4.2],
+      "tags": ["early", "development", "timeline"],
+      "related_exhibits": ["E1", "E3", "E5"],
+      "description": "A natural next exhibit that continues the main storyline."
+    },
+    {
+      "id": "E3",
+      "name": "Related Mechanism",
+      "semantic_role": "left_related_anchor",
+      "position": [-3.6, 0, 4.8],
+      "viewpoint": [-2.5, 0, 4.8],
+      "gaze_target": [-3.6, 1.5, 4.8],
+      "tags": ["mechanism", "related", "left_redirect"],
+      "related_exhibits": ["E1", "E2", "E6"],
+      "description": "A related exhibit on the left that can naturally redirect the visitor."
+    },
+    {
+      "id": "E4",
+      "name": "Alternative Example",
+      "semantic_role": "right_alternative_anchor",
+      "position": [3.6, 0, 4.8],
+      "viewpoint": [2.5, 0, 4.8],
+      "gaze_target": [3.6, 1.5, 4.8],
+      "tags": ["alternative", "example", "right_redirect"],
+      "related_exhibits": ["E1", "E2", "E7"],
+      "description": "An alternative exhibit on the right that supports safe redirection."
+    },
+    {
+      "id": "E5",
+      "name": "Key Target",
+      "semantic_role": "main_target",
+      "position": [0, 0, 7.8],
+      "viewpoint": [0, 0, 6.8],
+      "gaze_target": [0, 1.5, 7.8],
+      "tags": ["key", "important", "main"],
+      "related_exhibits": ["E2", "E6", "E7", "E8"],
+      "description": "The most important exhibit in the gallery."
+    },
+    {
+      "id": "E6",
+      "name": "Side Context",
+      "semantic_role": "side_context",
+      "position": [-3.8, 0, 8.2],
+      "viewpoint": [-2.7, 0, 8.2],
+      "gaze_target": [-3.8, 1.5, 8.2],
+      "tags": ["context", "review", "reset_camouflage"],
+      "related_exhibits": ["E3", "E5", "E8"],
+      "description": "A side-context exhibit that supports reviewing and redirection."
+    },
+    {
+      "id": "E7",
+      "name": "Comparison Object",
+      "semantic_role": "comparison_object",
+      "position": [3.8, 0, 8.2],
+      "viewpoint": [2.7, 0, 8.2],
+      "gaze_target": [3.8, 1.5, 8.2],
+      "tags": ["comparison", "contrast", "turn"],
+      "related_exhibits": ["E4", "E5", "E8"],
+      "description": "A comparison exhibit that supports contrastive guidance and turning."
+    },
+    {
+      "id": "E8",
+      "name": "Summary",
+      "semantic_role": "summary",
+      "position": [0, 0, 10.6],
+      "viewpoint": [0, 0, 9.6],
+      "gaze_target": [0, 1.5, 10.6],
+      "tags": ["summary", "ending", "exit"],
+      "related_exhibits": ["E5", "E6", "E7"],
+      "description": "A summary exhibit near the end of the gallery."
+    }
+  ]
+}
