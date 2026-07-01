@@ -763,6 +763,7 @@ Transform:
   - {fileID: 1666630398}
   - {fileID: 549286874}
   - {fileID: 1170280845}
+  - {fileID: 2100100011}
   - {fileID: 1547534904}
   - {fileID: 1220635951}
   - {fileID: 1225098143}
@@ -777,6 +778,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 549286874}
+  - component: {fileID: 2100100003}
   m_Layer: 0
   m_Name: BoundaryVisualizer
   m_TagString: Untagged
@@ -1880,6 +1882,7 @@ GameObject:
   - component: {fileID: 1137509230}
   - component: {fileID: 1137509232}
   - component: {fileID: 1137509231}
+  - component: {fileID: 2100100004}
   m_Layer: 0
   m_Name: RiskDebugPanel
   m_TagString: Untagged
@@ -2093,6 +2096,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1170280845}
+  - component: {fileID: 2100100002}
   m_Layer: 0
   m_Name: UserPoseTracker
   m_TagString: Untagged
@@ -2334,6 +2338,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1220635951}
+  - component: {fileID: 2100100005}
   m_Layer: 0
   m_Name: ExperimentDashboard
   m_TagString: Untagged
@@ -3337,6 +3342,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1666630398}
+  - component: {fileID: 2100100001}
   m_Layer: 0
   m_Name: PhysicalSpaceManager
   m_TagString: Untagged
@@ -4470,6 +4476,138 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1971076561}
   m_CullTransparentMesh: 1
+--- !u!114 &2100100001
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1666630397}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 60febbca7a3543b79a3a892535b488e0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  defaultSpaceId: wide_room
+  configFolderRelativeToAssets: Configs
+  configFileNames:
+  - physical_wide_room.json
+  - physical_narrow_room.json
+  - physical_obstacle_room.json
+  - physical_l_shaped_room.json
+--- !u!114 &2100100002
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1170280844}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 807104a9524a487f87f4e8e8e84e3ef7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  virtualUserRoot: {fileID: 571786065}
+  simulatedPhysicalPosition: {x: 1, y: 4.3}
+  simulatedPhysicalYawDegrees: 0
+--- !u!114 &2100100003
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 549286873}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3826fc83883f461e9b1356bbdc55e93c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  physicalSpaceManager: {fileID: 2100100001}
+  userPoseTracker: {fileID: 2100100002}
+  riskEvaluator: {fileID: 2100100012}
+  visualizationOrigin: {x: 7, y: 0.04, z: 0}
+  directionArrowLength: 0.9
+  lineWidth: 0.04
+--- !u!114 &2100100004
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1137509229}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8aa1ae703db34bc8a8bbb86a1cdb080f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  riskEvaluator: {fileID: 2100100012}
+  riskText: {fileID: 882524796}
+--- !u!114 &2100100005
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1220635950}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 574e8545de694fca8e98660bb86cfde3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  physicalSpaceManager: {fileID: 2100100001}
+  userPoseTracker: {fileID: 2100100002}
+  riskEvaluator: {fileID: 2100100012}
+--- !u!1 &2100100010
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2100100011}
+  - component: {fileID: 2100100012}
+  m_Layer: 0
+  m_Name: PhysicalRiskEvaluator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2100100011
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2100100010}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 508227087}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2100100012
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2100100010}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f88bac5a0242442eba967ce6f54b3a3c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  physicalSpaceManager: {fileID: 2100100001}
+  userPoseTracker: {fileID: 2100100002}
+  evaluationIntervalSeconds: 0.2
+  maxClearanceMeters: 3
+  unsafeClearanceMeters: 0.8
+  safeClearanceMeters: 1.2
+  criticalClearanceMeters: 0.45
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
