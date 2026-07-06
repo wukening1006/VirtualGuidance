@@ -10,7 +10,7 @@ public sealed class UserPoseTracker : MonoBehaviour
     [Tooltip("用户在虚拟展厅中的根节点；未配置时会尝试查找 XR_Origin_or_UserStart。")]
     [SerializeField] private Transform virtualUserRoot;
 
-    // 第一阶段使用可复现的模拟 physical pose，确保 Conflict A/B/C 不依赖真实头显。
+    // 第一阶段使用模拟 physical pose 作为任务运行输入，后续可替换为真实头显 tracking 数据。
     [Header("模拟 Physical 位姿")]
     [Tooltip("用户在 physical tracking space 的二维位置，单位：米；Vector2.y 对应 Unity Z 方向。")]
     [SerializeField] private Vector2 simulatedPhysicalPosition = new Vector2(1f, 4.3f);
@@ -59,7 +59,7 @@ public sealed class UserPoseTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：设置可复现实验用的模拟 physical 位姿，供调试入口切换冲突状态。
+    /// 中文说明：设置任务运行时使用的模拟 physical 位姿，冲突状态由该位姿与当前任务/空间共同触发。
     /// </summary>
     /// <param name="position">用户在 physical tracking space 中的二维位置，单位：米。</param>
     /// <param name="yawDegrees">以 +Z 为 0 度的水平朝向角，单位：度。</param>

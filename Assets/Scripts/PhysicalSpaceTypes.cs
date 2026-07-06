@@ -43,7 +43,7 @@ public sealed class PhysicalSpaceConfig
     public Vector2[] boundary = Array.Empty<Vector2>();
 
     /// <summary>
-    /// 中文说明：空间内的圆形障碍物列表，第一阶段用于复现 obstacle_room 冲突。
+    /// 中文说明：空间内的圆形障碍物列表，用于任务运行时判断候选方向是否被阻塞。
     /// </summary>
     public PhysicalObstacle[] obstacles = Array.Empty<PhysicalObstacle>();
 
