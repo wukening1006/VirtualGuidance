@@ -16,6 +16,7 @@
 # =========================
 .codex/
 .agents/
+.claude/
 
 # =========================
 # Visual Studio / Rider / VSCode
