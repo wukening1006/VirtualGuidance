@@ -2,7 +2,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：显示身体动作提示，只提示用户如何行动，不直接移动用户或执行 reset。
+/// 显示身体动作提示，只提示用户如何行动，不直接移动用户或执行 reset。
 /// </summary>
 public sealed class MovementHintController : MonoBehaviour
 {
@@ -11,7 +11,7 @@ public sealed class MovementHintController : MonoBehaviour
     [SerializeField] private TMP_Text movementHintText;
 
     /// <summary>
-    /// 中文说明：注入动作提示文本控件，支持 bootstrap 自动接线。
+    /// 注入动作提示文本控件，支持 bootstrap 自动接线。
     /// </summary>
     public void Configure(TMP_Text text)
     {
@@ -20,7 +20,7 @@ public sealed class MovementHintController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示后端给出的 movement_instruction，未知值按 pause 处理。
+    /// 显示后端给出的 movement_instruction，未知值按 pause 处理。
     /// </summary>
     public void Show(string movementInstruction)
     {
@@ -34,7 +34,7 @@ public sealed class MovementHintController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：隐藏当前动作提示。
+    /// 隐藏当前动作提示。
     /// </summary>
     public void Clear()
     {

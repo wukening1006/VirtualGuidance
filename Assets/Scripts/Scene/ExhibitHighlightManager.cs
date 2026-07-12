@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：根据 selected_target 对展品做轻量目标确认高亮，不表达路线安全性。
+/// 根据 selected_target 对展品做轻量目标确认高亮，不表达路线安全性。
 /// </summary>
 public sealed class ExhibitHighlightManager : MonoBehaviour
 {
@@ -26,7 +26,7 @@ public sealed class ExhibitHighlightManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：重新扫描场景中的展品元数据，场景优化或动态生成展品后可调用。
+    /// 重新扫描场景中的展品元数据，场景优化或动态生成展品后可调用。
     /// </summary>
     public void RebuildIndex()
     {
@@ -44,7 +44,7 @@ public sealed class ExhibitHighlightManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：高亮 selected_target 对应展品；找不到目标时只输出 warning，不中断导览。
+    /// 高亮 selected_target 对应展品；找不到目标时只输出 warning，不中断导览。
     /// </summary>
     public void Highlight(string selectedTarget)
     {
@@ -91,7 +91,7 @@ public sealed class ExhibitHighlightManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：清除当前目标高亮，rejected guidance 必须调用。
+    /// 清除当前目标高亮，rejected guidance 必须调用。
     /// </summary>
     public void Clear()
     {

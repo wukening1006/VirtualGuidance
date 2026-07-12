@@ -2,7 +2,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：显示 avatar/guide 的导览话术；MVP 阶段以字幕面板表达，不直接处理 TTS 或口型。
+/// 显示 avatar/guide 的导览话术；MVP 阶段以字幕面板表达，不直接处理 TTS 或口型。
 /// </summary>
 public sealed class NarrationPlayer : MonoBehaviour
 {
@@ -22,7 +22,7 @@ public sealed class NarrationPlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入字幕文本控件，支持 bootstrap 自动接线。
+    /// 注入字幕文本控件，支持 bootstrap 自动接线。
     /// </summary>
     public void Configure(TMP_Text text)
     {
@@ -31,7 +31,7 @@ public sealed class NarrationPlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示后端生成的自然语言导览话术。
+    /// 显示后端生成的自然语言导览话术。
     /// </summary>
     public void Play(string narration)
     {
@@ -45,7 +45,7 @@ public sealed class NarrationPlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：清除当前导览话术，通常在 rejected guidance 时调用。
+    /// 清除当前导览话术，通常在 rejected guidance 时调用。
     /// </summary>
     public void Clear()
     {

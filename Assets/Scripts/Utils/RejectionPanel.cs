@@ -2,7 +2,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：显示 verifier 拒绝原因或请求错误，确保 rejected guidance 在场景内可见。
+/// 显示 verifier 拒绝原因或请求错误，确保 rejected guidance 在场景内可见。
 /// </summary>
 public sealed class RejectionPanel : MonoBehaviour
 {
@@ -13,7 +13,7 @@ public sealed class RejectionPanel : MonoBehaviour
     [SerializeField] private GameObject panelRoot;
 
     /// <summary>
-    /// 中文说明：注入拒绝面板引用，支持 bootstrap 自动接线。
+    /// 注入拒绝面板引用，支持 bootstrap 自动接线。
     /// </summary>
     public void Configure(TMP_Text text, GameObject root)
     {
@@ -23,7 +23,7 @@ public sealed class RejectionPanel : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示 verifier 或网络请求的失败原因。
+    /// 显示 verifier 或网络请求的失败原因。
     /// </summary>
     public void Show(string reason)
     {
@@ -40,7 +40,7 @@ public sealed class RejectionPanel : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：隐藏拒绝原因面板。
+    /// 隐藏拒绝原因面板。
     /// </summary>
     public void Hide()
     {

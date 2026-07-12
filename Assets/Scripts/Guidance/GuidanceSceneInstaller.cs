@@ -4,7 +4,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// <summary>
-/// 中文说明：长期使用的 guidance 场景装配器，负责补齐引用、连接事件和创建可选调试 UI。
+/// 长期使用的 guidance 场景装配器，负责补齐引用、连接事件和创建可选调试 UI。
 /// </summary>
 public sealed class GuidanceSceneInstaller : MonoBehaviour
 {
@@ -83,7 +83,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：安装 guidance 执行链；可由 Awake、Inspector ContextMenu 或测试脚本调用。
+    /// 安装 guidance 执行链；可由 Awake、Inspector ContextMenu 或测试脚本调用。
     /// </summary>
     [ContextMenu("Install Guidance Scene")]
     public void Install()
@@ -108,7 +108,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：重新执行安装，供修改 Inspector 引用或切换 UI 后手动刷新。
+    /// 重新执行安装，供修改 Inspector 引用或切换 UI 后手动刷新。
     /// </summary>
     [ContextMenu("Reinstall Guidance Scene")]
     public void Reinstall()

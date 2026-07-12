@@ -4,7 +4,7 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：加载并切换 physical tracking space 配置，向风险计算和可视化模块提供当前空间。
+/// 加载并切换 physical tracking space 配置，向风险计算和可视化模块提供当前空间。
 /// </summary>
 public sealed class PhysicalSpaceManager : MonoBehaviour
 {
@@ -27,22 +27,22 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
     private PhysicalSpaceConfig currentSpace;
 
     /// <summary>
-    /// 中文说明：当前 physical space 切换后触发，供风险计算和边界可视化同步状态。
+    /// 当前 physical space 切换后触发，供风险计算和边界可视化同步状态。
     /// </summary>
     public event Action<PhysicalSpaceConfig> CurrentSpaceChanged;
 
     /// <summary>
-    /// 中文说明：获取当前 physical tracking space 的 ID，未加载时返回空字符串。
+    /// 获取当前 physical tracking space 的 ID，未加载时返回空字符串。
     /// </summary>
     public string CurrentSpaceId => currentSpace != null ? currentSpace.id : string.Empty;
 
     /// <summary>
-    /// 中文说明：获取当前 physical tracking space 的完整配置。
+    /// 获取当前 physical tracking space 的完整配置。
     /// </summary>
     public PhysicalSpaceConfig CurrentSpace => currentSpace;
 
     /// <summary>
-    /// 中文说明：获取已加载空间配置的只读索引，供 dashboard 枚举可选实验条件。
+    /// 获取已加载空间配置的只读索引，供 dashboard 枚举可选实验条件。
     /// </summary>
     public IReadOnlyDictionary<string, PhysicalSpaceConfig> SpacesById => spacesById;
 
@@ -59,7 +59,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：从 Assets/Configs 读取所有 physical space JSON，作为后续实验模式切换的数据源。
+    /// 从 Assets/Configs 读取所有 physical space JSON，作为后续实验模式切换的数据源。
     /// </summary>
     public void LoadSpaces()
     {
@@ -92,7 +92,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：切换当前 physical tracking space，并通知依赖模块重新计算风险和可视化。
+    /// 切换当前 physical tracking space，并通知依赖模块重新计算风险和可视化。
     /// </summary>
     /// <param name="id">目标 physical space ID。</param>
     /// <returns>切换成功返回 true；未知 ID 或配置未加载时返回 false。</returns>
@@ -120,7 +120,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：设置默认 physical space，并立即尝试切换，供测试或场景构建脚本初始化使用。
+    /// 设置默认 physical space，并立即尝试切换，供测试或场景构建脚本初始化使用。
     /// </summary>
     /// <param name="id">新的默认 physical space ID。</param>
     public void ConfigureDefaultSpace(string id)

@@ -5,118 +5,118 @@ using System.Text.RegularExpressions;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：描述 physical tracking space 中的圆形障碍物，字段名与配置 JSON 保持一致。
+/// 描述 physical tracking space 中的圆形障碍物，字段名与配置 JSON 保持一致。
 /// </summary>
 [Serializable]
 public sealed class PhysicalObstacle
 {
     /// <summary>
-    /// 中文说明：障碍物唯一标识，用于日志和调试可视化命名。
+    /// 障碍物唯一标识，用于日志和调试可视化命名。
     /// </summary>
     public string id;
 
     /// <summary>
-    /// 中文说明：障碍物在 physical XZ 平面中的圆心坐标，单位：米。
+    /// 障碍物在 physical XZ 平面中的圆心坐标，单位：米。
     /// </summary>
     public Vector2 center;
 
     /// <summary>
-    /// 中文说明：障碍物半径，单位：米；风险计算会将其作为射线-圆形碰撞距离。
+    /// 障碍物半径，单位：米；风险计算会将其作为射线-圆形碰撞距离。
     /// </summary>
     public float radius;
 }
 
 /// <summary>
-/// 中文说明：描述一个可切换的 physical tracking space 配置，供风险计算和可视化共享。
+/// 描述一个可切换的 physical tracking space 配置，供风险计算和可视化共享。
 /// </summary>
 [Serializable]
 public sealed class PhysicalSpaceConfig
 {
     /// <summary>
-    /// 中文说明：空间 ID，例如 wide_room、narrow_room，用于实验条件切换和日志记录。
+    /// 空间 ID，例如 wide_room、narrow_room，用于实验条件切换和日志记录。
     /// </summary>
     public string id;
 
     /// <summary>
-    /// 中文说明：physical XZ 平面上的边界多边形顶点，单位：米；按顺序连接成闭合区域。
+    /// physical XZ 平面上的边界多边形顶点，单位：米；按顺序连接成闭合区域。
     /// </summary>
     public Vector2[] boundary = Array.Empty<Vector2>();
 
     /// <summary>
-    /// 中文说明：空间内的圆形障碍物列表，用于任务运行时判断候选方向是否被阻塞。
+    /// 空间内的圆形障碍物列表，用于任务运行时判断候选方向是否被阻塞。
     /// </summary>
     public PhysicalObstacle[] obstacles = Array.Empty<PhysicalObstacle>();
 
     /// <summary>
-    /// 中文说明：判断配置是否具备最基本的可计算条件，避免无效边界进入风险计算。
+    /// 判断配置是否具备最基本的可计算条件，避免无效边界进入风险计算。
     /// </summary>
     public bool IsValid => !string.IsNullOrWhiteSpace(id) && boundary != null && boundary.Length >= 3;
 }
 
 /// <summary>
-/// 中文说明：记录一次 deterministic physical risk 计算结果，字段名与 Unity/后端 JSON schema 对齐。
+/// 记录一次 deterministic physical risk 计算结果，字段名与 Unity/后端 JSON schema 对齐。
 /// </summary>
 [Serializable]
 public sealed class PhysicalRiskState
 {
     /// <summary>
-    /// 中文说明：当前 physical tracking space 的 ID。
+    /// 当前 physical tracking space 的 ID。
     /// </summary>
     public string physical_space;
 
     /// <summary>
-    /// 中文说明：用户在 physical XZ 平面中的当前位置，单位：米。
+    /// 用户在 physical XZ 平面中的当前位置，单位：米。
     /// </summary>
     public Vector2 user_physical_position;
 
     /// <summary>
-    /// 中文说明：用户在 physical XZ 平面中的单位前向方向。
+    /// 用户在 physical XZ 平面中的单位前向方向。
     /// </summary>
     public Vector2 user_physical_forward;
 
     /// <summary>
-    /// 中文说明：沿用户前方可行走到边界或障碍物前的距离，单位：米。
+    /// 沿用户前方可行走到边界或障碍物前的距离，单位：米。
     /// </summary>
     public float clearance_forward;
 
     /// <summary>
-    /// 中文说明：沿用户左侧方向可行走到边界或障碍物前的距离，单位：米。
+    /// 沿用户左侧方向可行走到边界或障碍物前的距离，单位：米。
     /// </summary>
     public float clearance_left;
 
     /// <summary>
-    /// 中文说明：沿用户右侧方向可行走到边界或障碍物前的距离，单位：米。
+    /// 沿用户右侧方向可行走到边界或障碍物前的距离，单位：米。
     /// </summary>
     public float clearance_right;
 
     /// <summary>
-    /// 中文说明：由最小 clearance 映射出的边界风险标签。
+    /// 由最小 clearance 映射出的边界风险标签。
     /// </summary>
     public string boundary_risk;
 
     /// <summary>
-    /// 中文说明：面向 reset 决策的风险标签，所有方向危险时会提升为 critical。
+    /// 面向 reset 决策的风险标签，所有方向危险时会提升为 critical。
     /// </summary>
     public string reset_risk;
 
     /// <summary>
-    /// 中文说明：不应继续引导的方向集合，例如 forward、left、right。
+    /// 不应继续引导的方向集合，例如 forward、left、right。
     /// </summary>
     public string[] unsafe_directions = Array.Empty<string>();
 
     /// <summary>
-    /// 中文说明：可优先用于语义重定向的安全方向集合。
+    /// 可优先用于语义重定向的安全方向集合。
     /// </summary>
     public string[] safe_directions = Array.Empty<string>();
 
     /// <summary>
-    /// 中文说明：所有自然方向都危险时置为 true，后续流程应 pause 或 explicit reset。
+    /// 所有自然方向都危险时置为 true，后续流程应 pause 或 explicit reset。
     /// </summary>
     public bool reset_required;
 }
 
 /// <summary>
-/// 中文说明：解析第一阶段的 physical space JSON 配置，避免引入额外 JSON 依赖。
+/// 解析第一阶段的 physical space JSON 配置，避免引入额外 JSON 依赖。
 /// </summary>
 public static class PhysicalSpaceConfigParser
 {
@@ -126,7 +126,7 @@ public static class PhysicalSpaceConfigParser
     private static readonly Regex ObstacleRegex = new Regex("\\{\\s*\"id\"\\s*:\\s*\"(?<id>[^\"]+)\"\\s*,\\s*\"center\"\\s*:\\s*\\[\\s*(?<x>-?\\d+(?:\\.\\d+)?)\\s*,\\s*(?<z>-?\\d+(?:\\.\\d+)?)\\s*\\]\\s*,\\s*\"radius\"\\s*:\\s*(?<radius>-?\\d+(?:\\.\\d+)?)\\s*\\}", RegexOptions.Compiled | RegexOptions.Singleline);
 
     /// <summary>
-    /// 中文说明：将 JSON 文本解析为 physical space 配置，并返回结构化错误原因。
+    /// 将 JSON 文本解析为 physical space 配置，并返回结构化错误原因。
     /// </summary>
     /// <param name="json">配置文件的原始 JSON 文本。</param>
     /// <param name="config">解析成功后的 physical space 配置。</param>

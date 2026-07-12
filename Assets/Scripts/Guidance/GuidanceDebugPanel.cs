@@ -3,7 +3,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：显示 guidance response 的关键字段，作为研究者调试视图。
+/// 显示 guidance response 的关键字段，作为研究者调试视图。
 /// </summary>
 public sealed class GuidanceDebugPanel : MonoBehaviour
 {
@@ -14,7 +14,7 @@ public sealed class GuidanceDebugPanel : MonoBehaviour
     private readonly StringBuilder builder = new StringBuilder(512);
 
     /// <summary>
-    /// 中文说明：注入调试文本控件，支持 bootstrap 自动接线。
+    /// 注入调试文本控件，支持 bootstrap 自动接线。
     /// </summary>
     public void Configure(TMP_Text text)
     {
@@ -23,7 +23,7 @@ public sealed class GuidanceDebugPanel : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示请求状态或错误信息。
+    /// 显示请求状态或错误信息。
     /// </summary>
     public void ShowStatus(string status)
     {
@@ -35,7 +35,7 @@ public sealed class GuidanceDebugPanel : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示后端 guidance response 的关键执行字段。
+    /// 显示后端 guidance response 的关键执行字段。
     /// </summary>
     public void Show(GuidanceResponse response)
     {

@@ -2,7 +2,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：弱化的视线提示控制器，主要用于短暂方向提示或 debug 展示，避免和展品高亮重复。
+/// 弱化的视线提示控制器，主要用于短暂方向提示或 debug 展示，避免和展品高亮重复。
 /// </summary>
 public sealed class GazeCueController : MonoBehaviour
 {
@@ -29,7 +29,7 @@ public sealed class GazeCueController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入可选的 gaze cue 文本控件。
+    /// 注入可选的 gaze cue 文本控件。
     /// </summary>
     public void Configure(TMP_Text text)
     {
@@ -37,7 +37,7 @@ public sealed class GazeCueController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：显示弱视线提示；MVP 不生成强箭头，避免和 avatar 指向、高亮冲突。
+    /// 显示弱视线提示；MVP 不生成强箭头，避免和 avatar 指向、高亮冲突。
     /// </summary>
     public void Show(string gazeCue, string gazeTargetId)
     {
@@ -52,7 +52,7 @@ public sealed class GazeCueController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：隐藏当前视线提示。
+    /// 隐藏当前视线提示。
     /// </summary>
     public void Clear()
     {

@@ -1,7 +1,7 @@
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：维护用户虚拟位姿和可模拟的 physical 位姿，后续可替换为真实 XR tracking 输入。
+/// 维护用户虚拟位姿和可模拟的 physical 位姿，后续可替换为真实 XR tracking 输入。
 /// </summary>
 public sealed class UserPoseTracker : MonoBehaviour
 {
@@ -18,22 +18,22 @@ public sealed class UserPoseTracker : MonoBehaviour
     [SerializeField] private float simulatedPhysicalYawDegrees;
 
     /// <summary>
-    /// 中文说明：获取用户在虚拟展厅中的世界坐标，用于导览目标和日志记录。
+    /// 获取用户在虚拟展厅中的世界坐标，用于导览目标和日志记录。
     /// </summary>
     public Vector3 UserVirtualPosition => virtualUserRoot != null ? virtualUserRoot.position : Vector3.zero;
 
     /// <summary>
-    /// 中文说明：获取用户在虚拟展厅中的朝向，缺省返回 +Z 以匹配实验初始方向。
+    /// 获取用户在虚拟展厅中的朝向，缺省返回 +Z 以匹配实验初始方向。
     /// </summary>
     public Vector3 UserVirtualForward => virtualUserRoot != null ? virtualUserRoot.forward : Vector3.forward;
 
     /// <summary>
-    /// 中文说明：获取用户在 physical tracking space 的 XZ 平面坐标。
+    /// 获取用户在 physical tracking space 的 XZ 平面坐标。
     /// </summary>
     public Vector2 PhysicalPositionXZ => simulatedPhysicalPosition;
 
     /// <summary>
-    /// 中文说明：获取用户在 physical tracking space 的二维朝向，用于 clearance 与风险计算。
+    /// 获取用户在 physical tracking space 的二维朝向，用于 clearance 与风险计算。
     /// </summary>
     public Vector2 PhysicalForwardXZ => YawToForward(simulatedPhysicalYawDegrees);
 
@@ -50,7 +50,7 @@ public sealed class UserPoseTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：设置虚拟用户根节点，供场景构建器或 XR 初始化流程显式绑定用户对象。
+    /// 设置虚拟用户根节点，供场景构建器或 XR 初始化流程显式绑定用户对象。
     /// </summary>
     /// <param name="root">代表用户虚拟位置和朝向的 Transform。</param>
     public void ConfigureVirtualUserRoot(Transform root)
@@ -59,7 +59,7 @@ public sealed class UserPoseTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：设置任务运行时使用的模拟 physical 位姿，冲突状态由该位姿与当前任务/空间共同触发。
+    /// 设置任务运行时使用的模拟 physical 位姿，冲突状态由该位姿与当前任务/空间共同触发。
     /// </summary>
     /// <param name="position">用户在 physical tracking space 中的二维位置，单位：米。</param>
     /// <param name="yawDegrees">以 +Z 为 0 度的水平朝向角，单位：度。</param>

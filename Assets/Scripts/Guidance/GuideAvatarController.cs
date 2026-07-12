@@ -1,7 +1,7 @@
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：把后端 avatar_action 映射为可见的导览员动作，MVP 使用指向调试物体表达方向。
+/// 把后端 avatar_action 映射为可见的导览员动作，MVP 使用指向调试物体表达方向。
 /// </summary>
 public sealed class GuideAvatarController : MonoBehaviour
 {
@@ -16,7 +16,7 @@ public sealed class GuideAvatarController : MonoBehaviour
     [SerializeField] private float pointingPitchDegrees = -25f;
 
     /// <summary>
-    /// 中文说明：注入 avatar 和指向物体引用。
+    /// 注入 avatar 和指向物体引用。
     /// </summary>
     public void Configure(Transform root, Transform pointer)
     {
@@ -26,7 +26,7 @@ public sealed class GuideAvatarController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：执行后端返回的 avatar_action；未知动作回到 wait。
+    /// 执行后端返回的 avatar_action；未知动作回到 wait。
     /// </summary>
     public void Apply(string avatarAction, string selectedTarget, string gazeTargetId)
     {
@@ -55,7 +55,7 @@ public sealed class GuideAvatarController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：恢复等待状态，rejected guidance 必须调用该状态。
+    /// 恢复等待状态，rejected guidance 必须调用该状态。
     /// </summary>
     public void Wait()
     {

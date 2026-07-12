@@ -1,7 +1,7 @@
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：运行时调试入口，仅用于切换 physical space；冲突状态应由任务流程、用户位姿和风险计算自然触发。
+/// 运行时调试入口，仅用于切换 physical space；冲突状态应由任务流程、用户位姿和风险计算自然触发。
 /// </summary>
 public sealed class PhysicalSpaceDebugController : MonoBehaviour
 {
@@ -38,7 +38,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：切换到宽敞空间，预期允许沿主线自然前进。
+    /// 切换到宽敞空间，预期允许沿主线自然前进。
     /// </summary>
     public void SetWideRoom()
     {
@@ -46,7 +46,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：切换到狭窄空间；是否出现前方风险由用户运行任务时的 physical pose 决定。
+    /// 切换到狭窄空间；是否出现前方风险由用户运行任务时的 physical pose 决定。
     /// </summary>
     public void SetNarrowRoom()
     {
@@ -54,7 +54,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：切换到障碍物空间；是否阻塞候选方向由任务运行时的位姿和几何计算决定。
+    /// 切换到障碍物空间；是否阻塞候选方向由任务运行时的位姿和几何计算决定。
     /// </summary>
     public void SetObstacleRoom()
     {
@@ -62,7 +62,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：切换到 L 形空间，用于验证非矩形 tracking space 下的方向判断。
+    /// 切换到 L 形空间，用于验证非矩形 tracking space 下的方向判断。
     /// </summary>
     public void SetLShapedRoom()
     {
@@ -70,7 +70,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入调试控制器依赖，支持场景构建器统一绑定而不是运行时查找。
+    /// 注入调试控制器依赖，支持场景构建器统一绑定而不是运行时查找。
     /// </summary>
     /// <param name="spaceManager">负责加载和切换 physical space 的管理器。</param>
     /// <param name="evaluator">负责重新计算 deterministic risk state 的计算器。</param>

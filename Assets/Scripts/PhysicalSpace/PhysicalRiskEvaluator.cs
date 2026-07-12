@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：根据 physical boundary、obstacle 和用户 physical pose 计算确定性风险状态。
+/// 根据 physical boundary、obstacle 和用户 physical pose 计算确定性风险状态。
 /// </summary>
 public sealed class PhysicalRiskEvaluator : MonoBehaviour
 {
@@ -31,12 +31,12 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     private PhysicalRiskState currentRiskState;
 
     /// <summary>
-    /// 中文说明：风险状态刷新后触发，供调试面板、可视化和后续 guidance 生成模块订阅。
+    /// 风险状态刷新后触发，供调试面板、可视化和后续 guidance 生成模块订阅。
     /// </summary>
     public event Action<PhysicalRiskState> RiskStateChanged;
 
     /// <summary>
-    /// 中文说明：获取最近一次 deterministic 风险计算结果。
+    /// 获取最近一次 deterministic 风险计算结果。
     /// </summary>
     public PhysicalRiskState CurrentRiskState => currentRiskState;
 
@@ -74,7 +74,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入风险计算依赖，并立即重新计算一次当前状态。
+    /// 注入风险计算依赖，并立即重新计算一次当前状态。
     /// </summary>
     /// <param name="spaceManager">提供当前 physical space 配置的管理器。</param>
     /// <param name="poseTracker">提供用户 physical pose 的追踪器。</param>
@@ -97,7 +97,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：立即执行一次风险计算，并通知订阅者刷新 UI、可视化或 guidance 状态。
+    /// 立即执行一次风险计算，并通知订阅者刷新 UI、可视化或 guidance 状态。
     /// </summary>
     /// <returns>最新的风险状态；依赖未就绪时返回上一次状态。</returns>
     public PhysicalRiskState EvaluateNow()

@@ -119,3 +119,7 @@ Icon?
 .env.*
 !.env.example
 !.env.template
+
+# Python 缓存
+__pycache__/
+*.py[cod]

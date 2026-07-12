@@ -6,7 +6,7 @@ using UnityEngine.Events;
 using UnityEngine.Networking;
 
 /// <summary>
-/// 中文说明：Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
+/// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
 public sealed class AgentClient : MonoBehaviour
 {
@@ -23,18 +23,33 @@ public sealed class AgentClient : MonoBehaviour
     [SerializeField] private UserPoseTracker userPoseTracker;
 
     [Header("默认请求上下文")]
+    [Tooltip("没有外部任务编排传入上下文时使用的默认 guidance 请求参数。")]
     [SerializeField] private GuidanceRequestContext defaultContext = new GuidanceRequestContext();
 
+    /// <summary>
+    /// 后端返回 approved 或 rejected guidance response 后触发。
+    /// </summary>
     [Header("事件")]
+    [Tooltip("后端返回 approved 或 rejected guidance response 后触发。")]
     public GuidanceResponseEvent GuidanceReceived = new GuidanceResponseEvent();
+
+    /// <summary>
+    /// guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。
+    /// </summary>
+    [Tooltip("guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。")]
     public StringEvent GuidanceRequestFailed = new StringEvent();
+
+    /// <summary>
+    /// guidance 请求开始时触发，参数为当前请求状态文本。
+    /// </summary>
+    [Tooltip("guidance 请求开始时触发，参数为当前请求状态文本。")]
     public StringEvent GuidanceRequestStarted = new StringEvent();
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
 
     /// <summary>
-    /// 中文说明：当前是否正在等待后端响应，用于避免重复请求造成状态乱序。
+    /// 当前是否正在等待后端响应，用于避免重复请求造成状态乱序。
     /// </summary>
     public bool RequestInFlight => requestInFlight;
 
@@ -44,7 +59,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入依赖和默认上下文，供 bootstrap 或后续 ExperimentDashboard 统一配置。
+    /// 注入依赖和默认上下文，供 bootstrap 或后续 ExperimentDashboard 统一配置。
     /// </summary>
     public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker, GuidanceRequestContext context = null)
     {
@@ -57,7 +72,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：按当前场景状态组装请求并发送给后端。
+    /// 按当前场景状态组装请求并发送给后端。
     /// </summary>
     public void RequestGuidance()
     {
@@ -66,7 +81,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：按指定上下文组装请求并发送给后端，Phase 5 可用它接入任务编排。
+    /// 按指定上下文组装请求并发送给后端，Phase 5 可用它接入任务编排。
     /// </summary>
     public void RequestGuidance(GuidanceRequestContext context)
     {
@@ -88,7 +103,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：重试上一次请求，常用于 rejected 或网络失败后的调试流程。
+    /// 重试上一次请求，常用于 rejected 或网络失败后的调试流程。
     /// </summary>
     public void RetryLastRequest()
     {
@@ -205,7 +220,7 @@ public sealed class AgentClient : MonoBehaviour
 }
 
 /// <summary>
-/// 中文说明：UnityEvent 封装 guidance response，便于 Inspector 或 bootstrap 接线。
+/// UnityEvent 封装 guidance response，便于 Inspector 或 bootstrap 接线。
 /// </summary>
 [Serializable]
 public sealed class GuidanceResponseEvent : UnityEvent<GuidanceResponse>
@@ -213,7 +228,7 @@ public sealed class GuidanceResponseEvent : UnityEvent<GuidanceResponse>
 }
 
 /// <summary>
-/// 中文说明：UnityEvent 封装字符串状态或错误信息。
+/// UnityEvent 封装字符串状态或错误信息。
 /// </summary>
 [Serializable]
 public sealed class StringEvent : UnityEvent<string>

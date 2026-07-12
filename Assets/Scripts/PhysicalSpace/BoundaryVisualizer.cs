@@ -74,7 +74,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入 physical space、pose 和 risk 依赖，并重建当前调试可视化。
+    /// 注入 physical space、pose 和 risk 依赖，并重建当前调试可视化。
     /// </summary>
     /// <param name="spaceManager">提供当前 physical space 边界和障碍物配置的管理器。</param>
     /// <param name="poseTracker">提供用户 physical pose 的追踪器。</param>

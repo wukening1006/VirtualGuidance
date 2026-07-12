@@ -1,17 +1,24 @@
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：Guidance 的唯一执行入口，先检查 verifier，再分发给各表现层。
+/// Guidance 的唯一执行入口，先检查 verifier，再分发给各表现层。
 /// </summary>
 public sealed class GuidanceExecutor : MonoBehaviour
 {
     [Header("表现层控制器")]
+    [Tooltip("显示后端 narration 字段的字幕控制器；未配置时自动查找。")]
     [SerializeField] private NarrationPlayer narrationPlayer;
+    [Tooltip("显示 gaze_cue 弱提示的控制器；未配置时自动查找。")]
     [SerializeField] private GazeCueController gazeCueController;
+    [Tooltip("显示 movement_instruction 身体动作提示的控制器；未配置时自动查找。")]
     [SerializeField] private MovementHintController movementHintController;
+    [Tooltip("执行 avatar_action 导览员表现的控制器；未配置时自动查找。")]
     [SerializeField] private GuideAvatarController guideAvatarController;
+    [Tooltip("根据 selected_target 高亮展品的控制器；未配置时自动查找。")]
     [SerializeField] private ExhibitHighlightManager exhibitHighlightManager;
+    [Tooltip("显示 verifier 拒绝原因或请求错误的面板；未配置时自动查找。")]
     [SerializeField] private RejectionPanel rejectionPanel;
+    [Tooltip("显示 guidance response 关键字段的研究者调试面板；未配置时自动查找。")]
     [SerializeField] private GuidanceDebugPanel guidanceDebugPanel;
 
     private void Awake()
@@ -20,7 +27,7 @@ public sealed class GuidanceExecutor : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入所有表现层引用，确保执行路径统一经过 verifier gate。
+    /// 注入所有表现层引用，确保执行路径统一经过 verifier gate。
     /// </summary>
     public void Configure(
         NarrationPlayer narration,
@@ -41,7 +48,7 @@ public sealed class GuidanceExecutor : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：应用一次后端 guidance；approved=false 时只显示拒绝原因，不执行导览表现。
+    /// 应用一次后端 guidance；approved=false 时只显示拒绝原因，不执行导览表现。
     /// </summary>
     public void Apply(GuidanceResponse response)
     {
@@ -75,7 +82,7 @@ public sealed class GuidanceExecutor : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：清除所有导览表现，供 rejected、retry 或 pause/reset 流程调用。
+    /// 清除所有导览表现，供 rejected、retry 或 pause/reset 流程调用。
     /// </summary>
     public void Clear()
     {

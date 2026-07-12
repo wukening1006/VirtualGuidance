@@ -4,7 +4,7 @@ using TMPro;
 using UnityEngine;
 
 /// <summary>
-/// 中文说明：将 physical risk state 写入研究者调试面板，便于复现、录屏检查和 baseline 对比。
+/// 将 physical risk state 写入研究者调试面板，便于复现、录屏检查和 baseline 对比。
 /// </summary>
 public sealed class RiskDebugPanel : MonoBehaviour
 {
@@ -41,7 +41,7 @@ public sealed class RiskDebugPanel : MonoBehaviour
     }
 
     /// <summary>
-    /// 中文说明：注入风险计算器和文本控件，支持由场景构建器或 Inspector 统一绑定引用。
+    /// 注入风险计算器和文本控件，支持由场景构建器或 Inspector 统一绑定引用。
     /// </summary>
     /// <param name="evaluator">提供最新 physical risk state 的计算器。</param>
     /// <param name="text">用于显示研究者调试信息的 TMP 文本控件。</param>
