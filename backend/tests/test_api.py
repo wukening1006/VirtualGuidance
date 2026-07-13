@@ -64,6 +64,27 @@ def test_b1_narrow_room_returns_forward_and_logs_risk(tmp_path: Path) -> None:
     assert "forward" in record["unsafe_directions"]
 
 
+def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post("/api/guidance", json=base_payload("ours_full"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "selected_target",
+        "route_decision",
+        "narration",
+        "gaze_cue",
+        "gaze_target_id",
+        "avatar_action",
+        "movement_instruction",
+        "physical_intent",
+        "verifier",
+    }
+    assert set(body["verifier"]) == {"approved", "reason"}
+
+
 def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     payload = base_payload("ours_full")
