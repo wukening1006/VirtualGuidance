@@ -45,6 +45,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private RDWController rdwController;
     [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
+    [SerializeField] private ExperimentDashboard experimentDashboard;
+    [SerializeField] private ExperimentLogger experimentLogger;
     [SerializeField] private NarrationPlayer narrationPlayer;
     [SerializeField] private MovementHintController movementHintController;
     [SerializeField] private GazeCueController gazeCueController;
@@ -255,6 +257,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         motionDetector = GetOrAdd(motionDetector, createMissingCoreComponents);
         xrTrackingAdapter = GetOrAdd(xrTrackingAdapter, createMissingCoreComponents);
         guidanceExecutor = GetOrAdd(guidanceExecutor, createMissingCoreComponents);
+        experimentLogger = GetOrAdd(experimentLogger, createMissingCoreComponents);
+        experimentDashboard = GetOrAdd(experimentDashboard, createMissingCoreComponents);
         narrationPlayer = GetOrAdd(narrationPlayer, createMissingCoreComponents);
         movementHintController = GetOrAdd(movementHintController, createMissingCoreComponents);
         gazeCueController = GetOrAdd(gazeCueController, createMissingCoreComponents);
@@ -287,6 +291,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         rdwController?.Configure(riskEvaluator, pauseResetController);
         rotationGainController?.Configure(userPoseTracker, motionDetector);
         guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
+        experimentDashboard?.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, taskController, guidanceCoordinator, agentClient, experimentLogger, null);
     }
 
     private void WireEvents()
@@ -368,6 +373,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
             WarnIfMissing(rotationGainController, "RotationGainController");
         }
         WarnIfMissing(guidanceExecutor, "GuidanceExecutor");
+        WarnIfMissing(experimentLogger, "ExperimentLogger");
+        WarnIfMissing(experimentDashboard, "ExperimentDashboard");
         WarnIfMissing(narrationPlayer, "NarrationPlayer");
         WarnIfMissing(movementHintController, "MovementHintController");
         WarnIfMissing(guideAvatarController, "GuideAvatarController");

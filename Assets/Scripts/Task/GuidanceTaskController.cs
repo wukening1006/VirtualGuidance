@@ -24,6 +24,17 @@ public sealed class GuidanceTaskController : MonoBehaviour
         StateChanged?.Invoke(runtimeState);
     }
 
+    public void ConfigureTask(GuidanceTaskDefinition taskDefinition)
+    {
+        if (taskDefinition == null)
+        {
+            return;
+        }
+
+        defaultTask = taskDefinition;
+        BeginDefaultTask();
+    }
+
     public GuidanceRequestContext BuildRequestContext(string semanticNextTargetOverride = null)
     {
         if (runtimeState.phase == GuidanceRuntimePhase.Idle)
