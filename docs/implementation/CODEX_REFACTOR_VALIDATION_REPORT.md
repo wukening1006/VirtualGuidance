@@ -47,7 +47,7 @@ python -m pytest backend/tests -p no:cacheprovider --basetemp .pytest-tmp
 Result:
 
 ```text
-14 passed, 1 warning
+15 passed, 1 warning
 ```
 
 The warning is the existing Starlette/httpx deprecation warning from the installed Python environment.
