@@ -30,6 +30,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [SerializeField] private UserPoseTracker userPoseTracker;
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [SerializeField] private MotionDetector motionDetector;
+    [SerializeField] private XRTrackingAdapter xrTrackingAdapter;
 
     [Header("Guidance 核心组件")]
     [SerializeField] private AgentClient agentClient;
@@ -41,6 +43,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private LocalGuidanceValidator localGuidanceValidator;
     [SerializeField] private PauseResetController pauseResetController;
     [SerializeField] private RDWController rdwController;
+    [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
     [SerializeField] private NarrationPlayer narrationPlayer;
     [SerializeField] private MovementHintController movementHintController;
@@ -157,6 +160,16 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
             riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         }
 
+        if (motionDetector == null)
+        {
+            motionDetector = FindObjectOfType<MotionDetector>();
+        }
+
+        if (xrTrackingAdapter == null)
+        {
+            xrTrackingAdapter = FindObjectOfType<XRTrackingAdapter>();
+        }
+
         if (avatarRoot == null)
         {
             avatarRoot = FindTransform("GuideAvatar");
@@ -237,7 +250,10 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         localGuidanceValidator = GetOrAdd(localGuidanceValidator, createMissingCoreComponents);
         pauseResetController = GetOrAdd(pauseResetController, createMissingCoreComponents);
         rdwController = GetOrAdd(rdwController, createMissingCoreComponents);
+        rotationGainController = GetOrAdd(rotationGainController, createMissingCoreComponents);
         riskEvaluator = GetOrAdd(riskEvaluator, createMissingCoreComponents);
+        motionDetector = GetOrAdd(motionDetector, createMissingCoreComponents);
+        xrTrackingAdapter = GetOrAdd(xrTrackingAdapter, createMissingCoreComponents);
         guidanceExecutor = GetOrAdd(guidanceExecutor, createMissingCoreComponents);
         narrationPlayer = GetOrAdd(narrationPlayer, createMissingCoreComponents);
         movementHintController = GetOrAdd(movementHintController, createMissingCoreComponents);
@@ -253,6 +269,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         var context = new GuidanceRequestContext();
         agentClient?.Configure(physicalSpaceManager, userPoseTracker, context);
         riskEvaluator?.Configure(physicalSpaceManager, userPoseTracker);
+        motionDetector?.Configure(userPoseTracker);
+        xrTrackingAdapter?.Configure(userPoseTracker);
         navigationTargetManager?.RebuildIndex();
         semanticTargetSelector?.Configure(navigationTargetManager);
         arrivalDetector?.Configure(userPoseTracker, navigationTargetManager);
@@ -267,7 +285,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         guidanceExecutor?.Configure(narrationPlayer, gazeCueController, movementHintController, guideAvatarController, exhibitHighlightManager, rejectionPanel, guidanceDebugPanel);
         pauseResetController?.Configure(guidanceExecutor, rejectionPanel);
         rdwController?.Configure(riskEvaluator, pauseResetController);
-        guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rejectionPanel);
+        rotationGainController?.Configure(userPoseTracker, motionDetector);
+        guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
     }
 
     private void WireEvents()
@@ -333,6 +352,8 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         WarnIfMissing(physicalSpaceManager, "PhysicalSpaceManager");
         WarnIfMissing(userPoseTracker, "UserPoseTracker");
         WarnIfMissing(riskEvaluator, "PhysicalRiskEvaluator");
+        WarnIfMissing(motionDetector, "MotionDetector");
+        WarnIfMissing(xrTrackingAdapter, "XRTrackingAdapter");
         WarnIfMissing(agentClient, "AgentClient");
         if (routeResponsesThroughCoordinator)
         {
@@ -344,6 +365,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
             WarnIfMissing(localGuidanceValidator, "LocalGuidanceValidator");
             WarnIfMissing(pauseResetController, "PauseResetController");
             WarnIfMissing(rdwController, "RDWController");
+            WarnIfMissing(rotationGainController, "RotationGainController");
         }
         WarnIfMissing(guidanceExecutor, "GuidanceExecutor");
         WarnIfMissing(narrationPlayer, "NarrationPlayer");

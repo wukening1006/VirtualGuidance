@@ -11,6 +11,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
     [SerializeField] private LocalGuidanceValidator localValidator;
     [SerializeField] private PauseResetController pauseResetController;
+    [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private RejectionPanel rejectionPanel;
 
     private GuidanceRequestSnapshot activeSnapshot;
@@ -39,6 +40,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         PhysicalRiskEvaluator evaluator,
         LocalGuidanceValidator validator,
         PauseResetController resetController,
+        RotationGainController gainController,
         RejectionPanel rejection)
     {
         UnbindRequestCapture();
@@ -53,6 +55,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         riskEvaluator = evaluator;
         localValidator = validator;
         pauseResetController = resetController;
+        rotationGainController = gainController;
         rejectionPanel = rejection;
 
         BindRequestCapture();
@@ -106,6 +109,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         {
             arrivalDetector?.WatchTarget(response.selected_target);
         }
+
+        rotationGainController?.QueueFromMovementInstruction(response != null ? response.movement_instruction : string.Empty);
     }
 
     private void HandleRequestBuilt(GuidanceRequest request)
