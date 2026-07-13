@@ -2,7 +2,7 @@
 
 > 审计日期：2026-07-13  
 > 审计依据：实际仓库内容与 `VirtualGuidance_项目系统说明与架构设计.md`  
-> 状态：实施前草案，尚未执行  
+> 状态：已按阶段执行；自动化与 Play Mode smoke 证据见 `CODEX_REFACTOR_VALIDATION_REPORT.md`，XR 真机验收仍需现场确认
 > 核心原则：先保持行为与 GUID，再整理目录；目录迁移与功能开发严格分离。
 
 ## 1. 审计边界
