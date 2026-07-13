@@ -443,17 +443,38 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
 
         canvasObject = new GameObject(GuidanceCanvasName);
         var canvas = canvasObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         canvas.sortingOrder = 30;
 
         var scaler = canvasObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
-        scaler.matchWidthOrHeight = 0.5f;
+        if (ShouldUseWorldSpaceDebugCanvas())
+        {
+            canvas.renderMode = RenderMode.WorldSpace;
+            var rect = canvasObject.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(1920f, 1080f);
+            rect.position = new Vector3(0f, 1.5f, 2.5f);
+            rect.rotation = Quaternion.identity;
+            rect.localScale = Vector3.one * 0.001f;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            scaler.dynamicPixelsPerUnit = 10f;
+        }
+        else
+        {
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.matchWidthOrHeight = 0.5f;
+        }
 
         canvasObject.AddComponent<GraphicRaycaster>();
         EnsureEventSystem();
         return canvas;
+    }
+
+    private static bool ShouldUseWorldSpaceDebugCanvas()
+    {
+        return UnityEngine.XR.XRSettings.enabled
+            || UnityEngine.XR.XRSettings.isDeviceActive
+            || !string.IsNullOrWhiteSpace(UnityEngine.XR.XRSettings.loadedDeviceName);
     }
 
     private static void EnsureEventSystem()
