@@ -6,7 +6,7 @@ using UnityEngine;
 
 public sealed class ExperimentLogger : MonoBehaviour
 {
-    [SerializeField] private string logFolderRelativeToAssets = "Logs/TestRuns";
+    [SerializeField] private string logFolderRelativeToProject = "Logs/TestRuns";
     [SerializeField] private bool autoFlush = true;
 
     private ExperimentSession session;
@@ -23,7 +23,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         }
 
         session = ExperimentSession.Start(spec);
-        var folder = Path.Combine(Application.dataPath, logFolderRelativeToAssets);
+        var folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", logFolderRelativeToProject));
         Directory.CreateDirectory(folder);
         logPath = Path.Combine(folder, $"unity_session_{session.sessionId}.jsonl");
         Write("session_started", spec, null, null, null, null, "session started");
