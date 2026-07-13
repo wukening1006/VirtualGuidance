@@ -3,9 +3,9 @@
 from pathlib import Path
 
 from backend.agents.guide_mock import GuideMockAgent
-from backend.agents.rdw_affordance import RDWAffordanceAgent
-from backend.agents.rdw_state import RDWStateAgent
-from backend.agents.safety_verifier import SafetyVerifierAgent
+from backend.agents.rdw_affordance_agent import RDWAffordanceAgent
+from backend.agents.rdw_state_agent import RDWStateAgent
+from backend.agents.safety_verifier_agent import SafetyVerifierAgent
 from backend.schemas import (
     Condition,
     GuidanceRequest,

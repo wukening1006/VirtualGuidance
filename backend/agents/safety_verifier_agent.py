@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance import target_direction
+from backend.agents.rdw_affordance_agent import target_direction
 from backend.schemas import (
     Condition,
     GuideDraft,

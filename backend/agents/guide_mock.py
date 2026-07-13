@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance import infer_semantic_target, target_direction
+from backend.agents.rdw_affordance_agent import infer_semantic_target, target_direction
 from backend.schemas import (
     Affordance,
     AvatarAction,
