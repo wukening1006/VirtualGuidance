@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Text;
 using UnityEngine;
@@ -6,50 +6,52 @@ using UnityEngine.Events;
 using UnityEngine.Networking;
 
 /// <summary>
-/// Unity ??? guidance endpoint ? HTTP ???????????????????????
+/// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
 public sealed class AgentClient : MonoBehaviour
 {
-    [Header("????")]
-    [Tooltip("?? guidance endpoint ???")]
+    [Header("后端接口")]
+    [Tooltip("后端 guidance endpoint 地址。")]
     [SerializeField] private string guidanceEndpoint = "http://127.0.0.1:8000/api/guidance";
-    [Tooltip("????????????")]
+    [Tooltip("请求超时时间，单位：秒。")]
     [SerializeField] private int requestTimeoutSeconds = 8;
 
-    [Header("????")]
-    [Tooltip("?? physical space ?????????????")]
+    [Header("状态来源")]
+    [Tooltip("当前 physical space 管理器；未配置时自动查找。")]
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
-    [Tooltip("????/????????????????")]
+    [Tooltip("用户虚拟/物理位姿来源；未配置时自动查找。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
 
-    [Header("???????")]
-    [Tooltip("??????????????????? guidance ?????")]
+    [Header("默认请求上下文")]
+    [Tooltip("没有外部任务编排传入上下文时使用的默认 guidance 请求参数。")]
     [SerializeField] private GuidanceRequestContext defaultContext = new GuidanceRequestContext();
 
     /// <summary>
-    /// ???? approved ? rejected guidance response ????
+    /// 后端返回 approved 或 rejected guidance response 后触发。
     /// </summary>
-    [Header("??")]
-    [Tooltip("???? approved ? rejected guidance response ????")]
+    [Header("事件")]
+    [Tooltip("后端返回 approved 或 rejected guidance response 后触发。")]
     public GuidanceResponseEvent GuidanceReceived = new GuidanceResponseEvent();
 
     /// <summary>
-    /// guidance ????????????????? UI ??????
+    /// guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。
     /// </summary>
-    [Tooltip("guidance ????????????????? UI ??????")]
+    [Tooltip("guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。")]
     public StringEvent GuidanceRequestFailed = new StringEvent();
 
     /// <summary>
-    /// guidance ????????????????????
+    /// guidance 请求开始时触发，参数为当前请求状态文本。
     /// </summary>
-    [Tooltip("guidance ????????????????????")]
+    [Tooltip("guidance 请求开始时触发，参数为当前请求状态文本。")]
     public StringEvent GuidanceRequestStarted = new StringEvent();
+
+    public event Action<GuidanceRequest> GuidanceRequestBuilt;
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
 
     /// <summary>
-    /// ????????????????????????????
+    /// 当前是否正在等待后端响应，用于避免重复请求造成状态乱序。
     /// </summary>
     public bool RequestInFlight => requestInFlight;
 
@@ -59,7 +61,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// ???????????? bootstrap ??? ExperimentDashboard ?????
+    /// 注入依赖和默认上下文，供 bootstrap 或后续 ExperimentDashboard 统一配置。
     /// </summary>
     public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker, GuidanceRequestContext context = null)
     {
@@ -72,7 +74,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// ??????????????????
+    /// 按当前场景状态组装请求并发送给后端。
     /// </summary>
     public void RequestGuidance()
     {
@@ -81,7 +83,7 @@ public sealed class AgentClient : MonoBehaviour
     }
 
     /// <summary>
-    /// ?????????????????Phase 5 ??????????
+    /// 按指定上下文组装请求并发送给后端，Phase 5 可用它接入任务编排。
     /// </summary>
     public void RequestGuidance(GuidanceRequestContext context)
     {
@@ -99,11 +101,12 @@ public sealed class AgentClient : MonoBehaviour
         }
 
         lastRequest = request;
+        GuidanceRequestBuilt?.Invoke(request);
         StartCoroutine(SendGuidanceRequest(request));
     }
 
     /// <summary>
-    /// ??????????? rejected ????????????
+    /// 重试上一次请求，常用于 rejected 或网络失败后的调试流程。
     /// </summary>
     public void RetryLastRequest()
     {
@@ -220,7 +223,7 @@ public sealed class AgentClient : MonoBehaviour
 }
 
 /// <summary>
-/// UnityEvent ?? guidance response??? Inspector ? bootstrap ???
+/// UnityEvent 封装 guidance response，便于 Inspector 或 bootstrap 接线。
 /// </summary>
 [Serializable]
 public sealed class GuidanceResponseEvent : UnityEvent<GuidanceResponse>
@@ -228,7 +231,7 @@ public sealed class GuidanceResponseEvent : UnityEvent<GuidanceResponse>
 }
 
 /// <summary>
-/// UnityEvent ?????????????
+/// UnityEvent 封装字符串状态或错误信息。
 /// </summary>
 [Serializable]
 public sealed class StringEvent : UnityEvent<string>
