@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using TMPro;
 using UnityEngine;
 
 public sealed class GuidanceRuntimeEditModeTests
@@ -114,6 +115,66 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void PauseResetController_ClearsGuidanceAndRestoresAfterReset()
+    {
+        var root = new GameObject("PauseResetControllerTest");
+        try
+        {
+            var narrationText = CreateText(root.transform, "NarrationText");
+            var movementText = CreateText(root.transform, "MovementText");
+            var gazeText = CreateText(root.transform, "GazeText");
+            var rejectionRoot = new GameObject("RejectionRoot");
+            rejectionRoot.transform.SetParent(root.transform, false);
+            var rejectionText = CreateText(rejectionRoot.transform, "RejectionText");
+
+            var narration = root.AddComponent<NarrationPlayer>();
+            narration.Configure(narrationText);
+            var movement = root.AddComponent<MovementHintController>();
+            movement.Configure(movementText);
+            var gaze = root.AddComponent<GazeCueController>();
+            gaze.Configure(gazeText);
+            var rejection = root.AddComponent<RejectionPanel>();
+            rejection.Configure(rejectionText, rejectionRoot);
+            var executor = root.AddComponent<GuidanceExecutor>();
+            executor.Configure(narration, gaze, movement, null, null, rejection, null);
+            var pauseReset = root.AddComponent<PauseResetController>();
+            pauseReset.Configure(executor, rejection);
+
+            executor.Apply(new GuidanceResponse
+            {
+                narration = "Move toward exhibit E5.",
+                movement_instruction = "move_forward_slowly",
+                gaze_cue = "look_forward",
+                gaze_target_id = "E5_GazeTarget",
+                verifier = new VerifierResult { approved = true, reason = "ok" }
+            });
+
+            Assert.That(narrationText.text, Is.EqualTo("Move toward exhibit E5."));
+            Assert.That(movementText.text, Is.EqualTo("Movement: move forward slowly"));
+            Assert.That(gazeText.text, Does.Contain("look_forward"));
+
+            pauseReset.PauseForReset("All directions unsafe.");
+
+            Assert.That(pauseReset.IsPaused, Is.True);
+            Assert.That(narrationText.text, Is.EqualTo("Guide narration will appear here."));
+            Assert.That(movementText.text, Is.EqualTo("Movement: waiting"));
+            Assert.That(gazeText.text, Is.Empty);
+            Assert.That(rejectionRoot.activeSelf, Is.True);
+            Assert.That(rejectionText.text, Does.Contain("All directions unsafe."));
+
+            pauseReset.ResumeAfterReset();
+
+            Assert.That(pauseReset.IsPaused, Is.False);
+            Assert.That(rejectionRoot.activeSelf, Is.False);
+            Assert.That(rejectionText.text, Is.Empty);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void ExperimentConditionMatrix_CoversExpectedExperimentGrid()
     {
         Assert.That(ExperimentConditionMatrix.TotalCombinations, Is.EqualTo(96));
@@ -132,5 +193,12 @@ public sealed class GuidanceRuntimeEditModeTests
         var task = spec.ToTaskDefinition();
         Assert.That(task.routeTargetIds, Is.EqualTo(spec.routeTargetIds));
         Assert.That(ReferenceEquals(task.routeTargetIds, spec.routeTargetIds), Is.False);
+    }
+
+    private static TMP_Text CreateText(Transform parent, string name)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        return go.AddComponent<TextMeshProUGUI>();
     }
 }

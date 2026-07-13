@@ -70,13 +70,14 @@ UnitySkills health checks:
 Unity Test Runner result:
 
 ```text
-Test run completed: 4/4 passed.
+Test run completed: 5/5 passed.
 ```
 
 Covered checks:
 
 - `GuidanceTaskController` advances `E1 -> E3 -> E5 -> Completed`.
 - `LocalGuidanceValidator` rejects stale guidance and unsafe forward movement.
+- `PauseResetController` clears visible guidance, shows the reset reason, and hides it after resume.
 - `RotationGainController` remains inactive by default and does not start gain from narration alone.
 - `ExperimentConditionMatrix` covers 6 conditions, 4 tasks, 4 physical spaces, and produces cloned task routes.
 
@@ -103,7 +104,7 @@ Result after `978ff2b`:
 | P5 | Backend pipeline/services refactor is committed; backend tests pass. |
 | P6-P8 | Core/task/navigation/local RDW runtime code is committed; EditMode tests cover route progression and local stale/unsafe guidance rejection. |
 | P9 | Rotation gain scaffold is committed; EditMode test proves default-disabled behavior. |
-| P10 | Pause/reset code is committed; Play Mode smoke starts and stops without console errors. |
+| P10 | Pause/reset code is committed; EditMode tests cover guidance clearing and reset resume; Play Mode smoke starts and stops without console errors. |
 | P11 | Experiment dashboard/logger/matrix/session source is committed; EditMode test covers experiment matrix and task conversion. |
 
 ## Still Requires Physical Validation
