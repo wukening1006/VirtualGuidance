@@ -12,6 +12,10 @@ This report records the validation evidence that can be proven from the local re
 
 ## Latest Atomic Commits
 
+- `cce3bd1 feat(unity): map headset pose through xr adapter`
+- `d00fc4f fix(unity): cancel rotation gain on critical reset`
+- `a24f4fe feat(unity): complete rotation gain lifecycle`
+- `888b75c docs: record live backend playmode validation`
 - `658072e test(unity): add live backend validation harness`
 - `8f3d9a8 docs: record playmode backend validation limit`
 - `358e52b docs: record dto contract validation`
@@ -83,6 +87,13 @@ UnitySkills health checks:
   - `Packages/com.unity.xr.picoxr/Assets/Resources/Controller/ControllerWithHand/leftHand.prefab`
   - `Packages/com.unity.xr.picoxr/Assets/Resources/Controller/ControllerWithHand/rightHand.prefab`
 
+XR setup diagnostic:
+
+- XRI is installed and detected as major version 2.
+- Android XR settings have one configured loader.
+- The current `DualWorldGallery` scene has no `XROrigin`, `XRInteractionManager`, or `EventSystem` recognized by XRI.
+- `XRTrackingAdapter` now reads the standard `UnityEngine.XR` head node when available and keeps the simulated pose path when headset tracking is disabled or unavailable.
+
 ### Unity EditMode Tests
 
 `GuidanceRuntimeEditModeTests` was added under `Assets/Tests/Editor`.
@@ -90,7 +101,7 @@ UnitySkills health checks:
 Unity Test Runner result:
 
 ```text
-Test run completed: 6/6 passed.
+Test run completed: 10/10 passed.
 ```
 
 Covered checks:
@@ -98,7 +109,10 @@ Covered checks:
 - `GuidanceTaskController` advances `E1 -> E3 -> E5 -> Completed`.
 - `LocalGuidanceValidator` rejects stale guidance and unsafe forward movement.
 - `PauseResetController` clears visible guidance, shows the reset reason, and hides it after resume.
-- `RotationGainController` remains inactive by default and does not start gain from narration alone.
+- `MotionDetector` applies start/stop angular-speed hysteresis and preserves signed turn direction.
+- `RotationGainController` remains inactive by default, waits for a real turn sample, applies bounded gain, and terminates on stop, reversal, completion, or disable.
+- Critical RDW reset immediately clears visible guidance and cancels active/pending rotation gain.
+- `XRTrackingAdapter` maps tracking-space X/Z and horizontal head yaw into physical pose while preserving the virtual head transform in snapshots.
 - `ExperimentConditionMatrix` covers 6 conditions, 4 tasks, 4 physical spaces, and produces cloned task routes.
 - `GuidanceRequest`, `GuidanceResponse`, and `VerifierResult` public field names remain locked to the backend JSON contract.
 
@@ -158,8 +172,8 @@ The deterministic backend currently has no public request input that intentional
 | P2-P4 | Script and prefab moves are committed with `.meta` files preserved; main scene Missing Script count remains 0. |
 | P5 | Backend pipeline/services refactor is committed; backend tests pass; live Anaconda-hosted backend responds on `/health` and `/api/guidance`. |
 | P6-P8 | Core/task/navigation/local RDW runtime code is committed; EditMode tests cover route progression and local stale/unsafe guidance rejection; the Editor harness proves live approved guidance, rejected presentation, and real scene-anchor arrival in Play Mode. |
-| P9 | Rotation gain scaffold is committed; EditMode test proves default-disabled behavior. |
-| P10 | Pause/reset code is committed; EditMode tests cover guidance clearing and reset resume; Play Mode smoke starts and stops without console errors. |
+| P9 | Rotation gain lifecycle is committed; EditMode tests cover default-disabled behavior, turn start, bounded application, stop, reversal, completion, and explicit disable. Real-device comfort remains unclaimed. |
+| P10 | Critical reset clears guidance and cancels active/pending gain; EditMode tests cover pause, cancel, and resume; Play Mode validation starts and stops without project errors. |
 | P11 | Experiment dashboard/logger/matrix/session source is committed; EditMode test covers experiment matrix and task conversion; the Play Mode harness validates a completed T2 session with 10 JSONL records. |
 
 ## Still Requires Physical Validation
@@ -168,7 +182,7 @@ The following plan gates cannot be honestly completed from static checks, backen
 
 - A complete multi-condition participant experiment session across B1-B5/Ours, T1-T4, and all four physical spaces.
 - PICO build and permission validation.
-- XR headset pose mapping between physical and virtual spaces.
+- XR headset pose mapping on a real PICO device; the standard pose conversion is implemented and EditMode-tested, but has not been observed on hardware.
 - Real user turn detection.
 - Rotation gain start/stop/comfort under headset movement.
 - Critical risk pause/reset safety under physical movement constraints.
