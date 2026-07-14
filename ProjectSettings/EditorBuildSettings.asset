@@ -5,9 +5,12 @@ EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
   m_Scenes:
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/DualWorldGallery.unity
     guid: bcfc8f9e95b3231419b8cf6a7bba9852
+  - enabled: 1
+    path: Assets/Scenes/MainScene.unity
+    guid: 87ea98081ac7e544997d3c790dd5b7c6
   m_configObjects:
     Unity.XR.PICO.LivePreview.Settings: {fileID: 11400000, guid: 99d584897a0d0954e8658be3409020b6, type: 2}
     Unity.XR.PXR.Settings: {fileID: 11400000, guid: ec0a3532dbf364048ba4d475239963e5, type: 2}
