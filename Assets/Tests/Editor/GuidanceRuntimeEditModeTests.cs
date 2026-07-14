@@ -292,6 +292,43 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void XRTrackingAdapter_MapsHeadPoseIntoPhysicalAndVirtualState()
+    {
+        var root = new GameObject("XRTrackingAdapterTest");
+        var virtualHead = new GameObject("XRTrackingAdapterVirtualHead");
+        try
+        {
+            virtualHead.transform.SetPositionAndRotation(
+                new Vector3(4f, 1.65f, 7f),
+                Quaternion.Euler(0f, 70f, 0f));
+
+            var pose = root.AddComponent<UserPoseTracker>();
+            var adapter = root.AddComponent<XRTrackingAdapter>();
+            adapter.Configure(pose);
+            adapter.ApplyTrackedPose(
+                new Vector3(1.25f, 1.65f, -0.5f),
+                Quaternion.Euler(0f, 35f, 0f),
+                virtualHead.transform);
+
+            Assert.That(adapter.IsHeadsetTrackingActive, Is.True);
+            Assert.That(adapter.LastHeadLocalPosition, Is.EqualTo(new Vector3(1.25f, 1.65f, -0.5f)));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(1.25f, -0.5f)));
+            Assert.That(adapter.PhysicalYawDegrees, Is.EqualTo(35f).Within(0.001f));
+
+            var snapshot = adapter.CaptureSnapshot();
+            Assert.That(snapshot.virtualPosition, Is.EqualTo(virtualHead.transform.position));
+            Assert.That(snapshot.virtualForward, Is.EqualTo(virtualHead.transform.forward));
+            Assert.That(snapshot.physicalPosition, Is.EqualTo(new Vector2(1.25f, -0.5f)));
+            Assert.That(snapshot.physicalYawDegrees, Is.EqualTo(35f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(virtualHead);
+        }
+    }
+
+    [Test]
     public void ExperimentConditionMatrix_CoversExpectedExperimentGrid()
     {
         Assert.That(ExperimentConditionMatrix.TotalCombinations, Is.EqualTo(96));

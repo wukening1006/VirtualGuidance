@@ -67,6 +67,16 @@ public sealed class UserPoseTracker : MonoBehaviour
     /// <param name="yawDegrees">以 +Z 为 0 度的水平朝向角，单位：度。</param>
     public void SetSimulatedPhysicalPose(Vector2 position, float yawDegrees)
     {
+        SetPhysicalPose(position, yawDegrees);
+    }
+
+    public void SetTrackedPhysicalPose(Vector2 position, float yawDegrees)
+    {
+        SetPhysicalPose(position, yawDegrees);
+    }
+
+    private void SetPhysicalPose(Vector2 position, float yawDegrees)
+    {
         simulatedPhysicalPosition = position;
         simulatedPhysicalYawDegrees = yawDegrees;
     }

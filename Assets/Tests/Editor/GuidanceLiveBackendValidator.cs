@@ -21,6 +21,7 @@ public static class GuidanceLiveBackendValidator
     private static PhysicalSpaceManager physicalSpaceManager;
     private static UserPoseTracker userPoseTracker;
     private static PhysicalRiskEvaluator riskEvaluator;
+    private static XRTrackingAdapter xrTrackingAdapter;
     private static GuidanceTaskController taskController;
     private static NavigationTargetManager navigationTargets;
     private static ArrivalDetector arrivalDetector;
@@ -162,13 +163,14 @@ public static class GuidanceLiveBackendValidator
         physicalSpaceManager = UnityEngine.Object.FindObjectOfType<PhysicalSpaceManager>();
         userPoseTracker = UnityEngine.Object.FindObjectOfType<UserPoseTracker>();
         riskEvaluator = UnityEngine.Object.FindObjectOfType<PhysicalRiskEvaluator>();
+        xrTrackingAdapter = UnityEngine.Object.FindObjectOfType<XRTrackingAdapter>();
         taskController = UnityEngine.Object.FindObjectOfType<GuidanceTaskController>();
         navigationTargets = UnityEngine.Object.FindObjectOfType<NavigationTargetManager>();
         arrivalDetector = UnityEngine.Object.FindObjectOfType<ArrivalDetector>();
         experimentLogger = UnityEngine.Object.FindObjectOfType<ExperimentLogger>();
 
         if (agentClient == null || physicalSpaceManager == null || userPoseTracker == null ||
-            riskEvaluator == null || taskController == null || navigationTargets == null ||
+            riskEvaluator == null || xrTrackingAdapter == null || taskController == null || navigationTargets == null ||
             arrivalDetector == null || experimentLogger == null)
         {
             return;
@@ -197,6 +199,7 @@ public static class GuidanceLiveBackendValidator
             hideFlags = HideFlags.HideAndDontSave
         };
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
+        xrTrackingAdapter.SetHeadsetTrackingEnabled(false);
         userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
         userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.8f, 4.3f), 0f);
 
@@ -529,6 +532,7 @@ public static class GuidanceLiveBackendValidator
         physicalSpaceManager = null;
         userPoseTracker = null;
         riskEvaluator = null;
+        xrTrackingAdapter = null;
         taskController = null;
         navigationTargets = null;
         arrivalDetector = null;
