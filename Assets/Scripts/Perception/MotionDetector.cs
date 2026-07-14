@@ -25,7 +25,12 @@ public sealed class MotionDetector : MonoBehaviour
             return;
         }
 
-        var forward = userPoseTracker.PhysicalForwardXZ;
+        Sample(userPoseTracker.PhysicalForwardXZ, Time.deltaTime);
+    }
+
+    public void Sample(Vector2 forward, float deltaTimeSeconds)
+    {
+        forward = forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
         if (!hasPreviousForward)
         {
             previousForward = forward;
@@ -34,7 +39,7 @@ public sealed class MotionDetector : MonoBehaviour
         }
 
         LastSignedYawDeltaDegrees = Vector2.SignedAngle(previousForward, forward);
-        AngularSpeedDegreesPerSecond = Mathf.Abs(LastSignedYawDeltaDegrees) / Mathf.Max(Time.deltaTime, 0.0001f);
+        AngularSpeedDegreesPerSecond = Mathf.Abs(LastSignedYawDeltaDegrees) / Mathf.Max(deltaTimeSeconds, 0.0001f);
         previousForward = forward;
 
         if (!IsTurning && AngularSpeedDegreesPerSecond >= turnStartDegreesPerSecond)
@@ -52,6 +57,8 @@ public sealed class MotionDetector : MonoBehaviour
         userPoseTracker = poseTracker;
         hasPreviousForward = false;
         IsTurning = false;
+        LastSignedYawDeltaDegrees = 0f;
+        AngularSpeedDegreesPerSecond = 0f;
     }
 
     private void ResolveReferences()

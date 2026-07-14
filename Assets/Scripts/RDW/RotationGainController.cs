@@ -2,7 +2,7 @@ using UnityEngine;
 
 public sealed class RotationGainController : MonoBehaviour
 {
-    private enum GainState
+    public enum GainState
     {
         Idle,
         WaitingForUserTurn,
@@ -26,6 +26,10 @@ public sealed class RotationGainController : MonoBehaviour
     private float appliedExtraYaw;
 
     public bool IsActive => state == GainState.WaitingForUserTurn || state == GainState.Applying;
+    public bool GainEnabled => gainEnabled;
+    public GainState State => state;
+    public float AccumulatedPhysicalYawDegrees => accumulatedPhysicalYaw;
+    public float AppliedExtraYawDegrees => appliedExtraYaw;
 
     private void Awake()
     {
@@ -34,18 +38,32 @@ public sealed class RotationGainController : MonoBehaviour
 
     private void Update()
     {
-        if (!gainEnabled || state == GainState.Idle || state == GainState.Completed || motionDetector == null)
+        if (motionDetector == null)
         {
             return;
         }
 
-        if (!motionDetector.IsTurning)
+        ProcessTurnSample(motionDetector.IsTurning, motionDetector.LastSignedYawDeltaDegrees);
+    }
+
+    public void ProcessTurnSample(bool isTurning, float signedYawDeltaDegrees)
+    {
+        if (!gainEnabled || state == GainState.Idle || state == GainState.Completed)
         {
             return;
         }
 
-        var signedDelta = motionDetector.LastSignedYawDeltaDegrees;
-        if (Mathf.Sign(signedDelta) != expectedDirectionSign)
+        if (!isTurning)
+        {
+            if (state == GainState.Applying)
+            {
+                StopGain();
+            }
+
+            return;
+        }
+
+        if (Mathf.Abs(signedYawDeltaDegrees) <= 0.0001f || Mathf.Sign(signedYawDeltaDegrees) != expectedDirectionSign)
         {
             StopGain();
             return;
@@ -56,8 +74,8 @@ public sealed class RotationGainController : MonoBehaviour
             state = GainState.Applying;
         }
 
-        accumulatedPhysicalYaw += Mathf.Abs(signedDelta);
-        var extraYaw = Mathf.Min(Mathf.Abs(signedDelta) * gainMultiplier, maxExtraYawDegrees - appliedExtraYaw);
+        accumulatedPhysicalYaw += Mathf.Abs(signedYawDeltaDegrees);
+        var extraYaw = Mathf.Min(Mathf.Abs(signedYawDeltaDegrees) * gainMultiplier, maxExtraYawDegrees - appliedExtraYaw);
         if (extraYaw > 0f && virtualUserRoot != null)
         {
             virtualUserRoot.Rotate(Vector3.up, extraYaw * expectedDirectionSign, Space.World);
@@ -73,10 +91,23 @@ public sealed class RotationGainController : MonoBehaviour
     public void Configure(UserPoseTracker poseTracker, MotionDetector detector)
     {
         motionDetector = detector;
-        if (virtualUserRoot == null && poseTracker != null)
+        if (poseTracker != null && poseTracker.VirtualUserRoot != null)
+        {
+            virtualUserRoot = poseTracker.VirtualUserRoot;
+        }
+        else if (virtualUserRoot == null)
         {
             var root = GameObject.Find("XR_Origin_or_UserStart");
             virtualUserRoot = root != null ? root.transform : null;
+        }
+    }
+
+    public void SetGainEnabled(bool enabled)
+    {
+        gainEnabled = enabled;
+        if (!gainEnabled)
+        {
+            StopGain();
         }
     }
 

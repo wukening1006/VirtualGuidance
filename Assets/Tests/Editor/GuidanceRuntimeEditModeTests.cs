@@ -117,6 +117,82 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void MotionDetector_UsesTurnStartAndStopHysteresis()
+    {
+        var go = new GameObject("MotionDetectorTest");
+        try
+        {
+            var detector = go.AddComponent<MotionDetector>();
+
+            detector.Sample(Vector2.up, 0.1f);
+            detector.Sample(Vector2.left, 0.1f);
+
+            Assert.That(detector.IsTurning, Is.True);
+            Assert.That(detector.LastSignedYawDeltaDegrees, Is.EqualTo(90f).Within(0.001f));
+            Assert.That(detector.AngularSpeedDegreesPerSecond, Is.EqualTo(900f).Within(0.001f));
+
+            detector.Sample(Vector2.left, 0.1f);
+
+            Assert.That(detector.IsTurning, Is.False);
+            Assert.That(detector.AngularSpeedDegreesPerSecond, Is.Zero.Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void RotationGainController_FollowsTurnLifecycleAndSafetyStops()
+    {
+        var root = new GameObject("RotationGainLifecycleTest");
+        var user = new GameObject("RotationGainVirtualUser");
+        try
+        {
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(user.transform);
+            var detector = root.AddComponent<MotionDetector>();
+            detector.Configure(pose);
+            var gain = root.AddComponent<RotationGainController>();
+            gain.Configure(pose, detector);
+            gain.SetGainEnabled(true);
+
+            gain.BeginPendingTurn(1);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
+
+            gain.ProcessTurnSample(false, 0f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
+
+            gain.ProcessTurnSample(true, 10f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Applying));
+            Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(10f).Within(0.001f));
+            Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(1.5f).Within(0.001f));
+
+            gain.ProcessTurnSample(false, 0f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, -5f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, 30f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Completed));
+            Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(30f).Within(0.001f));
+            Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(4.5f).Within(0.001f));
+
+            gain.SetGainEnabled(false);
+            Assert.That(gain.GainEnabled, Is.False);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(user);
+        }
+    }
+
+    [Test]
     public void PauseResetController_ClearsGuidanceAndRestoresAfterReset()
     {
         var root = new GameObject("PauseResetControllerTest");

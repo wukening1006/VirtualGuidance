@@ -27,6 +27,8 @@ public sealed class UserPoseTracker : MonoBehaviour
     /// </summary>
     public Vector3 UserVirtualForward => virtualUserRoot != null ? virtualUserRoot.forward : Vector3.forward;
 
+    public Transform VirtualUserRoot => virtualUserRoot;
+
     /// <summary>
     /// 获取用户在 physical tracking space 的 XZ 平面坐标。
     /// </summary>
