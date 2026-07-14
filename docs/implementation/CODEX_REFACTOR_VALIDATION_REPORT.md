@@ -113,6 +113,12 @@ Result after `978ff2b`:
 
 `978ff2b` fixes the previous VR warning by creating the auto-generated `GuidanceDebugCanvas` as a world-space canvas when Unity reports XR/VR as enabled.
 
+### Play Mode Live Backend Automation Note
+
+On 2026-07-14, a temporary PlayMode live-backend probe was attempted using Unity Test Runner and `UnityWebRequest` against the Anaconda-hosted backend. PlayMode discovery could identify the probe after adding a test asmdef, but the UnitySkills PlayMode runner did not return a stable completed result for the probe job. The temporary probe assets were removed and are not committed.
+
+Therefore, the live backend HTTP checks above prove the backend endpoint and JSON behavior from the local machine, while full Unity Play Mode backend request/response validation remains unclaimed until a stable PlayMode runner or manual in-Editor flow can produce authoritative evidence.
+
 ## Phase Coverage
 
 | Phase | Evidence |
