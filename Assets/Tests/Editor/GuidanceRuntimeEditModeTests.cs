@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Reflection;
 using NUnit.Framework;
 using TMPro;
 using UnityEngine;
@@ -195,10 +197,53 @@ public sealed class GuidanceRuntimeEditModeTests
         Assert.That(ReferenceEquals(task.routeTargetIds, spec.routeTargetIds), Is.False);
     }
 
+    [Test]
+    public void GuidanceDtos_KeepBackendJsonContractFieldNames()
+    {
+        AssertPublicFieldNames<GuidanceRequest>(
+            "condition",
+            "task_id",
+            "physical_space_id",
+            "current_exhibit",
+            "user_physical_position",
+            "user_physical_forward",
+            "participant_id",
+            "user_task",
+            "semantic_next_target",
+            "user_virtual_position",
+            "user_virtual_forward");
+
+        AssertPublicFieldNames<GuidanceResponse>(
+            "selected_target",
+            "route_decision",
+            "narration",
+            "gaze_cue",
+            "gaze_target_id",
+            "avatar_action",
+            "movement_instruction",
+            "physical_intent",
+            "verifier");
+
+        AssertPublicFieldNames<VerifierResult>(
+            "approved",
+            "reason");
+    }
+
     private static TMP_Text CreateText(Transform parent, string name)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         return go.AddComponent<TextMeshProUGUI>();
+    }
+
+    private static void AssertPublicFieldNames<T>(params string[] expectedNames)
+    {
+        var actualNames = typeof(T)
+            .GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .OrderBy(field => field.MetadataToken)
+            .Select(field => field.Name)
+            .ToArray();
+
+        Assert.That(actualNames, Is.EqualTo(expectedNames), typeof(T).Name);
     }
 }
