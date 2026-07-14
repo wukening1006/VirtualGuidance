@@ -8,10 +8,13 @@
 
 P1-P11 have been implemented as staged commits on `refactor`.
 
-This report records the validation evidence that can be proven from the local repository, backend tests, Unity Editor checks, Unity EditMode tests, and a Play Mode smoke run. It does not claim XR device completion. PICO/XR real-device checks remain required for the parts of the plan that explicitly require physical headset validation.
+This report records the validation evidence that can be proven from the local repository, backend tests, Unity Editor checks, Unity EditMode tests, and Play Mode live-backend validation. It does not claim XR device completion. PICO/XR real-device checks remain required for the parts of the plan that explicitly require physical headset validation.
 
 ## Latest Atomic Commits
 
+- `658072e test(unity): add live backend validation harness`
+- `8f3d9a8 docs: record playmode backend validation limit`
+- `358e52b docs: record dto contract validation`
 - `cef5009 test(unity): lock guidance dto contract`
 - `b89ae2f docs: update backend validation count`
 - `658ce16 test(backend): lock guidance response contract`
@@ -46,7 +49,7 @@ This report records the validation evidence that can be proven from the local re
 Command:
 
 ```powershell
-python -m pytest backend/tests -p no:cacheprovider --basetemp .pytest-tmp
+D:\APP\APP_code\anaconda3\python.exe -m pytest backend/tests -p no:cacheprovider --basetemp Temp/codex-pytest-live-validator-20260714-1258
 ```
 
 Result:
@@ -115,9 +118,37 @@ Result after `978ff2b`:
 
 ### Play Mode Live Backend Automation Note
 
-On 2026-07-14, a temporary PlayMode live-backend probe was attempted using Unity Test Runner and `UnityWebRequest` against the Anaconda-hosted backend. PlayMode discovery could identify the probe after adding a test asmdef, but the UnitySkills PlayMode runner did not return a stable completed result for the probe job. The temporary probe assets were removed and are not committed.
+`658072e` adds an Editor-only validation harness at `Assets/Tests/Editor/GuidanceLiveBackendValidator.cs`. It avoids the unstable PlayMode Test Runner path while still exercising the real scene and runtime components. Run it from:
 
-Therefore, the live backend HTTP checks above prove the backend endpoint and JSON behavior from the local machine, while full Unity Play Mode backend request/response validation remains unclaimed until a stable PlayMode runner or manual in-Editor flow can produce authoritative evidence.
+```text
+Tools > VirtualGuidance > Run Live Backend Validation
+```
+
+The harness enters Play Mode, uses the scene-installed `AgentClient` against the Anaconda-hosted backend, writes an ignored report to `Logs/Validation/unity_live_backend_validation_latest.json`, and exits Play Mode automatically.
+
+Latest result on 2026-07-14:
+
+```text
+passed=true
+scene=Assets/Scenes/DualWorldGallery.unity
+liveSelectedTarget=E3
+liveMovementInstruction=turn_left_slowly
+checks=6/6 passed
+experimentLogRecords=10
+editorExitedPlayMode=true
+consoleErrors=0
+```
+
+The six checks cover:
+
+- Installer scene contract and runtime dependency resolution.
+- A real Unity `AgentClient` request to the live backend, with the approved `E3 / turn_left_slowly` response applied to narration and movement UI.
+- The verifier-rejected Unity presentation branch, using a rejected clone of the live response passed through the real `GuidanceReceived` event wiring.
+- Arrival at the real E3 scene anchor through `ArrivalDetector`, advancing the task toward E5.
+- Arrival at the real E5 scene anchor through `ArrivalDetector`, completing `E1 -> E3 -> E5` in Play Mode.
+- Runtime inspection of the generated experiment JSONL, including request, response, task-state, and participant records.
+
+The deterministic backend currently has no public request input that intentionally produces `verifier.approved=false`: baseline conditions bypass the final verifier, while `ours_full` builds a safe draft. The harness therefore proves the Unity rejected-response branch without claiming that the live backend emitted the rejected response.
 
 ## Phase Coverage
 
@@ -126,18 +157,16 @@ Therefore, the live backend HTTP checks above prove the backend endpoint and JSO
 | P1 | `CODEX_REFACTOR_P1_CONFIRMATION.md`; Build Settings contains `DualWorldGallery`; main scene Missing Script count is 0. |
 | P2-P4 | Script and prefab moves are committed with `.meta` files preserved; main scene Missing Script count remains 0. |
 | P5 | Backend pipeline/services refactor is committed; backend tests pass; live Anaconda-hosted backend responds on `/health` and `/api/guidance`. |
-| P6-P8 | Core/task/navigation/local RDW runtime code is committed; EditMode tests cover route progression and local stale/unsafe guidance rejection. |
+| P6-P8 | Core/task/navigation/local RDW runtime code is committed; EditMode tests cover route progression and local stale/unsafe guidance rejection; the Editor harness proves live approved guidance, rejected presentation, and real scene-anchor arrival in Play Mode. |
 | P9 | Rotation gain scaffold is committed; EditMode test proves default-disabled behavior. |
 | P10 | Pause/reset code is committed; EditMode tests cover guidance clearing and reset resume; Play Mode smoke starts and stops without console errors. |
-| P11 | Experiment dashboard/logger/matrix/session source is committed; EditMode test covers experiment matrix and task conversion. |
+| P11 | Experiment dashboard/logger/matrix/session source is committed; EditMode test covers experiment matrix and task conversion; the Play Mode harness validates a completed T2 session with 10 JSONL records. |
 
 ## Still Requires Physical Validation
 
-The following plan gates cannot be honestly completed from static checks, backend tests, Editor checks, or simulator smoke alone:
+The following plan gates cannot be honestly completed from static checks, backend tests, Editor checks, or simulator-driven Play Mode validation alone:
 
-- Approved/rejected guidance branch validation with the full backend running in Play Mode.
-- E1 -> E3 -> E5 task progression with real scene movement and arrival detection.
-- Runtime logging inspection from a full experiment session.
+- A complete multi-condition participant experiment session across B1-B5/Ours, T1-T4, and all four physical spaces.
 - PICO build and permission validation.
 - XR headset pose mapping between physical and virtual spaces.
 - Real user turn detection.
