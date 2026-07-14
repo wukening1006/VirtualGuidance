@@ -11,7 +11,7 @@ public sealed class RDWController : MonoBehaviour
         ResolveReferences();
         if (riskEvaluator != null)
         {
-            riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
+            riskEvaluator.RiskStateChanged += ApplyRiskState;
         }
     }
 
@@ -19,7 +19,7 @@ public sealed class RDWController : MonoBehaviour
     {
         if (riskEvaluator != null)
         {
-            riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+            riskEvaluator.RiskStateChanged -= ApplyRiskState;
         }
     }
 
@@ -27,7 +27,7 @@ public sealed class RDWController : MonoBehaviour
     {
         if (riskEvaluator != null)
         {
-            riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+            riskEvaluator.RiskStateChanged -= ApplyRiskState;
         }
 
         riskEvaluator = evaluator;
@@ -35,11 +35,11 @@ public sealed class RDWController : MonoBehaviour
 
         if (isActiveAndEnabled && riskEvaluator != null)
         {
-            riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
+            riskEvaluator.RiskStateChanged += ApplyRiskState;
         }
     }
 
-    private void HandleRiskStateChanged(PhysicalRiskState state)
+    public void ApplyRiskState(PhysicalRiskState state)
     {
         if (!pauseImmediatelyOnCriticalReset || state == null || !state.reset_required)
         {

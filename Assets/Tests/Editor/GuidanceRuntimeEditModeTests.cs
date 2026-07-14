@@ -215,8 +215,11 @@ public sealed class GuidanceRuntimeEditModeTests
             rejection.Configure(rejectionText, rejectionRoot);
             var executor = root.AddComponent<GuidanceExecutor>();
             executor.Configure(narration, gaze, movement, null, null, rejection, null);
+            var gain = root.AddComponent<RotationGainController>();
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(1);
             var pauseReset = root.AddComponent<PauseResetController>();
-            pauseReset.Configure(executor, rejection);
+            pauseReset.Configure(executor, rejection, gain);
 
             executor.Apply(new GuidanceResponse
             {
@@ -230,6 +233,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(narrationText.text, Is.EqualTo("Move toward exhibit E5."));
             Assert.That(movementText.text, Is.EqualTo("Movement: move forward slowly"));
             Assert.That(gazeText.text, Does.Contain("look_forward"));
+            Assert.That(gain.IsActive, Is.True);
 
             pauseReset.PauseForReset("All directions unsafe.");
 
@@ -239,12 +243,47 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gazeText.text, Is.Empty);
             Assert.That(rejectionRoot.activeSelf, Is.True);
             Assert.That(rejectionText.text, Does.Contain("All directions unsafe."));
+            Assert.That(gain.IsActive, Is.False);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
 
             pauseReset.ResumeAfterReset();
 
             Assert.That(pauseReset.IsPaused, Is.False);
             Assert.That(rejectionRoot.activeSelf, Is.False);
             Assert.That(rejectionText.text, Is.Empty);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void RDWController_CriticalRiskPausesAndCancelsGainImmediately()
+    {
+        var root = new GameObject("RDWCriticalResetTest");
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(-1);
+            var pauseReset = root.AddComponent<PauseResetController>();
+            pauseReset.Configure(null, null, gain);
+            var rdw = root.AddComponent<RDWController>();
+            rdw.Configure(null, pauseReset);
+
+            rdw.ApplyRiskState(new PhysicalRiskState
+            {
+                boundary_risk = "critical",
+                reset_risk = "critical",
+                reset_required = true,
+                unsafe_directions = new[] { "forward", "left", "right" }
+            });
+
+            Assert.That(pauseReset.IsPaused, Is.True);
+            Assert.That(gain.IsActive, Is.False);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
         }
         finally
         {

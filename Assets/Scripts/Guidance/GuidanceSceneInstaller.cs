@@ -287,7 +287,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         rejectionPanel?.Configure(rejectionText, rejectionPanelRoot != null ? rejectionPanelRoot : rejectionText != null ? rejectionText.gameObject : null);
         guidanceDebugPanel?.Configure(debugText);
         guidanceExecutor?.Configure(narrationPlayer, gazeCueController, movementHintController, guideAvatarController, exhibitHighlightManager, rejectionPanel, guidanceDebugPanel);
-        pauseResetController?.Configure(guidanceExecutor, rejectionPanel);
+        pauseResetController?.Configure(guidanceExecutor, rejectionPanel, rotationGainController);
         rdwController?.Configure(riskEvaluator, pauseResetController);
         rotationGainController?.Configure(userPoseTracker, motionDetector);
         guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
