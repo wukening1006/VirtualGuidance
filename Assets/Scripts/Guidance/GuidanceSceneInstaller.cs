@@ -21,16 +21,32 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private bool createDebugUiIfMissing = true;
     [Tooltip("创建临时 Request Guidance 按钮。后续由 ExperimentDashboard 驱动请求时应关闭。")]
     [SerializeField] private bool createRequestButton = true;
+    [Tooltip("通过 GuidanceCoordinator 执行本地任务/RDW 校验；关闭后保持旧的 AgentClient -> Executor 直连。")]
+    [SerializeField] private bool routeResponsesThroughCoordinator = true;
     [Tooltip("安装时打印缺失引用 warning，方便检查场景接线。")]
     [SerializeField] private bool validateSceneOnInstall = true;
 
     [Header("状态来源")]
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [SerializeField] private UserPoseTracker userPoseTracker;
+    [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [SerializeField] private MotionDetector motionDetector;
+    [SerializeField] private XRTrackingAdapter xrTrackingAdapter;
 
     [Header("Guidance 核心组件")]
     [SerializeField] private AgentClient agentClient;
+    [SerializeField] private GuidanceCoordinator guidanceCoordinator;
+    [SerializeField] private GuidanceTaskController taskController;
+    [SerializeField] private NavigationTargetManager navigationTargetManager;
+    [SerializeField] private SemanticTargetSelector semanticTargetSelector;
+    [SerializeField] private ArrivalDetector arrivalDetector;
+    [SerializeField] private LocalGuidanceValidator localGuidanceValidator;
+    [SerializeField] private PauseResetController pauseResetController;
+    [SerializeField] private RDWController rdwController;
+    [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
+    [SerializeField] private ExperimentDashboard experimentDashboard;
+    [SerializeField] private ExperimentLogger experimentLogger;
     [SerializeField] private NarrationPlayer narrationPlayer;
     [SerializeField] private MovementHintController movementHintController;
     [SerializeField] private GazeCueController gazeCueController;
@@ -141,6 +157,21 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
             userPoseTracker = FindObjectOfType<UserPoseTracker>();
         }
 
+        if (riskEvaluator == null)
+        {
+            riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
+        }
+
+        if (motionDetector == null)
+        {
+            motionDetector = FindObjectOfType<MotionDetector>();
+        }
+
+        if (xrTrackingAdapter == null)
+        {
+            xrTrackingAdapter = FindObjectOfType<XRTrackingAdapter>();
+        }
+
         if (avatarRoot == null)
         {
             avatarRoot = FindTransform("GuideAvatar");
@@ -213,7 +244,21 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     private void EnsureCoreComponents()
     {
         agentClient = GetOrAdd(agentClient, createMissingCoreComponents);
+        guidanceCoordinator = GetOrAdd(guidanceCoordinator, createMissingCoreComponents);
+        taskController = GetOrAdd(taskController, createMissingCoreComponents);
+        navigationTargetManager = GetOrAdd(navigationTargetManager, createMissingCoreComponents);
+        semanticTargetSelector = GetOrAdd(semanticTargetSelector, createMissingCoreComponents);
+        arrivalDetector = GetOrAdd(arrivalDetector, createMissingCoreComponents);
+        localGuidanceValidator = GetOrAdd(localGuidanceValidator, createMissingCoreComponents);
+        pauseResetController = GetOrAdd(pauseResetController, createMissingCoreComponents);
+        rdwController = GetOrAdd(rdwController, createMissingCoreComponents);
+        rotationGainController = GetOrAdd(rotationGainController, createMissingCoreComponents);
+        riskEvaluator = GetOrAdd(riskEvaluator, createMissingCoreComponents);
+        motionDetector = GetOrAdd(motionDetector, createMissingCoreComponents);
+        xrTrackingAdapter = GetOrAdd(xrTrackingAdapter, createMissingCoreComponents);
         guidanceExecutor = GetOrAdd(guidanceExecutor, createMissingCoreComponents);
+        experimentLogger = GetOrAdd(experimentLogger, createMissingCoreComponents);
+        experimentDashboard = GetOrAdd(experimentDashboard, createMissingCoreComponents);
         narrationPlayer = GetOrAdd(narrationPlayer, createMissingCoreComponents);
         movementHintController = GetOrAdd(movementHintController, createMissingCoreComponents);
         gazeCueController = GetOrAdd(gazeCueController, createMissingCoreComponents);
@@ -227,6 +272,13 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     {
         var context = new GuidanceRequestContext();
         agentClient?.Configure(physicalSpaceManager, userPoseTracker, context);
+        riskEvaluator?.Configure(physicalSpaceManager, userPoseTracker);
+        motionDetector?.Configure(userPoseTracker);
+        xrTrackingAdapter?.Configure(userPoseTracker);
+        navigationTargetManager?.RebuildIndex();
+        semanticTargetSelector?.Configure(navigationTargetManager);
+        arrivalDetector?.Configure(userPoseTracker, navigationTargetManager);
+        localGuidanceValidator?.Configure(navigationTargetManager);
         narrationPlayer?.Configure(narrationText);
         movementHintController?.Configure(movementHintText);
         gazeCueController?.Configure(gazeCueText);
@@ -235,6 +287,11 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         rejectionPanel?.Configure(rejectionText, rejectionPanelRoot != null ? rejectionPanelRoot : rejectionText != null ? rejectionText.gameObject : null);
         guidanceDebugPanel?.Configure(debugText);
         guidanceExecutor?.Configure(narrationPlayer, gazeCueController, movementHintController, guideAvatarController, exhibitHighlightManager, rejectionPanel, guidanceDebugPanel);
+        pauseResetController?.Configure(guidanceExecutor, rejectionPanel, rotationGainController);
+        rdwController?.Configure(riskEvaluator, pauseResetController);
+        rotationGainController?.Configure(userPoseTracker, motionDetector);
+        guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
+        experimentDashboard?.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, taskController, guidanceCoordinator, agentClient, experimentLogger, null);
     }
 
     private void WireEvents()
@@ -245,7 +302,19 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         }
 
         agentClient.GuidanceReceived.RemoveListener(guidanceExecutor.Apply);
-        agentClient.GuidanceReceived.AddListener(guidanceExecutor.Apply);
+        if (guidanceCoordinator != null)
+        {
+            agentClient.GuidanceReceived.RemoveListener(guidanceCoordinator.HandleGuidanceResponse);
+        }
+
+        if (routeResponsesThroughCoordinator && guidanceCoordinator != null)
+        {
+            agentClient.GuidanceReceived.AddListener(guidanceCoordinator.HandleGuidanceResponse);
+        }
+        else
+        {
+            agentClient.GuidanceReceived.AddListener(guidanceExecutor.Apply);
+        }
 
         if (rejectionPanel != null)
         {
@@ -287,8 +356,25 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     {
         WarnIfMissing(physicalSpaceManager, "PhysicalSpaceManager");
         WarnIfMissing(userPoseTracker, "UserPoseTracker");
+        WarnIfMissing(riskEvaluator, "PhysicalRiskEvaluator");
+        WarnIfMissing(motionDetector, "MotionDetector");
+        WarnIfMissing(xrTrackingAdapter, "XRTrackingAdapter");
         WarnIfMissing(agentClient, "AgentClient");
+        if (routeResponsesThroughCoordinator)
+        {
+            WarnIfMissing(guidanceCoordinator, "GuidanceCoordinator");
+            WarnIfMissing(taskController, "GuidanceTaskController");
+            WarnIfMissing(navigationTargetManager, "NavigationTargetManager");
+            WarnIfMissing(semanticTargetSelector, "SemanticTargetSelector");
+            WarnIfMissing(arrivalDetector, "ArrivalDetector");
+            WarnIfMissing(localGuidanceValidator, "LocalGuidanceValidator");
+            WarnIfMissing(pauseResetController, "PauseResetController");
+            WarnIfMissing(rdwController, "RDWController");
+            WarnIfMissing(rotationGainController, "RotationGainController");
+        }
         WarnIfMissing(guidanceExecutor, "GuidanceExecutor");
+        WarnIfMissing(experimentLogger, "ExperimentLogger");
+        WarnIfMissing(experimentDashboard, "ExperimentDashboard");
         WarnIfMissing(narrationPlayer, "NarrationPlayer");
         WarnIfMissing(movementHintController, "MovementHintController");
         WarnIfMissing(guideAvatarController, "GuideAvatarController");
@@ -357,17 +443,38 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
 
         canvasObject = new GameObject(GuidanceCanvasName);
         var canvas = canvasObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
         canvas.sortingOrder = 30;
 
         var scaler = canvasObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
-        scaler.matchWidthOrHeight = 0.5f;
+        if (ShouldUseWorldSpaceDebugCanvas())
+        {
+            canvas.renderMode = RenderMode.WorldSpace;
+            var rect = canvasObject.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(1920f, 1080f);
+            rect.position = new Vector3(0f, 1.5f, 2.5f);
+            rect.rotation = Quaternion.identity;
+            rect.localScale = Vector3.one * 0.001f;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            scaler.dynamicPixelsPerUnit = 10f;
+        }
+        else
+        {
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.matchWidthOrHeight = 0.5f;
+        }
 
         canvasObject.AddComponent<GraphicRaycaster>();
         EnsureEventSystem();
         return canvas;
+    }
+
+    private static bool ShouldUseWorldSpaceDebugCanvas()
+    {
+        return UnityEngine.XR.XRSettings.enabled
+            || UnityEngine.XR.XRSettings.isDeviceActive
+            || !string.IsNullOrWhiteSpace(UnityEngine.XR.XRSettings.loadedDeviceName);
     }
 
     private static void EnsureEventSystem()

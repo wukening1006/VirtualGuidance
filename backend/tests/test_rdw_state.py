@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from backend.agents.rdw_state import RDWStateAgent
+from backend.agents.rdw_state_agent import RDWStateAgent
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
