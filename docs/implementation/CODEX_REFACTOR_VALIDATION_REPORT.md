@@ -1,6 +1,6 @@
 # Codex Refactor Validation Report
 
-> Date: 2026-07-13
+> Date: 2026-07-14
 > Branch: `refactor`
 > Scope: `docs/implementation/CODEX_REFACTOR_EXECUTION_PLAN.md`
 
@@ -12,8 +12,13 @@ This report records the validation evidence that can be proven from the local re
 
 ## Latest Atomic Commits
 
-- `eaab48a test(unity): add runtime refactor editmode checks`
+- `cef5009 test(unity): lock guidance dto contract`
+- `b89ae2f docs: update backend validation count`
+- `658ce16 test(backend): lock guidance response contract`
+- `59e1596 test(unity): cover pause reset flow`
+- `b251e1c docs: record refactor validation status`
 - `978ff2b fix(unity): use world-space debug canvas for xr`
+- `eaab48a test(unity): add runtime refactor editmode checks`
 - `5055e25 fix(unity): keep experiment logs outside assets`
 - `8a7123b feat(unity): add experiment dashboard and logging`
 - `0401587 feat(unity): add rotation gain scaffold`
@@ -52,6 +57,18 @@ Result:
 
 The warning is the existing Starlette/httpx deprecation warning from the installed Python environment.
 
+Live backend was also started with the Anaconda Python executable:
+
+```powershell
+D:\APP\APP_code\anaconda3\python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8000
+```
+
+Live checks against `http://127.0.0.1:8000` passed:
+
+- `GET /health`: `status=ok`, `version=0.3.0`, `exhibit_count=8`.
+- `POST /api/guidance` with `condition=ours_full`, `physical_space_id=narrow_room`: selected `E3`, returned `turn_left_slowly`, verifier approved.
+- `POST /api/guidance` with `condition=B4_scripted_reset`: returned `reset_required`.
+
 ### Unity Editor
 
 UnitySkills health checks:
@@ -70,7 +87,7 @@ UnitySkills health checks:
 Unity Test Runner result:
 
 ```text
-Test run completed: 5/5 passed.
+Test run completed: 6/6 passed.
 ```
 
 Covered checks:
@@ -80,6 +97,7 @@ Covered checks:
 - `PauseResetController` clears visible guidance, shows the reset reason, and hides it after resume.
 - `RotationGainController` remains inactive by default and does not start gain from narration alone.
 - `ExperimentConditionMatrix` covers 6 conditions, 4 tasks, 4 physical spaces, and produces cloned task routes.
+- `GuidanceRequest`, `GuidanceResponse`, and `VerifierResult` public field names remain locked to the backend JSON contract.
 
 ### Play Mode Smoke
 
@@ -101,7 +119,7 @@ Result after `978ff2b`:
 |---|---|
 | P1 | `CODEX_REFACTOR_P1_CONFIRMATION.md`; Build Settings contains `DualWorldGallery`; main scene Missing Script count is 0. |
 | P2-P4 | Script and prefab moves are committed with `.meta` files preserved; main scene Missing Script count remains 0. |
-| P5 | Backend pipeline/services refactor is committed; backend tests pass. |
+| P5 | Backend pipeline/services refactor is committed; backend tests pass; live Anaconda-hosted backend responds on `/health` and `/api/guidance`. |
 | P6-P8 | Core/task/navigation/local RDW runtime code is committed; EditMode tests cover route progression and local stale/unsafe guidance rejection. |
 | P9 | Rotation gain scaffold is committed; EditMode test proves default-disabled behavior. |
 | P10 | Pause/reset code is committed; EditMode tests cover guidance clearing and reset resume; Play Mode smoke starts and stops without console errors. |
