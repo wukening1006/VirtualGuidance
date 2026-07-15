@@ -70,6 +70,11 @@ public sealed class UserPoseTracker : MonoBehaviour
         SetPhysicalPose(position, yawDegrees);
     }
 
+    /// <summary>
+    /// 写入 XR 设备提供的 physical 位姿，与模拟输入共用同一运行时状态。
+    /// </summary>
+    /// <param name="position">physical XZ 平面位置，x/y 分别对应 Unity X/Z，单位：米。</param>
+    /// <param name="yawDegrees">以 +Z 为 0 度的水平朝向角，单位：度。</param>
     public void SetTrackedPhysicalPose(Vector2 position, float yawDegrees)
     {
         SetPhysicalPose(position, yawDegrees);

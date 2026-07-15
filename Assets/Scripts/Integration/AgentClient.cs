@@ -27,24 +27,27 @@ public sealed class AgentClient : MonoBehaviour
     [SerializeField] private GuidanceRequestContext defaultContext = new GuidanceRequestContext();
 
     /// <summary>
-    /// 后端返回 approved 或 rejected guidance response 后触发。
+    /// 每个成功解析的请求响应触发一次，无论 verifier 为 approved 或 rejected；参数为完整 guidance response。
     /// </summary>
     [Header("事件")]
     [Tooltip("后端返回 approved 或 rejected guidance response 后触发。")]
     public GuidanceResponseEvent GuidanceReceived = new GuidanceResponseEvent();
 
     /// <summary>
-    /// guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。
+    /// 每次请求因网络、HTTP 状态或响应解析失败时触发一次；参数为可展示给调试 UI 的错误信息。
     /// </summary>
     [Tooltip("guidance 请求失败时触发，参数为可展示给调试 UI 的错误信息。")]
     public StringEvent GuidanceRequestFailed = new StringEvent();
 
     /// <summary>
-    /// guidance 请求开始时触发，参数为当前请求状态文本。
+    /// 每个实际发出的 guidance 请求开始时触发一次；参数为当前请求状态文本。
     /// </summary>
     [Tooltip("guidance 请求开始时触发，参数为当前请求状态文本。")]
     public StringEvent GuidanceRequestStarted = new StringEvent();
 
+    /// <summary>
+    /// 请求上下文和位姿组装完成、发送前触发一次；参数为本次请求快照，供日志和过期响应检测使用。
+    /// </summary>
     public event Action<GuidanceRequest> GuidanceRequestBuilt;
 
     private GuidanceRequest lastRequest;

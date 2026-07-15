@@ -1,6 +1,10 @@
 using TMPro;
 using UnityEngine;
 
+/// <summary>
+/// 为研究者提供实验条件切换与 guidance 请求入口，并将运行事件汇总到日志和状态文本。
+/// 条件选择来自 ExperimentConditionMatrix，应用结果同步到空间、位姿、任务和风险模块。
+/// </summary>
 public sealed class ExperimentDashboard : MonoBehaviour
 {
     [SerializeField] private string participantId = "P001";
@@ -36,6 +40,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
         Unsubscribe();
     }
 
+    /// <summary>
+    /// 注入实验运行依赖，迁移事件订阅并立即应用当前 Inspector 选择。
+    /// </summary>
     public void Configure(
         PhysicalSpaceManager spaceManager,
         UserPoseTracker poseTracker,
@@ -59,6 +66,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
         ApplySelection();
     }
 
+    /// <summary>
+    /// 应用当前条件组合，开始新日志会话并同步空间、模拟位姿、任务和风险状态。
+    /// </summary>
     public void ApplySelection()
     {
         ResolveReferences();
@@ -77,6 +87,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 优先通过完整协调器请求 guidance；协调器缺失时以当前实验配置直接调用 AgentClient。
+    /// </summary>
     public void RequestGuidance()
     {
         if (guidanceCoordinator != null)
@@ -91,18 +104,21 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
     }
 
+    /// <summary>循环切换到下一个实验条件并开始新的实验会话。</summary>
     public void NextCondition()
     {
         conditionIndex++;
         ApplySelection();
     }
 
+    /// <summary>循环切换到下一个任务并开始新的实验会话。</summary>
     public void NextTask()
     {
         taskIndex++;
         ApplySelection();
     }
 
+    /// <summary>循环切换到下一个 physical space 并开始新的实验会话。</summary>
     public void NextPhysicalSpace()
     {
         physicalSpaceIndex++;
@@ -126,6 +142,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         if (agentClient != null)
         {
+            // Configure 和 OnEnable 都可能连接事件，先移除可确保一次外部事件只记录一条日志。
             agentClient.GuidanceRequestBuilt -= HandleRequestBuilt;
             agentClient.GuidanceRequestBuilt += HandleRequestBuilt;
             agentClient.GuidanceReceived.RemoveListener(HandleResponseReceived);
@@ -149,6 +166,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void Unsubscribe()
     {
+        // Dashboard 禁用或替换依赖后必须解绑，避免旧面板继续写日志或刷新已失效 UI。
         if (agentClient != null)
         {
             agentClient.GuidanceRequestBuilt -= HandleRequestBuilt;

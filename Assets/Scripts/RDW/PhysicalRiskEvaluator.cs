@@ -31,7 +31,8 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     private PhysicalRiskState currentRiskState;
 
     /// <summary>
-    /// 风险状态刷新后触发，供调试面板、可视化和后续 guidance 生成模块订阅。
+    /// 每次定时或显式风险计算完成后触发，即使风险等级未变化也会重复触发。
+    /// 参数为最新 PhysicalRiskState，供调试面板、可视化和 guidance 模块使用。
     /// </summary>
     public event Action<PhysicalRiskState> RiskStateChanged;
 

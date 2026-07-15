@@ -1,5 +1,9 @@
 using UnityEngine;
 
+/// <summary>
+/// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
+/// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
+/// </summary>
 public sealed class GuidanceCoordinator : MonoBehaviour
 {
     [SerializeField] private AgentClient agentClient;
@@ -16,6 +20,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private GuidanceRequestSnapshot activeSnapshot;
 
+    /// <summary>
+    /// 当前任务运行状态；任务控制器未配置时返回 null。
+    /// </summary>
     public GuidanceRuntimeState RuntimeState => taskController != null ? taskController.RuntimeState : null;
 
     private void OnEnable()
@@ -30,6 +37,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindArrival();
     }
 
+    /// <summary>
+    /// 注入完整导览链依赖，并重新绑定请求快照与到达事件。
+    /// </summary>
     public void Configure(
         AgentClient client,
         GuidanceExecutor executor,
@@ -62,6 +72,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindArrival();
     }
 
+    /// <summary>
+    /// 根据最新物理风险选择安全语义目标并发起 guidance 请求；无可用目标时进入暂停重置流程。
+    /// </summary>
     public void RequestNextGuidance()
     {
         if (agentClient == null || taskController == null)
@@ -85,11 +98,16 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         agentClient.RequestGuidance(taskController.BuildRequestContext(selectedTarget));
     }
 
+    /// <summary>
+    /// 对后端响应执行本地时效与安全校验，通过后更新导览表现、到达目标和旋转增益。
+    /// </summary>
+    /// <param name="response">后端返回的 guidance；null 会被本地校验拒绝。</param>
     public void HandleGuidanceResponse(GuidanceResponse response)
     {
         var runtimeState = taskController != null ? taskController.RuntimeState : null;
         var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
 
+        // 请求发出后任务或物理风险可能已变化，旧响应必须在任何表现执行前被拒绝。
         if (localValidator != null &&
             !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
         {
@@ -130,6 +148,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         if (agentClient != null)
         {
+            // 先解除再订阅，避免 Configure 与 OnEnable 交错时重复捕获同一次请求。
             agentClient.GuidanceRequestBuilt -= HandleRequestBuilt;
             agentClient.GuidanceRequestBuilt += HandleRequestBuilt;
         }
@@ -147,6 +166,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         if (arrivalDetector != null)
         {
+            // 到达事件会推进任务状态，重复订阅将导致一次到达跨越多个路线节点。
             arrivalDetector.TargetArrived -= HandleTargetArrived;
             arrivalDetector.TargetArrived += HandleTargetArrived;
         }

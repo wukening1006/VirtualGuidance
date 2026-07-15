@@ -27,7 +27,8 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
     private PhysicalSpaceConfig currentSpace;
 
     /// <summary>
-    /// 当前 physical space 切换后触发，供风险计算和边界可视化同步状态。
+    /// 每次成功切换到已加载的 physical space 后触发一次，包括重复选择同一 ID。
+    /// 参数为新的完整空间配置，供风险计算和边界可视化同步状态。
     /// </summary>
     public event Action<PhysicalSpaceConfig> CurrentSpaceChanged;
 

@@ -1,8 +1,13 @@
 using System;
 using UnityEngine;
 
+/// <summary>
+/// 定义实验条件、任务和 physical space 的笛卡尔组合，并生成可复现的条件配置。
+/// Dashboard 使用循环索引遍历矩阵，生成结果提供给任务、风险输入和日志模块。
+/// </summary>
 public static class ExperimentConditionMatrix
 {
+    /// <summary>后端与日志共用的实验条件标签集合。</summary>
     public static readonly string[] Conditions =
     {
         "B1_mllm_only",
@@ -13,6 +18,7 @@ public static class ExperimentConditionMatrix
         "ours_full"
     };
 
+    /// <summary>实验覆盖的任务 ID 集合。</summary>
     public static readonly string[] TaskIds =
     {
         "T1_overview",
@@ -21,6 +27,7 @@ public static class ExperimentConditionMatrix
         "T4_next_step"
     };
 
+    /// <summary>Assets/Configs 中可切换的 physical space ID 集合。</summary>
     public static readonly string[] PhysicalSpaces =
     {
         "wide_room",
@@ -29,6 +36,10 @@ public static class ExperimentConditionMatrix
         "l_shaped_room"
     };
 
+    /// <summary>
+    /// 按三个可循环索引生成实验条件，并填充任务路线和空间对应的模拟物理起点。
+    /// </summary>
+    /// <returns>可直接应用到实验会话的独立条件配置。</returns>
     public static ExperimentConditionSpec Build(
         int conditionIndex,
         int taskIndex,
@@ -53,6 +64,7 @@ public static class ExperimentConditionMatrix
         return spec;
     }
 
+    /// <summary>条件、任务与 physical space 的组合总数。</summary>
     public static int TotalCombinations => Conditions.Length * TaskIds.Length * PhysicalSpaces.Length;
 
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
@@ -103,6 +115,7 @@ public static class ExperimentConditionMatrix
 
     private static Vector2 PoseFor(string physicalSpaceId)
     {
+        // 二维分量对应 physical tracking space 的 XZ 平面，数值单位为米。
         switch (physicalSpaceId)
         {
             case "narrow_room":
@@ -123,6 +136,7 @@ public static class ExperimentConditionMatrix
             return 0;
         }
 
+        // 双重取模让 Dashboard 的负索引与正向溢出都能稳定循环。
         return ((index % count) + count) % count;
     }
 }
