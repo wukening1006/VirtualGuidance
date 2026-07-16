@@ -51,6 +51,23 @@ public sealed class ExhibitMetadata : MonoBehaviour
     public string SemanticRole => semanticRole;
 
     /// <summary>
+    /// 将场景语义角色映射为安全候选职责；只有显式 turn_cue_anchor 才不会要求到达。
+    /// </summary>
+    public NavigationTargetRole SafetyTargetRole
+    {
+        get
+        {
+            if (string.Equals(semanticRole, "turn_cue_anchor", System.StringComparison.OrdinalIgnoreCase) ||
+                ContainsTag("turn_cue"))
+            {
+                return NavigationTargetRole.TurnCueAnchor;
+            }
+
+            return NavigationTargetRole.NavigableDetour;
+        }
+    }
+
+    /// <summary>
     /// 与当前展品语义相关的其他展品 ID 列表。
     /// </summary>
     public string[] RelatedExhibits => relatedExhibits;
@@ -94,5 +111,23 @@ public sealed class ExhibitMetadata : MonoBehaviour
         relatedExhibits = related;
         viewPoint = viewingPoint;
         gazeTarget = lookingTarget;
+    }
+
+    private bool ContainsTag(string expected)
+    {
+        if (tags == null)
+        {
+            return false;
+        }
+
+        foreach (var tag in tags)
+        {
+            if (string.Equals(tag, expected, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

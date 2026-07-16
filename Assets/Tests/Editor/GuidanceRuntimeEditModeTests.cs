@@ -1060,6 +1060,115 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void NavigationTargetManager_ClassifiesDirectionRelativeToCurrentVirtualForward()
+    {
+        var root = new GameObject("RelativeVirtualDirectionTest");
+        try
+        {
+            var targets = root.AddComponent<NavigationTargetManager>();
+            var position = Vector3.zero;
+            var target = Vector3.forward * 2f;
+
+            Assert.That(
+                targets.ClassifyRelativeDirection(position, Vector3.forward, target),
+                Is.EqualTo("forward"));
+            Assert.That(
+                targets.ClassifyRelativeDirection(position, Vector3.right, target),
+                Is.EqualTo("left"));
+            Assert.That(
+                targets.ClassifyRelativeDirection(position, Vector3.left, target),
+                Is.EqualTo("right"));
+            Assert.That(
+                targets.ClassifyRelativeDirection(position, Vector3.back, target),
+                Is.EqualTo("behind"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void SemanticTargetSelector_DistinguishesRouteTurnCueAndNavigableDetourRoles()
+    {
+        var root = new GameObject("GuidanceTargetRoleSelectionTest");
+        try
+        {
+            var userRoot = new GameObject("RoleUser");
+            userRoot.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(userRoot.transform);
+            var current = CreateExhibit(
+                root.transform,
+                "RoleE1",
+                Vector3.zero,
+                "introduction",
+                new[] { "RoleE2", "RoleE3" });
+            CreateExhibit(
+                root.transform,
+                "RoleE2",
+                new Vector3(-2f, 0f, 1f),
+                "turn_cue_anchor",
+                null);
+            CreateExhibit(
+                root.transform,
+                "RoleE3",
+                new Vector3(-3f, 0f, 1f),
+                "left_related_anchor",
+                null);
+            CreateExhibit(
+                root.transform,
+                "RoleE5",
+                new Vector3(0f, 0f, 3f),
+                "route_subgoal",
+                null);
+            CreateExhibit(
+                root.transform,
+                "RoleE6",
+                new Vector3(0f, 0f, 5f),
+                "main_target",
+                null);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", current.Id, "RoleE5", "RoleE6");
+            var unsafeForward = new PhysicalRiskState
+            {
+                unsafe_directions = new[] { "forward" },
+                safe_directions = new[] { "left" }
+            };
+
+            var turnCue = selector.SelectNextGuidanceTarget(
+                runtime,
+                unsafeForward,
+                ExperimentConditionMatrix.GetPolicy("ours_full"));
+            Assert.That(turnCue.TargetId, Is.EqualTo("RoleE2"));
+            Assert.That(turnCue.TargetRole, Is.EqualTo(NavigationTargetRole.TurnCueAnchor));
+            Assert.That(targets.GetSafetyTargetRole("RoleE3"), Is.EqualTo(NavigationTargetRole.NavigableDetour));
+
+            var routeSubgoal = selector.SelectNextGuidanceTarget(
+                runtime,
+                new PhysicalRiskState { safe_directions = new[] { "forward" } },
+                ExperimentConditionMatrix.GetPolicy("ours_full"));
+            Assert.That(routeSubgoal.TargetRole, Is.EqualTo(NavigationTargetRole.RouteSubgoal));
+
+            runtime.Begin("T2_main_target", current.Id, "RoleE6", "RoleE6");
+            var finalTarget = selector.SelectNextGuidanceTarget(
+                runtime,
+                new PhysicalRiskState { safe_directions = new[] { "forward" } },
+                ExperimentConditionMatrix.GetPolicy("ours_full"));
+            Assert.That(finalTarget.TargetRole, Is.EqualTo(NavigationTargetRole.FinalTarget));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void GuidanceCoordinator_VerifierRejectionTriggersRuntimeInterventionWithoutExperimentError()
     {
         var root = new GameObject("GuidanceCoordinatorVerifierTest");
@@ -1350,6 +1459,29 @@ public sealed class GuidanceRuntimeEditModeTests
     private static float YawOf(Vector2 forward)
     {
         return Mathf.Atan2(forward.x, forward.y) * Mathf.Rad2Deg;
+    }
+
+    private static ExhibitMetadata CreateExhibit(
+        Transform parent,
+        string id,
+        Vector3 position,
+        string semanticRole,
+        string[] related)
+    {
+        var exhibitObject = new GameObject(id);
+        exhibitObject.transform.SetParent(parent, false);
+        exhibitObject.transform.position = position;
+        var metadata = exhibitObject.AddComponent<ExhibitMetadata>();
+        metadata.Configure(
+            id,
+            id,
+            null,
+            string.Empty,
+            semanticRole,
+            related,
+            exhibitObject.transform,
+            exhibitObject.transform);
+        return metadata;
     }
 
     private static GuidanceRequest RequestForContext(GuidanceRequestContext context, string requestId)

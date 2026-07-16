@@ -40,26 +40,41 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         PhysicalRiskState riskState,
         ExperimentConditionPolicy policy)
     {
+        var target = SelectNextGuidanceTarget(runtimeState, riskState, policy);
+        return target != null ? target.TargetId : string.Empty;
+    }
+
+    /// <summary>
+    /// 返回带明确 TargetRole 的 Guidance 目标，避免 TurnCueAnchor 与 NavigableDetour 混用。
+    /// </summary>
+    public GuidanceTarget SelectNextGuidanceTarget(
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ExperimentConditionPolicy policy)
+    {
         ResolveReferences();
         if (runtimeState == null)
         {
-            return string.Empty;
+            return null;
         }
 
         var preferred = runtimeState.nextTargetId;
+        var preferredRole = string.Equals(preferred, runtimeState.finalTargetId, System.StringComparison.Ordinal)
+            ? NavigationTargetRole.FinalTarget
+            : NavigationTargetRole.RouteSubgoal;
         if (policy == null || policy.UseSafeCandidateFilter != ConditionCapabilityMode.Enabled)
         {
-            return preferred;
+            return new GuidanceTarget(preferred, preferredRole);
         }
 
         if (navigationTargets == null || riskState == null || string.IsNullOrWhiteSpace(preferred))
         {
-            return preferred;
+            return new GuidanceTarget(preferred, preferredRole);
         }
 
         if (!IsDirectionUnsafe(navigationTargets.GetTargetDirection(preferred), riskState))
         {
-            return preferred;
+            return new GuidanceTarget(preferred, preferredRole);
         }
 
         var related = navigationTargets.GetRelatedTargetIds(runtimeState.currentExhibitId);
@@ -69,20 +84,21 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             if (navigationTargets.HasTarget(candidate) &&
                 IsDirectionSafe(navigationTargets.GetTargetDirection(candidate), riskState))
             {
-                return candidate;
+                return new GuidanceTarget(candidate, navigationTargets.GetSafetyTargetRole(candidate));
             }
         }
 
         foreach (var candidate in related)
         {
             if (navigationTargets.HasTarget(candidate) &&
+                IsNaturalDirection(navigationTargets.GetTargetDirection(candidate)) &&
                 !IsDirectionUnsafe(navigationTargets.GetTargetDirection(candidate), riskState))
             {
-                return candidate;
+                return new GuidanceTarget(candidate, navigationTargets.GetSafetyTargetRole(candidate));
             }
         }
 
-        return string.Empty;
+        return null;
     }
 
     private void ResolveReferences()
@@ -119,5 +135,10 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
 
         return false;
+    }
+
+    private static bool IsNaturalDirection(string direction)
+    {
+        return direction == "forward" || direction == "left" || direction == "right";
     }
 }

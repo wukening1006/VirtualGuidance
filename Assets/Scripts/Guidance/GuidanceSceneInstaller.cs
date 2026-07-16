@@ -294,6 +294,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         motionDetector?.Configure(userPoseTracker);
         xrTrackingAdapter?.Configure(userPoseTracker, physicalSpaceCalibration);
         boundaryVisualizer?.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, physicalSpaceCalibration);
+        navigationTargetManager?.Configure(userPoseTracker);
         navigationTargetManager?.RebuildIndex();
         semanticTargetSelector?.Configure(navigationTargetManager);
         arrivalDetector?.Configure(userPoseTracker, navigationTargetManager);

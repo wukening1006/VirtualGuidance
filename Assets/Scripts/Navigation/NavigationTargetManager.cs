@@ -4,19 +4,35 @@ using UnityEngine;
 
 /// <summary>
 /// 将场景中的 ExhibitMetadata 按 ID 建立索引，为语义选点、到达检测和本地安全校验提供查询。
-/// 目标方向按展品观看点的世界 X 位置归类为 left、forward 或 right。
+/// 目标方向基于用户当前 Virtual Position/Forward 计算，不依赖世界坐标 X。
 /// </summary>
 public sealed class NavigationTargetManager : MonoBehaviour
 {
     [SerializeField] private bool rebuildOnAwake = true;
+    [Tooltip("提供当前用户 Virtual Position/Forward；未配置时自动查找。")]
+    [SerializeField] private UserPoseTracker userPoseTracker;
+    [Tooltip("Forward 方向允许的半角，单位：度。")]
+    [SerializeField, Range(1f, 89f)] private float forwardHalfAngleDegrees = 30f;
+    [Tooltip("超过该绝对角度后归类为 Behind，单位：度。")]
+    [SerializeField, Range(91f, 179f)] private float behindThresholdDegrees = 150f;
 
     private readonly Dictionary<string, ExhibitMetadata> targetsById = new Dictionary<string, ExhibitMetadata>();
 
     private void Awake()
     {
+        ResolveReferences();
         if (rebuildOnAwake)
         {
             RebuildIndex();
+        }
+    }
+
+    /// <summary>注入用户虚拟位姿来源，供所有目标方向查询共享。</summary>
+    public void Configure(UserPoseTracker poseTracker)
+    {
+        if (poseTracker != null)
+        {
+            userPoseTracker = poseTracker;
         }
     }
 
@@ -63,7 +79,7 @@ public sealed class NavigationTargetManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 根据观看点世界 X 坐标返回 left、forward 或 right；未知目标降级为 forward。
+    /// 根据用户当前 Virtual Forward 返回 left、forward、right 或 behind；未知目标降级为 forward。
     /// </summary>
     /// <returns>供 RDW 风险标签匹配使用的英文方向值。</returns>
     public string GetTargetDirection(string targetId)
@@ -74,18 +90,46 @@ public sealed class NavigationTargetManager : MonoBehaviour
             return "forward";
         }
 
+        ResolveReferences();
         var anchor = target.ViewPoint != null ? target.ViewPoint : target.transform;
-        if (anchor.position.x < -0.5f)
+        var userPosition = userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero;
+        var userForward = userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward;
+        return ClassifyRelativeDirection(userPosition, userForward, anchor.position);
+    }
+
+    /// <summary>
+    /// 使用水平面 SignedAngle 将目标归类为 forward、left、right 或 behind。
+    /// </summary>
+    public string ClassifyRelativeDirection(Vector3 userPosition, Vector3 userForward, Vector3 targetPosition)
+    {
+        var forward = Vector3.ProjectOnPlane(userForward, Vector3.up);
+        var toTarget = Vector3.ProjectOnPlane(targetPosition - userPosition, Vector3.up);
+        if (forward.sqrMagnitude < 0.0001f || toTarget.sqrMagnitude < 0.0001f)
         {
-            return "left";
+            return "forward";
         }
 
-        if (anchor.position.x > 0.5f)
+        var angle = Vector3.SignedAngle(forward.normalized, toTarget.normalized, Vector3.up);
+        var absoluteAngle = Mathf.Abs(angle);
+        if (absoluteAngle <= forwardHalfAngleDegrees)
         {
-            return "right";
+            return "forward";
         }
 
-        return "forward";
+        if (absoluteAngle >= behindThresholdDegrees)
+        {
+            return "behind";
+        }
+
+        return angle < 0f ? "left" : "right";
+    }
+
+    /// <summary>返回安全候选在场景元数据中声明的 TargetRole。</summary>
+    public NavigationTargetRole GetSafetyTargetRole(string targetId)
+    {
+        return TryGetTarget(targetId, out var target) && target != null
+            ? target.SafetyTargetRole
+            : NavigationTargetRole.NavigableDetour;
     }
 
     private void EnsureIndex()
@@ -93,6 +137,14 @@ public sealed class NavigationTargetManager : MonoBehaviour
         if (targetsById.Count == 0)
         {
             RebuildIndex();
+        }
+    }
+
+    private void ResolveReferences()
+    {
+        if (userPoseTracker == null)
+        {
+            userPoseTracker = FindObjectOfType<UserPoseTracker>();
         }
     }
 }
