@@ -90,6 +90,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public string ActiveRequestId => activeSnapshot != null ? activeSnapshot.requestId : string.Empty;
     /// <summary>当前活动决策 ID；尚未构建请求时为空。</summary>
     public string ActiveDecisionId => activeSnapshot != null ? activeSnapshot.decisionId : string.Empty;
+    /// <summary>当前由任务状态持有的 Guidance Target。</summary>
+    public GuidanceTarget CurrentGuidanceTarget => taskController != null
+        ? taskController.RuntimeState.CurrentGuidanceTarget
+        : null;
 
     private void OnEnable()
     {
@@ -173,10 +177,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
         var selectedTarget = semanticTargetSelector != null
-            ? semanticTargetSelector.SelectNextTarget(taskController.RuntimeState, riskState, conditionPolicy)
-            : taskController.RuntimeState.nextTargetId;
+            ? semanticTargetSelector.SelectNextGuidanceTarget(taskController.RuntimeState, riskState, conditionPolicy)
+            : new GuidanceTarget(
+                taskController.RuntimeState.nextTargetId,
+                string.Equals(
+                    taskController.RuntimeState.nextTargetId,
+                    taskController.RuntimeState.finalTargetId,
+                    StringComparison.Ordinal)
+                    ? NavigationTargetRole.FinalTarget
+                    : NavigationTargetRole.RouteSubgoal);
 
-        if (string.IsNullOrWhiteSpace(selectedTarget))
+        if (selectedTarget == null || string.IsNullOrWhiteSpace(selectedTarget.TargetId) ||
+            !taskController.TrySetGuidanceTarget(selectedTarget))
         {
             SetRequestPhase(GuidanceRequestPhase.Failed);
             pauseResetController?.PauseForReset("No safe semantic navigation candidate is available.");
@@ -184,10 +196,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        arrivalDetector?.WatchTarget(selectedTarget);
-        var context = taskController.BuildRequestContext(selectedTarget);
+        arrivalDetector?.WatchTarget(
+            selectedTarget.TargetRole == NavigationTargetRole.TurnCueAnchor
+                ? null
+                : selectedTarget.TargetId);
+        var context = taskController.BuildRequestContext(selectedTarget.TargetId);
         context.decision_id = Guid.NewGuid().ToString("N");
         context.state_version = taskController.RuntimeState.stateVersion;
+        context.target_role = GuidanceTypeUtility.TargetRoleToProtocol(selectedTarget.TargetRole);
         SetRequestPhase(GuidanceRequestPhase.Requested);
         requestClient.RequestGuidance(context);
     }
@@ -249,7 +265,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         SetRequestPhase(GuidanceRequestPhase.Verified);
         guidanceExecutor?.Apply(response);
-        if (response != null && !string.IsNullOrWhiteSpace(response.selected_target))
+        if (response != null && !string.IsNullOrWhiteSpace(response.selected_target) &&
+            (CurrentGuidanceTarget == null ||
+             CurrentGuidanceTarget.TargetRole != NavigationTargetRole.TurnCueAnchor))
         {
             arrivalDetector?.WatchTarget(response.selected_target);
         }
@@ -274,27 +292,32 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public void HandleTargetArrived(string targetId)
     {
         var state = taskController != null ? taskController.RuntimeState : null;
-        if (state == null || !state.IsNavigating ||
-            !string.Equals(targetId, state.nextTargetId, StringComparison.Ordinal))
+        var guidanceTarget = state != null ? state.CurrentGuidanceTarget : null;
+        if (state == null || !state.IsNavigating || guidanceTarget == null ||
+            guidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor ||
+            !string.Equals(targetId, guidanceTarget.TargetId, StringComparison.Ordinal))
         {
             return;
         }
 
-        if (requestPhase == GuidanceRequestPhase.Executing)
+        FinishActiveGuidanceForProgress();
+
+        if (guidanceTarget.TargetRole == NavigationTargetRole.NavigableDetour)
         {
-            SetRequestPhase(GuidanceRequestPhase.Completed);
-        }
-        else if (requestPhase == GuidanceRequestPhase.Requested ||
-                 requestPhase == GuidanceRequestPhase.Received ||
-                 requestPhase == GuidanceRequestPhase.Verified)
-        {
-            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+            if (!taskController.HandleDetourArrived(targetId))
+            {
+                return;
+            }
+
+            Replanning?.Invoke(state);
+            RequestNextGuidance();
+            return;
         }
 
-        requestClient?.CancelPendingRequest();
-        guidanceExecutor?.Clear();
-        rotationGainController?.StopGain();
-        activeSnapshot = null;
+        if (!string.Equals(targetId, state.nextTargetId, StringComparison.Ordinal))
+        {
+            return;
+        }
 
         var previousVersion = state.stateVersion;
         taskController.HandleArrived(targetId);
@@ -307,6 +330,29 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         {
             arrivalDetector?.WatchTarget(null);
             TaskCompleted?.Invoke(state);
+            return;
+        }
+
+        Replanning?.Invoke(state);
+        RequestNextGuidance();
+    }
+
+    /// <summary>
+    /// 接收用户已完成 TurnCueAnchor 转向的反馈；不触发普通 Arrival Task Progress。
+    /// </summary>
+    public void HandleTurnCueCompleted()
+    {
+        var state = taskController != null ? taskController.RuntimeState : null;
+        var target = state != null ? state.CurrentGuidanceTarget : null;
+        if (state == null || !state.IsNavigating || target == null ||
+            target.TargetRole != NavigationTargetRole.TurnCueAnchor)
+        {
+            return;
+        }
+
+        FinishActiveGuidanceForProgress();
+        if (!taskController.HandleTurnCueCompleted(target.TargetId))
+        {
             return;
         }
 
@@ -341,6 +387,25 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         requestPhase = nextPhase;
         RequestPhaseChanged?.Invoke(requestPhase);
+    }
+
+    private void FinishActiveGuidanceForProgress()
+    {
+        if (requestPhase == GuidanceRequestPhase.Executing)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Completed);
+        }
+        else if (requestPhase == GuidanceRequestPhase.Requested ||
+                 requestPhase == GuidanceRequestPhase.Received ||
+                 requestPhase == GuidanceRequestPhase.Verified)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+        }
+
+        requestClient?.CancelPendingRequest();
+        guidanceExecutor?.Clear();
+        rotationGainController?.StopGain();
+        activeSnapshot = null;
     }
 
     private void TriggerRuntimeIntervention(GuidanceResponse response, string reason)

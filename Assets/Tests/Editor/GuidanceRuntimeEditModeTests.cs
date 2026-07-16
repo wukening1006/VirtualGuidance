@@ -578,6 +578,106 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceRuntimeState_PreventsRepeatedOrUnlimitedNavigableDetours()
+    {
+        var state = new GuidanceRuntimeState();
+        state.Begin("T2_main_target", "E1", "E3", "E5", detourLimit: 2);
+
+        Assert.That(
+            state.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
+            Is.True);
+        Assert.That(state.activeDetourId, Is.EqualTo("E2"));
+        Assert.That(state.consecutiveDetourCount, Is.EqualTo(1));
+        Assert.That(
+            state.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
+            Is.True);
+        Assert.That(state.consecutiveDetourCount, Is.EqualTo(1));
+        Assert.That(state.CompleteDetour("E2"), Is.True);
+        Assert.That(state.currentExhibitId, Is.EqualTo("E2"));
+        Assert.That(state.nextTargetId, Is.EqualTo("E3"));
+        Assert.That(state.HasVisitedDetour("E2"), Is.True);
+        Assert.That(
+            state.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
+            Is.False);
+
+        Assert.That(
+            state.TrySetGuidanceTarget(new GuidanceTarget("E4", NavigationTargetRole.NavigableDetour)),
+            Is.True);
+        Assert.That(state.CompleteDetour("E4"), Is.True);
+        Assert.That(state.consecutiveDetourCount, Is.EqualTo(2));
+        Assert.That(
+            state.TrySetGuidanceTarget(new GuidanceTarget("E6", NavigationTargetRole.NavigableDetour)),
+            Is.False);
+    }
+
+    [Test]
+    public void GuidanceCoordinator_NavigableDetourArrivalPreservesRouteAndReplans()
+    {
+        var root = new GameObject("NavigableDetourFlowTest");
+        root.SetActive(false);
+        try
+        {
+            var task = CreateRouteTask(root);
+            Assert.That(
+                task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
+                Is.True);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            coordinator.HandleTargetArrived("E2");
+
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E2"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.HasVisitedDetour("E2"), Is.True);
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E2"));
+            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts[0].target_role, Is.EqualTo("route_subgoal"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_TurnCueRequiresTurnFeedbackAndDoesNotAdvanceRoute()
+    {
+        var root = new GameObject("TurnCueAnchorFlowTest");
+        root.SetActive(false);
+        try
+        {
+            var task = CreateRouteTask(root);
+            Assert.That(
+                task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.TurnCueAnchor)),
+                Is.True);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            coordinator.HandleTargetArrived("E2");
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts, Is.Empty);
+
+            coordinator.HandleTurnCueCompleted();
+
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.True);
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void GuidanceCoordinator_TracksRequestLifecycleAcrossTwoGuidanceDecisions()
     {
         var root = new GameObject("GuidanceRequestLifecycleTest");
@@ -1393,6 +1493,7 @@ public sealed class GuidanceRuntimeEditModeTests
             "request_id",
             "decision_id",
             "state_version",
+            "target_role",
             "condition",
             "task_id",
             "physical_space_id",
@@ -1409,6 +1510,7 @@ public sealed class GuidanceRuntimeEditModeTests
             "request_id",
             "decision_id",
             "state_version",
+            "target_role",
             "selected_target",
             "route_decision",
             "narration",
@@ -1491,6 +1593,7 @@ public sealed class GuidanceRuntimeEditModeTests
             request_id = requestId,
             decision_id = context.decision_id,
             state_version = context.state_version,
+            target_role = context.target_role,
             current_exhibit = context.current_exhibit,
             semantic_next_target = context.semantic_next_target,
             physical_space_id = "narrow_room"
@@ -1504,6 +1607,7 @@ public sealed class GuidanceRuntimeEditModeTests
             request_id = request.request_id,
             decision_id = request.decision_id,
             state_version = request.state_version,
+            target_role = request.target_role,
             selected_target = selectedTarget,
             movement_instruction = "move_forward_slowly",
             verifier = new VerifierResult { approved = true, reason = "ok" }
@@ -1528,6 +1632,20 @@ public sealed class GuidanceRuntimeEditModeTests
             CancelCount++;
             RequestInFlight = false;
         }
+    }
+
+    private static GuidanceTaskController CreateRouteTask(GameObject root)
+    {
+        var task = root.AddComponent<GuidanceTaskController>();
+        task.ConfigureTask(new GuidanceTaskDefinition
+        {
+            startExhibitId = "E1",
+            finalTargetId = "E5",
+            routeTargetIds = new[] { "E1", "E3", "E5" },
+            maxConsecutiveDetours = 2
+        });
+        task.StartTask();
+        return task;
     }
 
     private static void SetPrivateField<T>(object target, string fieldName, T value)

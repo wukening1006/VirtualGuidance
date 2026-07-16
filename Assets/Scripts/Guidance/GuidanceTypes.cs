@@ -16,6 +16,9 @@ public sealed class GuidanceRequest
     /// <summary>请求生成时的任务状态版本。</summary>
     public int state_version;
 
+    /// <summary>当前 Guidance Target 的协议角色。</summary>
+    public string target_role = "route_subgoal";
+
     /// <summary>
     /// 当前实验条件，例如 ours_full 或 baseline 条件名。
     /// </summary>
@@ -104,6 +107,9 @@ public sealed class GuidanceResponse
     /// <summary>对应 GuidanceRequest 的任务状态版本。</summary>
     public int state_version;
 
+    /// <summary>后端确认的 Guidance Target 协议角色。</summary>
+    public string target_role;
+
     /// <summary>
     /// 后端选择的目标展品 ID。
     /// </summary>
@@ -162,6 +168,9 @@ public sealed class GuidanceRequestContext
     /// <summary>请求对应的任务状态版本。</summary>
     public int state_version;
 
+    /// <summary>协调器选择的 Guidance Target 协议角色。</summary>
+    public string target_role = "route_subgoal";
+
     /// <summary>
     /// 默认实验条件，例如 B1_mllm_only 或 ours_full。
     /// </summary>
@@ -204,6 +213,22 @@ public sealed class GuidanceRequestContext
 /// </summary>
 public static class GuidanceTypeUtility
 {
+    /// <summary>将 Unity TargetRole 转换为跨端稳定协议值。</summary>
+    public static string TargetRoleToProtocol(NavigationTargetRole role)
+    {
+        switch (role)
+        {
+            case NavigationTargetRole.FinalTarget:
+                return "final_target";
+            case NavigationTargetRole.TurnCueAnchor:
+                return "turn_cue_anchor";
+            case NavigationTargetRole.NavigableDetour:
+                return "navigable_detour";
+            default:
+                return "route_subgoal";
+        }
+    }
+
     /// <summary>
     /// 将二维向量转换为后端 JSON 使用的 float 数组。
     /// </summary>

@@ -19,6 +19,7 @@ def base_payload(condition: str) -> dict:
         "request_id": "request-test-001",
         "decision_id": "decision-test-001",
         "state_version": 3,
+        "target_role": "route_subgoal",
         "condition": condition,
         "task_id": "T2_main_target",
         "physical_space_id": "narrow_room",
@@ -83,6 +84,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "request_id",
         "decision_id",
         "state_version",
+        "target_role",
         "selected_target",
         "route_decision",
         "narration",
@@ -97,6 +99,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert body["request_id"] == "request-test-001"
     assert body["decision_id"] == "decision-test-001"
     assert body["state_version"] == 3
+    assert body["target_role"] == "route_subgoal"
     assert_chinese_narration(body)
 
     record = read_log_records(tmp_path)[0]

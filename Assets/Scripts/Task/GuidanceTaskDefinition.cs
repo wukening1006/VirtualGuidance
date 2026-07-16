@@ -21,4 +21,6 @@ public sealed class GuidanceTaskDefinition
     public string finalTargetId = "E5";
     /// <summary>包含起点在内的有序展品 ID；控制器按数组顺序推进。</summary>
     public string[] routeTargetIds = { "E1", "E3", "E5" };
+    /// <summary>返回原路线前允许连续使用的最大 NavigableDetour 数量。</summary>
+    public int maxConsecutiveDetours = 2;
 }

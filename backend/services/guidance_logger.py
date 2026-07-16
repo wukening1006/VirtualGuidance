@@ -40,6 +40,7 @@ class GuidanceLogger:
             request_id=request.request_id,
             decision_id=request.decision_id,
             state_version=request.state_version,
+            target_role=request.target_role,
             policy_version=policy.policy_version,
             raw_guidance=draft.model_dump(mode="json"),
             condition_verifier_result={

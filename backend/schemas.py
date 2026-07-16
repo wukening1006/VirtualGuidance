@@ -90,6 +90,13 @@ class TaskId(str, Enum):
     T4_NEXT_STEP = "T4_next_step"
 
 
+class NavigationTargetRole(str, Enum):
+    FINAL_TARGET = "final_target"
+    ROUTE_SUBGOAL = "route_subgoal"
+    TURN_CUE_ANCHOR = "turn_cue_anchor"
+    NAVIGABLE_DETOUR = "navigable_detour"
+
+
 class AvatarAction(str, Enum):
     POINT_LEFT = "point_left"
     POINT_RIGHT = "point_right"
@@ -125,6 +132,7 @@ class GuidanceRequest(BaseModel):
     request_id: str
     decision_id: str
     state_version: int = Field(ge=0)
+    target_role: NavigationTargetRole
     condition: Condition
     task_id: TaskId
     physical_space_id: str
@@ -163,6 +171,7 @@ class GuidanceResponse(BaseModel):
     request_id: str
     decision_id: str
     state_version: int
+    target_role: NavigationTargetRole
     selected_target: str
     route_decision: str
     narration: str
@@ -218,6 +227,7 @@ class GuidanceLogRecord(BaseModel):
     request_id: str
     decision_id: str
     state_version: int
+    target_role: str
     policy_version: str
     raw_guidance: dict[str, Any]
     condition_verifier_result: dict[str, Any]
@@ -273,6 +283,7 @@ def response_from_draft(
         request_id=request.request_id,
         decision_id=request.decision_id,
         state_version=request.state_version,
+        target_role=request.target_role,
         selected_target=draft.selected_target,
         route_decision=draft.route_decision,
         narration=draft.narration,

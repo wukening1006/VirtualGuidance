@@ -28,7 +28,12 @@ public sealed class GuidanceTaskController : MonoBehaviour
     public void BeginDefaultTask()
     {
         routeIndex = 0;
-        runtimeState.Begin(defaultTask.taskId, defaultTask.startExhibitId, GetRouteTarget(1), defaultTask.finalTargetId);
+        runtimeState.Begin(
+            defaultTask.taskId,
+            defaultTask.startExhibitId,
+            GetRouteTarget(1),
+            defaultTask.finalTargetId,
+            defaultTask.maxConsecutiveDetours);
         StateChanged?.Invoke(runtimeState);
     }
 
@@ -120,6 +125,40 @@ public sealed class GuidanceTaskController : MonoBehaviour
         {
             StateChanged?.Invoke(runtimeState);
         }
+    }
+
+    /// <summary>设置当前 Guidance Target，并应用 Detour 防循环规则。</summary>
+    public bool TrySetGuidanceTarget(GuidanceTarget target)
+    {
+        var previousVersion = runtimeState.stateVersion;
+        var accepted = runtimeState.TrySetGuidanceTarget(target);
+        if (accepted && runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return accepted;
+    }
+
+    /// <summary>完成 NavigableDetour，但不推进原 RouteSubgoal。</summary>
+    public bool HandleDetourArrived(string detourId)
+    {
+        var completed = runtimeState.CompleteDetour(detourId);
+        if (completed)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return completed;
+    }
+
+    /// <summary>完成 TurnCueAnchor，只记录转向反馈而不改变任务位置。</summary>
+    public bool HandleTurnCueCompleted(string anchorId)
+    {
+        var completed = runtimeState.CompleteTurnCue(anchorId);
+        if (completed)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return completed;
     }
 
     /// <summary>研究员暂停任务；暂停期间到达事件不会推进路线。</summary>

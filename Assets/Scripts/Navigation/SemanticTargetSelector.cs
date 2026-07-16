@@ -81,20 +81,24 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         // 明确列入 safe_directions 的候选优先于仅未被标记为危险的候选。
         foreach (var candidate in related)
         {
+            var role = navigationTargets.GetSafetyTargetRole(candidate);
             if (navigationTargets.HasTarget(candidate) &&
+                CanUseSafetyTarget(runtimeState, candidate, role) &&
                 IsDirectionSafe(navigationTargets.GetTargetDirection(candidate), riskState))
             {
-                return new GuidanceTarget(candidate, navigationTargets.GetSafetyTargetRole(candidate));
+                return new GuidanceTarget(candidate, role);
             }
         }
 
         foreach (var candidate in related)
         {
+            var role = navigationTargets.GetSafetyTargetRole(candidate);
             if (navigationTargets.HasTarget(candidate) &&
+                CanUseSafetyTarget(runtimeState, candidate, role) &&
                 IsNaturalDirection(navigationTargets.GetTargetDirection(candidate)) &&
                 !IsDirectionUnsafe(navigationTargets.GetTargetDirection(candidate), riskState))
             {
-                return new GuidanceTarget(candidate, navigationTargets.GetSafetyTargetRole(candidate));
+                return new GuidanceTarget(candidate, role);
             }
         }
 
@@ -140,5 +144,29 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     private static bool IsNaturalDirection(string direction)
     {
         return direction == "forward" || direction == "left" || direction == "right";
+    }
+
+    private static bool CanUseSafetyTarget(
+        GuidanceRuntimeState runtimeState,
+        string targetId,
+        NavigationTargetRole role)
+    {
+        if (role == NavigationTargetRole.TurnCueAnchor)
+        {
+            return !runtimeState.HasCompletedTurnCue(targetId);
+        }
+
+        if (role != NavigationTargetRole.NavigableDetour)
+        {
+            return true;
+        }
+
+        var sameActiveDetour = string.Equals(
+            runtimeState.activeDetourId,
+            targetId,
+            System.StringComparison.Ordinal);
+        return sameActiveDetour ||
+               (!runtimeState.HasVisitedDetour(targetId) &&
+                runtimeState.consecutiveDetourCount < runtimeState.maxConsecutiveDetours);
     }
 }

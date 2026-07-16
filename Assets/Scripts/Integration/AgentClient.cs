@@ -218,6 +218,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             request_id = Guid.NewGuid().ToString("N"),
             decision_id = EmptyFallback(context.decision_id, Guid.NewGuid().ToString("N")),
             state_version = context.state_version,
+            target_role = EmptyFallback(context.target_role, "route_subgoal"),
             condition = EmptyFallback(context.condition, "ours_full"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
             physical_space_id = EmptyFallback(physicalSpaceManager.CurrentSpaceId, "wide_room"),

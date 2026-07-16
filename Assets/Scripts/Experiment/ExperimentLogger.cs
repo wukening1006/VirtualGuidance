@@ -154,6 +154,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         Append(builder, "run_state", runState.ToString().ToLowerInvariant());
         Append(builder, "request_id", FirstNonEmpty(request?.request_id, response?.request_id));
         Append(builder, "decision_id", FirstNonEmpty(request?.decision_id, response?.decision_id));
+        Append(builder, "target_role", FirstNonEmpty(request?.target_role, response?.target_role));
         var stateVersion = request != null
             ? request.state_version
             : response != null

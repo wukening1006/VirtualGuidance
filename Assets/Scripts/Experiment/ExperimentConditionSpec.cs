@@ -45,6 +45,7 @@ public sealed class ExperimentConditionSpec
             userTask = userTask,
             startExhibitId = startExhibitId,
             finalTargetId = finalTargetId,
+            maxConsecutiveDetours = 2,
             routeTargetIds = routeTargetIds != null ? (string[])routeTargetIds.Clone() : Array.Empty<string>()
         };
     }
