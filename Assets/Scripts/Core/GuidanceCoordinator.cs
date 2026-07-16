@@ -20,8 +20,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private RejectionPanel rejectionPanel;
 
     private GuidanceRequestSnapshot activeSnapshot;
+    private IGuidanceRequestClient requestClient;
 
     public event Action<string> GuidanceRejected;
+    /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
+    public event Action<GuidanceRuntimeState> Replanning;
+    /// <summary>到达最终目标、任务进入 Completed 时触发。</summary>
+    public event Action<GuidanceRuntimeState> TaskCompleted;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -30,6 +35,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void OnEnable()
     {
+        if (requestClient == null)
+        {
+            requestClient = agentClient;
+        }
         BindRequestCapture();
         BindArrival();
     }
@@ -59,7 +68,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRequestCapture();
         UnbindArrival();
 
-        if (client != null) agentClient = client;
+        if (client != null)
+        {
+            agentClient = client;
+            requestClient = client;
+        }
         if (executor != null) guidanceExecutor = executor;
         if (task != null) taskController = task;
         if (targetManager != null) navigationTargets = targetManager;
@@ -76,11 +89,25 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
+    /// 替换请求传输实现；正式运行使用 AgentClient，流程测试可使用内存客户端。
+    /// </summary>
+    public void ConfigureRequestClient(IGuidanceRequestClient client)
+    {
+        requestClient = client;
+    }
+
+    /// <summary>
     /// 根据最新物理风险选择安全语义目标并发起 guidance 请求；无可用目标时进入暂停重置流程。
     /// </summary>
     public void RequestNextGuidance()
     {
-        if (agentClient == null || taskController == null || !taskController.RuntimeState.IsNavigating)
+        if (requestClient == null)
+        {
+            requestClient = agentClient;
+        }
+
+        if (requestClient == null || taskController == null || !taskController.RuntimeState.IsNavigating ||
+            requestClient.RequestInFlight)
         {
             return;
         }
@@ -98,7 +125,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         arrivalDetector?.WatchTarget(selectedTarget);
-        agentClient.RequestGuidance(taskController.BuildRequestContext(selectedTarget));
+        requestClient.RequestGuidance(taskController.BuildRequestContext(selectedTarget));
     }
 
     /// <summary>
@@ -162,9 +189,39 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             taskController != null ? taskController.RuntimeState : null);
     }
 
-    private void HandleTargetArrived(string targetId)
+    /// <summary>
+    /// 处理当前路线目标到达：取消旧执行、推进任务，并在未完成时自动重新规划下一段 Guidance。
+    /// </summary>
+    public void HandleTargetArrived(string targetId)
     {
-        taskController?.HandleArrived(targetId);
+        var state = taskController != null ? taskController.RuntimeState : null;
+        if (state == null || !state.IsNavigating ||
+            !string.Equals(targetId, state.nextTargetId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        requestClient?.CancelPendingRequest();
+        guidanceExecutor?.Clear();
+        rotationGainController?.StopGain();
+        activeSnapshot = null;
+
+        var previousVersion = state.stateVersion;
+        taskController.HandleArrived(targetId);
+        if (state.stateVersion == previousVersion)
+        {
+            return;
+        }
+
+        if (state.IsCompleted)
+        {
+            arrivalDetector?.WatchTarget(null);
+            TaskCompleted?.Invoke(state);
+            return;
+        }
+
+        Replanning?.Invoke(state);
+        RequestNextGuidance();
     }
 
     private void BindRequestCapture()

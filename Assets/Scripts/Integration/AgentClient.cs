@@ -6,9 +6,24 @@ using UnityEngine.Events;
 using UnityEngine.Networking;
 
 /// <summary>
+/// 定义 GuidanceCoordinator 使用的最小请求客户端契约，隔离 HTTP 传输与任务编排。
+/// </summary>
+public interface IGuidanceRequestClient
+{
+    /// <summary>当前是否已有请求等待响应。</summary>
+    bool RequestInFlight { get; }
+
+    /// <summary>按任务上下文发起一次 Guidance 请求。</summary>
+    void RequestGuidance(GuidanceRequestContext context);
+
+    /// <summary>废弃当前在途请求，确保旧响应不再进入业务流程。</summary>
+    void CancelPendingRequest();
+}
+
+/// <summary>
 /// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
-public sealed class AgentClient : MonoBehaviour
+public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 {
     [Header("后端接口")]
     [Tooltip("后端 guidance endpoint 地址。")]

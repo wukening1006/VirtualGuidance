@@ -510,6 +510,56 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceCoordinator_ArrivalAutomaticallyReplansUntilFinalTargetCompletes()
+    {
+        var root = new GameObject("GuidanceContinuousLoopTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                taskId = "T2_main_target",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var replanningCount = 0;
+            var completedCount = 0;
+            coordinator.Replanning += _ => replanningCount++;
+            coordinator.TaskCompleted += _ => completedCount++;
+
+            coordinator.RequestNextGuidance();
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E1"));
+            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+
+            coordinator.HandleTargetArrived("E3");
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(2));
+            Assert.That(requests.Contexts[1].current_exhibit, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("E5"));
+            Assert.That(replanningCount, Is.EqualTo(1));
+
+            coordinator.HandleTargetArrived("E5");
+            Assert.That(task.RuntimeState.IsCompleted, Is.True);
+            Assert.That(requests.Contexts.Count, Is.EqualTo(2));
+            Assert.That(completedCount, Is.EqualTo(1));
+            Assert.That(requests.CancelCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void PhysicalSpaceCalibration_ZeroOffsetMapsRawPoseDirectly()
     {
         var root = new GameObject("PhysicalCalibrationZeroTest");
@@ -1045,6 +1095,26 @@ public sealed class GuidanceRuntimeEditModeTests
     private static float YawOf(Vector2 forward)
     {
         return Mathf.Atan2(forward.x, forward.y) * Mathf.Rad2Deg;
+    }
+
+    private sealed class RecordingGuidanceRequestClient : IGuidanceRequestClient
+    {
+        public readonly System.Collections.Generic.List<GuidanceRequestContext> Contexts =
+            new System.Collections.Generic.List<GuidanceRequestContext>();
+
+        public bool RequestInFlight { get; set; }
+        public int CancelCount { get; private set; }
+
+        public void RequestGuidance(GuidanceRequestContext context)
+        {
+            Contexts.Add(context);
+        }
+
+        public void CancelPendingRequest()
+        {
+            CancelCount++;
+            RequestInFlight = false;
+        }
     }
 
     private static void SetPrivateField<T>(object target, string fieldName, T value)
