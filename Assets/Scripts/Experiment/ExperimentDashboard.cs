@@ -39,6 +39,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private float completionSecondsRemaining;
     private string lastStatusMessage = "Initializing";
     private float nextReadinessRefreshTime;
+    private bool runtimeInterventionActive;
 
     public event Action<ExperimentRunState> SessionStateChanged;
     public event Action<float> CompletionCountdownChanged;
@@ -283,6 +284,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         pauseResetController?.ResumeAfterReset();
+        runtimeInterventionActive = false;
         experimentLogger?.Session?.EndPause();
         if (taskController != null)
         {
@@ -404,7 +406,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
             taskController?.PauseForReset();
         }
         pauseResetController?.PauseForReset(reason);
-        participantUiController?.ShowCriticalSafety();
+        if (runtimeInterventionActive)
+            participantUiController?.ShowRuntimeIntervention();
+        else
+            participantUiController?.ShowCriticalSafety();
         experimentLogger?.LogStatus("safety_hold", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);
     }
 
@@ -414,14 +419,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
         TransitionTo(ExperimentRunState.Error, reason);
         participantUiController?.ShowSystemUnavailable();
         experimentLogger?.LogStatus("session_error", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);
-    }
-
-    private void EnterUnsafeDirectionError(string reason)
-    {
-        FreezeExperimentBehavior();
-        TransitionTo(ExperimentRunState.Error, reason);
-        participantUiController?.ShowUnsafeDirection();
-        experimentLogger?.LogStatus("unsafe_direction_rejected", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);
     }
 
     private void FreezeExperimentBehavior()
@@ -507,11 +504,36 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (IsSessionActiveState())
         {
             var resolvedReason = string.IsNullOrWhiteSpace(reason) ? "guidance validation failed" : reason;
-            if (resolvedReason.IndexOf("unsafe", StringComparison.OrdinalIgnoreCase) >= 0)
-                EnterUnsafeDirectionError(resolvedReason);
-            else
-                EnterError(resolvedReason);
+            EnterError(resolvedReason);
         }
+    }
+
+    private void HandleRuntimeIntervention(RuntimeInterventionInfo intervention)
+    {
+        runtimeInterventionActive = true;
+        participantUiController?.ShowRuntimeIntervention();
+        experimentLogger?.LogRuntimeIntervention(
+            intervention != null ? intervention.Response : null,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            intervention != null ? intervention.Reason : "runtime safety intervention");
+    }
+
+    private void HandleGuidanceExecuted(GuidanceResponse response)
+    {
+        experimentLogger?.LogGuidanceExecuted(
+            response,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState);
+    }
+
+    private void HandleGuidanceExpired(string reason)
+    {
+        experimentLogger?.LogStatus(
+            "guidance_expired",
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            reason);
     }
 
     private void StartCompletionCountdown()
@@ -648,6 +670,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             guidanceCoordinator.GuidanceRejected -= HandleGuidanceRejected;
             guidanceCoordinator.GuidanceRejected += HandleGuidanceRejected;
+            guidanceCoordinator.RuntimeIntervention -= HandleRuntimeIntervention;
+            guidanceCoordinator.RuntimeIntervention += HandleRuntimeIntervention;
+            guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
+            guidanceCoordinator.GuidanceExecuted += HandleGuidanceExecuted;
+            guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
+            guidanceCoordinator.GuidanceExpired += HandleGuidanceExpired;
         }
 
         if (riskEvaluator != null)
@@ -667,7 +695,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
             agentClient.BackendOnlineChanged.RemoveListener(HandleBackendOnlineChanged);
         }
         if (taskController != null) taskController.StateChanged -= HandleTaskStateChanged;
-        if (guidanceCoordinator != null) guidanceCoordinator.GuidanceRejected -= HandleGuidanceRejected;
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.GuidanceRejected -= HandleGuidanceRejected;
+            guidanceCoordinator.RuntimeIntervention -= HandleRuntimeIntervention;
+            guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
+            guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
+        }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
     }
 

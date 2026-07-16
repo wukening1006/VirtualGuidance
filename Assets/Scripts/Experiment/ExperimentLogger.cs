@@ -60,7 +60,44 @@ public sealed class ExperimentLogger : MonoBehaviour
     /// <summary>记录后端响应及响应到达时的物理风险状态。</summary>
     public void LogResponse(GuidanceResponse response, PhysicalRiskState riskState)
     {
-        Write("response_received", null, null, response, riskState, null, "response received");
+        Write("response_received", null, null, response, riskState, null, "response received", "pending");
+    }
+
+    /// <summary>记录 Hard Runtime Safety 阻止的原始 Guidance 与干预原因。</summary>
+    public void LogRuntimeIntervention(
+        GuidanceResponse response,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string reason)
+    {
+        Write(
+            "runtime_intervention",
+            null,
+            null,
+            response,
+            riskState,
+            runtimeState,
+            reason,
+            "rejected",
+            runtimeIntervention: true);
+    }
+
+    /// <summary>记录通过运行时验证并实际开始执行的 Guidance。</summary>
+    public void LogGuidanceExecuted(
+        GuidanceResponse response,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        Write(
+            "guidance_executed",
+            null,
+            null,
+            response,
+            riskState,
+            runtimeState,
+            "guidance executed",
+            "approved",
+            executed: true);
     }
 
     /// <summary>记录任务、风险或请求失败等通用运行事件。</summary>
@@ -88,7 +125,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         GuidanceResponse response,
         PhysicalRiskState riskState,
         GuidanceRuntimeState runtimeState,
-        string message)
+        string message,
+        string runtimeValidationResult = "",
+        bool runtimeIntervention = false,
+        bool executed = false)
     {
         // 没有有效会话时不创建无归属日志，避免不同实验运行的数据混入同一文件。
         if (session == null || !session.IsActive || string.IsNullOrWhiteSpace(logPath))
@@ -102,19 +142,38 @@ public sealed class ExperimentLogger : MonoBehaviour
         Append(builder, "event_type", eventType);
         Append(builder, "session_id", session.sessionId);
         // 事件携带的数据最接近发生时状态，缺失时才回退到条件和会话快照。
+        var condition = FirstNonEmpty(request?.condition, spec?.condition, session.condition);
         Append(builder, "participant_id", FirstNonEmpty(request?.participant_id, spec?.participantId, session.participantId));
-        Append(builder, "condition", FirstNonEmpty(request?.condition, spec?.condition, session.condition));
+        Append(builder, "condition", condition);
+        Append(builder, "policy_version", ExperimentConditionPolicy.CurrentVersion);
         Append(builder, "task_id", FirstNonEmpty(request?.task_id, spec?.taskId, session.taskId));
         Append(builder, "physical_space", FirstNonEmpty(request?.physical_space_id, spec?.physicalSpaceId, session.physicalSpaceId));
         Append(builder, "current_exhibit", FirstNonEmpty(request?.current_exhibit, spec?.startExhibitId, runtimeState?.currentExhibitId));
         Append(builder, "semantic_next_target", FirstNonEmpty(request?.semantic_next_target, spec?.semanticNextTargetId, runtimeState?.nextTargetId));
         Append(builder, "runtime_phase", runtimeState != null ? runtimeState.phase.ToString() : string.Empty);
         Append(builder, "run_state", runState.ToString().ToLowerInvariant());
-        Append(builder, "state_version", runtimeState != null ? runtimeState.stateVersion.ToString(CultureInfo.InvariantCulture) : "0", raw: true);
+        Append(builder, "request_id", FirstNonEmpty(request?.request_id, response?.request_id));
+        Append(builder, "decision_id", FirstNonEmpty(request?.decision_id, response?.decision_id));
+        var stateVersion = request != null
+            ? request.state_version
+            : response != null
+                ? response.state_version
+                : runtimeState != null ? runtimeState.stateVersion : 0;
+        Append(builder, "state_version", stateVersion.ToString(CultureInfo.InvariantCulture), raw: true);
         Append(builder, "selected_target", response != null ? response.selected_target : string.Empty);
         Append(builder, "movement_instruction", response != null ? response.movement_instruction : string.Empty);
         Append(builder, "verifier_approved", response != null && response.verifier != null && response.verifier.approved ? "true" : "false", raw: true);
         Append(builder, "verifier_reason", response != null && response.verifier != null ? response.verifier.reason : string.Empty);
+        Append(builder, "raw_guidance", response != null ? JsonUtility.ToJson(response) : string.Empty);
+        Append(
+            builder,
+            "condition_verifier_result",
+            response == null || response.verifier == null
+                ? string.Empty
+                : response.verifier.approved ? "approved" : "rejected");
+        Append(builder, "runtime_validation_result", runtimeValidationResult);
+        Append(builder, "runtime_intervention", runtimeIntervention ? "true" : "false", raw: true);
+        Append(builder, "executed_guidance", executed && response != null ? JsonUtility.ToJson(response) : string.Empty);
         Append(builder, "boundary_risk", riskState != null ? riskState.boundary_risk : string.Empty);
         Append(builder, "reset_required", riskState != null && riskState.reset_required ? "true" : "false", raw: true);
         Append(builder, "unsafe_directions", riskState != null ? Join(riskState.unsafe_directions) : string.Empty);

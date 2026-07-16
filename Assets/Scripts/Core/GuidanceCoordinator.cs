@@ -27,6 +27,24 @@ public enum GuidanceRequestPhase
 }
 
 /// <summary>
+/// 描述一次 Hard Runtime Safety 干预，保留原始响应与拒绝原因供日志还原。
+/// </summary>
+public sealed class RuntimeInterventionInfo
+{
+    /// <summary>被 Hard Runtime Safety 阻止的原始 Guidance。</summary>
+    public GuidanceResponse Response { get; }
+    /// <summary>运行时拒绝原因。</summary>
+    public string Reason { get; }
+
+    /// <summary>创建一条不可变 Runtime Intervention 事件。</summary>
+    public RuntimeInterventionInfo(GuidanceResponse response, string reason)
+    {
+        Response = response;
+        Reason = reason;
+    }
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
@@ -55,6 +73,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceRuntimeState> TaskCompleted;
     /// <summary>Guidance 请求生命周期发生变化时触发。</summary>
     public event Action<GuidanceRequestPhase> RequestPhaseChanged;
+    /// <summary>Hard Runtime Safety 阻止危险 Guidance 时触发。</summary>
+    public event Action<RuntimeInterventionInfo> RuntimeIntervention;
+    /// <summary>通过全部验证并开始执行 Guidance 时触发。</summary>
+    public event Action<GuidanceResponse> GuidanceExecuted;
+    /// <summary>响应因请求身份或状态变化过期时触发。</summary>
+    public event Action<string> GuidanceExpired;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -188,22 +212,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (activeSnapshot != null && !activeSnapshot.MatchesResponse(response))
         {
-            guidanceExecutor?.Clear();
-            SetRequestPhase(GuidanceRequestPhase.Expired);
-            GuidanceRejected?.Invoke("Guidance response identity does not match the active request.");
+            ExpireAndReplan("Guidance response identity does not match the active request.");
             return;
         }
 
-        if (response == null || response.verifier == null || !response.verifier.approved)
+        if (response == null || response.verifier == null)
         {
             guidanceExecutor?.Apply(response);
             var verifierReason = response == null
                 ? "Guidance response is null."
-                : response.verifier == null
-                    ? "Guidance verifier result is missing."
-                    : response.verifier.reason;
+                : "Guidance verifier result is missing.";
             SetRequestPhase(GuidanceRequestPhase.Failed);
             GuidanceRejected?.Invoke(string.IsNullOrWhiteSpace(verifierReason) ? "Guidance rejected by verifier." : verifierReason);
+            return;
+        }
+
+        if (!response.verifier.approved)
+        {
+            TriggerRuntimeIntervention(response, response.verifier.reason);
             return;
         }
 
@@ -211,19 +237,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (localValidator != null &&
             !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
         {
-            guidanceExecutor?.Clear();
-            rejectionPanel?.Show(reason);
-            if (riskState != null && riskState.reset_required)
+            if (reason.IndexOf("state changed", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                pauseResetController?.PauseForReset(reason);
-                taskController?.PauseForReset();
+                ExpireAndReplan(reason);
+                return;
             }
 
-            SetRequestPhase(reason.IndexOf("state changed", StringComparison.OrdinalIgnoreCase) >= 0
-                ? GuidanceRequestPhase.Expired
-                : GuidanceRequestPhase.Failed);
-            GuidanceRejected?.Invoke(reason);
-
+            TriggerRuntimeIntervention(response, reason);
             return;
         }
 
@@ -236,6 +256,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         rotationGainController?.QueueFromMovementInstruction(response != null ? response.movement_instruction : string.Empty);
         SetRequestPhase(GuidanceRequestPhase.Executing);
+        GuidanceExecuted?.Invoke(response);
     }
 
     private void HandleRequestBuilt(GuidanceRequest request)
@@ -320,6 +341,32 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         requestPhase = nextPhase;
         RequestPhaseChanged?.Invoke(requestPhase);
+    }
+
+    private void TriggerRuntimeIntervention(GuidanceResponse response, string reason)
+    {
+        var resolvedReason = string.IsNullOrWhiteSpace(reason)
+            ? "Hard Runtime Safety rejected unsafe guidance."
+            : reason;
+        requestClient?.CancelPendingRequest();
+        guidanceExecutor?.Clear();
+        rotationGainController?.StopGain();
+        arrivalDetector?.WatchTarget(null);
+        activeSnapshot = null;
+        SetRequestPhase(GuidanceRequestPhase.Failed);
+        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(response, resolvedReason));
+        pauseResetController?.PauseForReset("请停止移动，等待安全引导。");
+        taskController?.PauseForReset();
+    }
+
+    private void ExpireAndReplan(string reason)
+    {
+        guidanceExecutor?.Clear();
+        rotationGainController?.StopGain();
+        activeSnapshot = null;
+        SetRequestPhase(GuidanceRequestPhase.Expired);
+        GuidanceExpired?.Invoke(reason);
+        RequestNextGuidance();
     }
 
     private void BindRequestCapture()

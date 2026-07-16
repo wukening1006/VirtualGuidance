@@ -12,6 +12,8 @@ from backend.schemas import (
     GuideDraft,
     PhysicalRiskState,
     VerifierResult,
+    ConditionCapabilityMode,
+    condition_policy_for,
 )
 
 
@@ -31,12 +33,23 @@ class GuidanceLogger:
         semantic_next_target: str,
     ) -> Path:
         timestamp = datetime.now(timezone.utc).isoformat()
+        policy = condition_policy_for(request.condition)
         # 同一行同时记录 proposed guidance 和 verifier 结果，分析时无需重放状态即可比较 baseline 和 ours_full。
         record = GuidanceLogRecord(
             timestamp=timestamp,
             request_id=request.request_id,
             decision_id=request.decision_id,
             state_version=request.state_version,
+            policy_version=policy.policy_version,
+            raw_guidance=draft.model_dump(mode="json"),
+            condition_verifier_result={
+                "applied": policy.use_model_verifier == ConditionCapabilityMode.ENABLED,
+                "approved": verifier.approved,
+                "reason": verifier.reason,
+            },
+            runtime_validation_result="pending_unity",
+            runtime_intervention=None,
+            executed_guidance=None,
             participant_id=request.participant_id,
             condition=request.condition,
             physical_space=risk_state.physical_space,

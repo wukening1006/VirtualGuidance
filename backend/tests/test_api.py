@@ -103,6 +103,12 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert record["request_id"] == "request-test-001"
     assert record["decision_id"] == "decision-test-001"
     assert record["state_version"] == 3
+    assert record["policy_version"] == "condition-policy-v1"
+    assert record["raw_guidance"]["selected_target"] == body["selected_target"]
+    assert record["condition_verifier_result"]["applied"] is True
+    assert record["runtime_validation_result"] == "pending_unity"
+    assert record["runtime_intervention"] is None
+    assert record["executed_guidance"] is None
 
 
 def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> None:

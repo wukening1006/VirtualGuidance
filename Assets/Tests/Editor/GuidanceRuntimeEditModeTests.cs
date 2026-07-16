@@ -72,7 +72,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void ExperimentDashboard_UnsafeGuidanceShowsSemanticStopMessage()
+    public void ExperimentDashboard_RuntimeInterventionEntersRecoverableSafetyHold()
     {
         var root = new GameObject("ExperimentDashboardUnsafeGuidanceTest");
         root.SetActive(false);
@@ -95,10 +95,25 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(dashboard, "participantUiController", participantUi);
             SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
 
-            InvokePrivate(dashboard, "HandleGuidanceRejected", "movement_instruction uses unsafe forward");
+            InvokePrivate(
+                dashboard,
+                "HandleRuntimeIntervention",
+                new RuntimeInterventionInfo(
+                    new GuidanceResponse
+                    {
+                        request_id = "request-unsafe",
+                        decision_id = "decision-unsafe",
+                        state_version = 1,
+                        movement_instruction = "move_forward_slowly"
+                    },
+                    "movement_instruction uses unsafe forward"));
+            var taskState = new GuidanceRuntimeState();
+            taskState.Begin("T2_main_target", "E1", "E3", "E5");
+            taskState.PauseForReset();
+            InvokePrivate(dashboard, "HandleTaskStateChanged", taskState);
 
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Error));
-            Assert.That(safetyText.text, Is.EqualTo("请停止前进"));
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(safetyText.text, Is.EqualTo("请停止移动，等待安全引导"));
         }
         finally
         {
@@ -1045,7 +1060,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void GuidanceCoordinator_VerifierRejectionPublishesReasonWithoutApplyingGuidance()
+    public void GuidanceCoordinator_VerifierRejectionTriggersRuntimeInterventionWithoutExperimentError()
     {
         var root = new GameObject("GuidanceCoordinatorVerifierTest");
         root.SetActive(false);
@@ -1071,8 +1086,8 @@ public sealed class GuidanceRuntimeEditModeTests
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
             coordinator.Configure(null, executor, task, null, null, null, null, null, null, null, rejection);
-            string rejectedReason = null;
-            coordinator.GuidanceRejected += reason => rejectedReason = reason;
+            RuntimeInterventionInfo intervention = null;
+            coordinator.RuntimeIntervention += value => intervention = value;
 
             coordinator.HandleGuidanceResponse(new GuidanceResponse
             {
@@ -1081,9 +1096,13 @@ public sealed class GuidanceRuntimeEditModeTests
                 verifier = new VerifierResult { approved = false, reason = "verifier blocked" }
             });
 
-            Assert.That(rejectedReason, Is.EqualTo("verifier blocked"));
+            Assert.That(intervention, Is.Not.Null);
+            Assert.That(intervention.Reason, Is.EqualTo("verifier blocked"));
             Assert.That(narrationText.text, Is.Empty);
-            Assert.That(rejectionText.text, Does.Contain("verifier blocked"));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
         }
         finally
         {
@@ -1176,6 +1195,54 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentLogger_RecordsRawGuidanceRuntimeInterventionAndExecutedOutcome()
+    {
+        var root = new GameObject("ExperimentLoggerRuntimeInterventionTest");
+        string logPath = null;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-runtime-log"));
+            logPath = logger.LogPath;
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E3", "E5");
+            var response = new GuidanceResponse
+            {
+                request_id = "request-runtime-log",
+                decision_id = "decision-runtime-log",
+                state_version = runtime.stateVersion,
+                selected_target = "E5",
+                movement_instruction = "move_forward_slowly",
+                verifier = new VerifierResult { approved = true, reason = "baseline pass-through" }
+            };
+
+            logger.LogResponse(response, null);
+            logger.LogRuntimeIntervention(response, runtime, null, "unsafe forward");
+            logger.LogGuidanceExecuted(response, runtime, null);
+
+            var lines = File.ReadAllLines(logPath);
+            Assert.That(lines.Length, Is.EqualTo(4));
+            Assert.That(lines[1], Does.Contain("\"raw_guidance\":"));
+            Assert.That(lines[1], Does.Contain("\"runtime_validation_result\":\"pending\""));
+            Assert.That(lines[2], Does.Contain("\"event_type\":\"runtime_intervention\""));
+            Assert.That(lines[2], Does.Contain("\"runtime_intervention\":true"));
+            Assert.That(lines[2], Does.Contain("\"executed_guidance\":\"\""));
+            Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_executed\""));
+            Assert.That(lines[3], Does.Contain("\"runtime_intervention\":false"));
+            Assert.That(lines[3], Does.Not.Contain("\"executed_guidance\":\"\""));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
     public void ParticipantUiController_SafetyPanelExcludesGuidancePanel()
     {
         var root = new GameObject("ParticipantUiControllerTest");
@@ -1200,6 +1267,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(safetyGroup.alpha, Is.EqualTo(1f));
             Assert.That(safetyText.text, Is.EqualTo("请立即停止移动，等待研究员指引"));
             Assert.That(controller.SafetyVisible, Is.True);
+
+            controller.ShowRuntimeIntervention();
+            Assert.That(safetyText.text, Is.EqualTo("请停止移动，等待安全引导"));
         }
         finally
         {

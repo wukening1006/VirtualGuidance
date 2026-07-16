@@ -218,6 +218,12 @@ class GuidanceLogRecord(BaseModel):
     request_id: str
     decision_id: str
     state_version: int
+    policy_version: str
+    raw_guidance: dict[str, Any]
+    condition_verifier_result: dict[str, Any]
+    runtime_validation_result: str
+    runtime_intervention: bool | None
+    executed_guidance: dict[str, Any] | None
     participant_id: str
     condition: str
     physical_space: str
