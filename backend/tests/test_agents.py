@@ -20,6 +20,9 @@ CONFIG_DIR = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
 
 def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
     return GuidanceRequest(
+        request_id="request-agent-test",
+        decision_id="decision-agent-test",
+        state_version=1,
         condition=condition,
         task_id="T2_main_target",
         physical_space_id="narrow_room",
@@ -96,6 +99,9 @@ def test_verifier_rejects_unsafe_selected_target() -> None:
 
 def test_b5_stably_outputs_unsafe_forward_without_verifier() -> None:
     request = GuidanceRequest(
+        request_id="request-b5-test",
+        decision_id="decision-b5-test",
+        state_version=1,
         condition=Condition.B5_OURS_WITHOUT_VERIFIER,
         task_id="T2_main_target",
         physical_space_id="narrow_room",

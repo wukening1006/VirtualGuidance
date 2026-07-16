@@ -172,6 +172,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             return;
         }
 
+        // 重试属于同一 decision，但必须使用新的 request_id 以区分每次传输尝试。
+        lastRequest.request_id = Guid.NewGuid().ToString("N");
+        GuidanceRequestBuilt?.Invoke(lastRequest);
         var generation = ++requestGeneration;
         requestInFlight = true;
         StartCoroutine(SendGuidanceRequest(lastRequest, generation));
@@ -212,6 +215,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
         return new GuidanceRequest
         {
+            request_id = Guid.NewGuid().ToString("N"),
+            decision_id = EmptyFallback(context.decision_id, Guid.NewGuid().ToString("N")),
+            state_version = context.state_version,
             condition = EmptyFallback(context.condition, "ours_full"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
             physical_space_id = EmptyFallback(physicalSpaceManager.CurrentSpaceId, "wide_room"),

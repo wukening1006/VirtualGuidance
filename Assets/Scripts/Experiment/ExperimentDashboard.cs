@@ -423,6 +423,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void FreezeExperimentBehavior()
     {
+        guidanceCoordinator?.CancelActiveGuidance();
         agentClient?.CancelPendingRequest();
         arrivalDetector?.WatchTarget(null);
         rotationGainController?.StopGain();

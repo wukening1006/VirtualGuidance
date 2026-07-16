@@ -50,7 +50,7 @@ class GuidancePipeline:
         draft = self.guide.build(request, risk_state, affordance)
         verifier = self.verifier.verify(request.condition, draft, risk_state)
         self.logger.write(request, risk_state, draft, verifier, semantic_next_target)
-        return response_from_draft(draft, verifier)
+        return response_from_draft(request, draft, verifier)
 
 
 def load_scene_semantics(config_dir: Path) -> dict:

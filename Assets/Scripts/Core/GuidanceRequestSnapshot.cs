@@ -6,6 +6,10 @@ using System;
 /// </summary>
 public sealed class GuidanceRequestSnapshot
 {
+    /// <summary>请求的唯一 ID。</summary>
+    public string requestId { get; private set; }
+    /// <summary>请求所属规划决策的唯一 ID。</summary>
+    public string decisionId { get; private set; }
     /// <summary>请求发出时的任务状态版本。</summary>
     public int stateVersion { get; private set; }
     /// <summary>请求中的当前展品 ID。</summary>
@@ -28,12 +32,26 @@ public sealed class GuidanceRequestSnapshot
     {
         return new GuidanceRequestSnapshot
         {
-            stateVersion = runtimeState != null ? runtimeState.stateVersion : 0,
+            requestId = request != null ? request.request_id : string.Empty,
+            decisionId = request != null ? request.decision_id : string.Empty,
+            stateVersion = request != null ? request.state_version : runtimeState != null ? runtimeState.stateVersion : 0,
             currentExhibitId = request != null ? request.current_exhibit : string.Empty,
             semanticNextTargetId = request != null ? request.semantic_next_target : string.Empty,
             physicalSpaceId = request != null ? request.physical_space_id : string.Empty,
             riskSignature = BuildRiskSignature(riskState)
         };
+    }
+
+    /// <summary>
+    /// 检查响应是否精确对应当前请求、决策和状态版本。
+    /// </summary>
+    /// <returns>三个关联字段均一致时返回 true。</returns>
+    public bool MatchesResponse(GuidanceResponse response)
+    {
+        return response != null &&
+               string.Equals(requestId, response.request_id, StringComparison.Ordinal) &&
+               string.Equals(decisionId, response.decision_id, StringComparison.Ordinal) &&
+               stateVersion == response.state_version;
     }
 
     /// <summary>

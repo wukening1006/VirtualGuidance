@@ -241,6 +241,9 @@ public sealed class GuidanceRuntimeEditModeTests
             };
             var request = new GuidanceRequest
             {
+                request_id = "request-validator",
+                decision_id = "decision-validator",
+                state_version = originalVersion,
                 physical_space_id = "narrow_room",
                 current_exhibit = "E1",
                 semantic_next_target = "E3"
@@ -552,6 +555,121 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
             Assert.That(completedCount, Is.EqualTo(1));
             Assert.That(requests.CancelCount, Is.EqualTo(2));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_TracksRequestLifecycleAcrossTwoGuidanceDecisions()
+    {
+        var root = new GameObject("GuidanceRequestLifecycleTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var phases = new System.Collections.Generic.List<GuidanceRequestPhase>();
+            coordinator.RequestPhaseChanged += phases.Add;
+
+            coordinator.RequestNextGuidance();
+            var firstRequest = RequestForContext(requests.Contexts[0], "request-1");
+            InvokePrivate(coordinator, "HandleRequestBuilt", firstRequest);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(firstRequest, "E3"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+
+            coordinator.HandleTargetArrived("E3");
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            var secondRequest = RequestForContext(requests.Contexts[1], "request-2");
+            InvokePrivate(coordinator, "HandleRequestBuilt", secondRequest);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(secondRequest, "E5"));
+            coordinator.HandleTargetArrived("E5");
+
+            Assert.That(task.RuntimeState.IsCompleted, Is.True);
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Completed));
+            Assert.That(phases, Does.Contain(GuidanceRequestPhase.Requested));
+            Assert.That(phases, Does.Contain(GuidanceRequestPhase.Received));
+            Assert.That(phases, Does.Contain(GuidanceRequestPhase.Verified));
+            Assert.That(phases, Does.Contain(GuidanceRequestPhase.Executing));
+            Assert.That(phases, Does.Contain(GuidanceRequestPhase.Completed));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceRequestSnapshot_RejectsMismatchedRequestDecisionOrStateIdentity()
+    {
+        var runtime = new GuidanceRuntimeState();
+        runtime.Begin("T2_main_target", "E1", "E3", "E5");
+        var request = new GuidanceRequest
+        {
+            request_id = "request-current",
+            decision_id = "decision-current",
+            state_version = runtime.stateVersion,
+            current_exhibit = "E1",
+            semantic_next_target = "E3",
+            physical_space_id = "narrow_room"
+        };
+        var snapshot = GuidanceRequestSnapshot.Capture(request, null, runtime);
+
+        Assert.That(snapshot.MatchesResponse(ResponseForRequest(request, "E3")), Is.True);
+
+        var wrongRequest = ResponseForRequest(request, "E3");
+        wrongRequest.request_id = "request-old";
+        Assert.That(snapshot.MatchesResponse(wrongRequest), Is.False);
+
+        var wrongDecision = ResponseForRequest(request, "E3");
+        wrongDecision.decision_id = "decision-old";
+        Assert.That(snapshot.MatchesResponse(wrongDecision), Is.False);
+
+        var wrongState = ResponseForRequest(request, "E3");
+        wrongState.state_version++;
+        Assert.That(snapshot.MatchesResponse(wrongState), Is.False);
+    }
+
+    [Test]
+    public void AgentClient_BuildRequestCreatesUniqueRequestIdentityAndPreservesDecisionState()
+    {
+        var root = new GameObject("AgentClientRequestIdentityTest");
+        root.SetActive(false);
+        try
+        {
+            var pose = root.AddComponent<UserPoseTracker>();
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var client = root.AddComponent<AgentClient>();
+            client.Configure(space, pose);
+            var context = new GuidanceRequestContext
+            {
+                decision_id = "decision-stable",
+                state_version = 9,
+                current_exhibit = "E1",
+                semantic_next_target = "E3"
+            };
+
+            var first = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", context);
+            var second = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", context);
+
+            Assert.That(first.request_id, Is.Not.Empty);
+            Assert.That(second.request_id, Is.Not.EqualTo(first.request_id));
+            Assert.That(first.decision_id, Is.EqualTo("decision-stable"));
+            Assert.That(first.state_version, Is.EqualTo(9));
         }
         finally
         {
@@ -1032,6 +1150,9 @@ public sealed class GuidanceRuntimeEditModeTests
     public void GuidanceDtos_KeepBackendJsonContractFieldNames()
     {
         AssertPublicFieldNames<GuidanceRequest>(
+            "request_id",
+            "decision_id",
+            "state_version",
             "condition",
             "task_id",
             "physical_space_id",
@@ -1045,6 +1166,9 @@ public sealed class GuidanceRuntimeEditModeTests
             "user_virtual_forward");
 
         AssertPublicFieldNames<GuidanceResponse>(
+            "request_id",
+            "decision_id",
+            "state_version",
             "selected_target",
             "route_decision",
             "narration",
@@ -1095,6 +1219,32 @@ public sealed class GuidanceRuntimeEditModeTests
     private static float YawOf(Vector2 forward)
     {
         return Mathf.Atan2(forward.x, forward.y) * Mathf.Rad2Deg;
+    }
+
+    private static GuidanceRequest RequestForContext(GuidanceRequestContext context, string requestId)
+    {
+        return new GuidanceRequest
+        {
+            request_id = requestId,
+            decision_id = context.decision_id,
+            state_version = context.state_version,
+            current_exhibit = context.current_exhibit,
+            semantic_next_target = context.semantic_next_target,
+            physical_space_id = "narrow_room"
+        };
+    }
+
+    private static GuidanceResponse ResponseForRequest(GuidanceRequest request, string selectedTarget)
+    {
+        return new GuidanceResponse
+        {
+            request_id = request.request_id,
+            decision_id = request.decision_id,
+            state_version = request.state_version,
+            selected_target = selectedTarget,
+            movement_instruction = "move_forward_slowly",
+            verifier = new VerifierResult { approved = true, reason = "ok" }
+        };
     }
 
     private sealed class RecordingGuidanceRequestClient : IGuidanceRequestClient

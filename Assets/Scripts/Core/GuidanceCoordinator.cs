@@ -2,6 +2,31 @@ using System;
 using UnityEngine;
 
 /// <summary>
+/// 表示单次 Guidance 请求从规划到执行结束的生命周期。
+/// </summary>
+public enum GuidanceRequestPhase
+{
+    /// <summary>当前没有 Guidance 请求。</summary>
+    None,
+    /// <summary>请求已发出，等待响应。</summary>
+    Requested,
+    /// <summary>响应已到达，尚未完成校验。</summary>
+    Received,
+    /// <summary>响应已通过后端与本地校验。</summary>
+    Verified,
+    /// <summary>Guidance 正在展示并等待用户完成动作。</summary>
+    Executing,
+    /// <summary>用户完成当前 Guidance 对应动作。</summary>
+    Completed,
+    /// <summary>请求或执行因暂停、到达或新决策被取消。</summary>
+    Cancelled,
+    /// <summary>响应不再对应当前决策或状态。</summary>
+    Expired,
+    /// <summary>请求、解析或验证发生失败。</summary>
+    Failed
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
@@ -21,17 +46,26 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private GuidanceRequestSnapshot activeSnapshot;
     private IGuidanceRequestClient requestClient;
+    private GuidanceRequestPhase requestPhase;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
     public event Action<GuidanceRuntimeState> Replanning;
     /// <summary>到达最终目标、任务进入 Completed 时触发。</summary>
     public event Action<GuidanceRuntimeState> TaskCompleted;
+    /// <summary>Guidance 请求生命周期发生变化时触发。</summary>
+    public event Action<GuidanceRequestPhase> RequestPhaseChanged;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
     /// </summary>
     public GuidanceRuntimeState RuntimeState => taskController != null ? taskController.RuntimeState : null;
+    /// <summary>当前 Guidance 请求生命周期状态。</summary>
+    public GuidanceRequestPhase RequestPhase => requestPhase;
+    /// <summary>当前活动请求 ID；尚未构建请求时为空。</summary>
+    public string ActiveRequestId => activeSnapshot != null ? activeSnapshot.requestId : string.Empty;
+    /// <summary>当前活动决策 ID；尚未构建请求时为空。</summary>
+    public string ActiveDecisionId => activeSnapshot != null ? activeSnapshot.decisionId : string.Empty;
 
     private void OnEnable()
     {
@@ -119,13 +153,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (string.IsNullOrWhiteSpace(selectedTarget))
         {
+            SetRequestPhase(GuidanceRequestPhase.Failed);
             pauseResetController?.PauseForReset("No safe semantic navigation candidate is available.");
             taskController.PauseForReset();
             return;
         }
 
         arrivalDetector?.WatchTarget(selectedTarget);
-        requestClient.RequestGuidance(taskController.BuildRequestContext(selectedTarget));
+        var context = taskController.BuildRequestContext(selectedTarget);
+        context.decision_id = Guid.NewGuid().ToString("N");
+        context.state_version = taskController.RuntimeState.stateVersion;
+        SetRequestPhase(GuidanceRequestPhase.Requested);
+        requestClient.RequestGuidance(context);
     }
 
     /// <summary>
@@ -140,6 +179,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (runtimeState == null || !runtimeState.IsNavigating)
         {
             guidanceExecutor?.Clear();
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+            return;
+        }
+
+        SetRequestPhase(GuidanceRequestPhase.Received);
+
+        if (activeSnapshot != null && !activeSnapshot.MatchesResponse(response))
+        {
+            guidanceExecutor?.Clear();
+            SetRequestPhase(GuidanceRequestPhase.Expired);
+            GuidanceRejected?.Invoke("Guidance response identity does not match the active request.");
             return;
         }
 
@@ -151,6 +201,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 : response.verifier == null
                     ? "Guidance verifier result is missing."
                     : response.verifier.reason;
+            SetRequestPhase(GuidanceRequestPhase.Failed);
             GuidanceRejected?.Invoke(string.IsNullOrWhiteSpace(verifierReason) ? "Guidance rejected by verifier." : verifierReason);
             return;
         }
@@ -167,11 +218,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 taskController?.PauseForReset();
             }
 
+            SetRequestPhase(reason.IndexOf("state changed", StringComparison.OrdinalIgnoreCase) >= 0
+                ? GuidanceRequestPhase.Expired
+                : GuidanceRequestPhase.Failed);
             GuidanceRejected?.Invoke(reason);
 
             return;
         }
 
+        SetRequestPhase(GuidanceRequestPhase.Verified);
         guidanceExecutor?.Apply(response);
         if (response != null && !string.IsNullOrWhiteSpace(response.selected_target))
         {
@@ -179,6 +234,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         rotationGainController?.QueueFromMovementInstruction(response != null ? response.movement_instruction : string.Empty);
+        SetRequestPhase(GuidanceRequestPhase.Executing);
     }
 
     private void HandleRequestBuilt(GuidanceRequest request)
@@ -187,6 +243,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             request,
             riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
             taskController != null ? taskController.RuntimeState : null);
+        SetRequestPhase(GuidanceRequestPhase.Requested);
     }
 
     /// <summary>
@@ -199,6 +256,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             !string.Equals(targetId, state.nextTargetId, StringComparison.Ordinal))
         {
             return;
+        }
+
+        if (requestPhase == GuidanceRequestPhase.Executing)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Completed);
+        }
+        else if (requestPhase == GuidanceRequestPhase.Requested ||
+                 requestPhase == GuidanceRequestPhase.Received ||
+                 requestPhase == GuidanceRequestPhase.Verified)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
         }
 
         requestClient?.CancelPendingRequest();
@@ -224,6 +292,35 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         RequestNextGuidance();
     }
 
+    /// <summary>
+    /// 取消当前 Guidance 请求和表现，使暂停后的旧响应无法继续执行。
+    /// </summary>
+    public void CancelActiveGuidance()
+    {
+        requestClient?.CancelPendingRequest();
+        guidanceExecutor?.Clear();
+        rotationGainController?.StopGain();
+        arrivalDetector?.WatchTarget(null);
+        activeSnapshot = null;
+        if (requestPhase != GuidanceRequestPhase.None &&
+            requestPhase != GuidanceRequestPhase.Completed &&
+            requestPhase != GuidanceRequestPhase.Cancelled)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+        }
+    }
+
+    private void SetRequestPhase(GuidanceRequestPhase nextPhase)
+    {
+        if (requestPhase == nextPhase)
+        {
+            return;
+        }
+
+        requestPhase = nextPhase;
+        RequestPhaseChanged?.Invoke(requestPhase);
+    }
+
     private void BindRequestCapture()
     {
         if (agentClient != null)
@@ -231,6 +328,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             // 先解除再订阅，避免 Configure 与 OnEnable 交错时重复捕获同一次请求。
             agentClient.GuidanceRequestBuilt -= HandleRequestBuilt;
             agentClient.GuidanceRequestBuilt += HandleRequestBuilt;
+            agentClient.GuidanceRequestFailed.RemoveListener(HandleRequestFailed);
+            agentClient.GuidanceRequestFailed.AddListener(HandleRequestFailed);
         }
     }
 
@@ -239,7 +338,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (agentClient != null)
         {
             agentClient.GuidanceRequestBuilt -= HandleRequestBuilt;
+            agentClient.GuidanceRequestFailed.RemoveListener(HandleRequestFailed);
         }
+    }
+
+    private void HandleRequestFailed(string _)
+    {
+        SetRequestPhase(GuidanceRequestPhase.Failed);
     }
 
     private void BindArrival()

@@ -16,6 +16,9 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def base_payload(condition: str) -> dict:
     return {
+        "request_id": "request-test-001",
+        "decision_id": "decision-test-001",
+        "state_version": 3,
         "condition": condition,
         "task_id": "T2_main_target",
         "physical_space_id": "narrow_room",
@@ -77,6 +80,9 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
+        "request_id",
+        "decision_id",
+        "state_version",
         "selected_target",
         "route_decision",
         "narration",
@@ -88,7 +94,15 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "verifier",
     }
     assert set(body["verifier"]) == {"approved", "reason"}
+    assert body["request_id"] == "request-test-001"
+    assert body["decision_id"] == "decision-test-001"
+    assert body["state_version"] == 3
     assert_chinese_narration(body)
+
+    record = read_log_records(tmp_path)[0]
+    assert record["request_id"] == "request-test-001"
+    assert record["decision_id"] == "decision-test-001"
+    assert record["state_version"] == 3
 
 
 def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> None:

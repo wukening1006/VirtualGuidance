@@ -7,6 +7,15 @@ using UnityEngine;
 [Serializable]
 public sealed class GuidanceRequest
 {
+    /// <summary>单次 HTTP 请求的唯一 ID；重试必须生成新值。</summary>
+    public string request_id;
+
+    /// <summary>本次规划决策的唯一 ID；同一决策内的重试保持不变。</summary>
+    public string decision_id;
+
+    /// <summary>请求生成时的任务状态版本。</summary>
+    public int state_version;
+
     /// <summary>
     /// 当前实验条件，例如 ours_full 或 baseline 条件名。
     /// </summary>
@@ -86,6 +95,15 @@ public sealed class VerifierResult
 [Serializable]
 public sealed class GuidanceResponse
 {
+    /// <summary>对应 GuidanceRequest 的请求 ID。</summary>
+    public string request_id;
+
+    /// <summary>对应 GuidanceRequest 的决策 ID。</summary>
+    public string decision_id;
+
+    /// <summary>对应 GuidanceRequest 的任务状态版本。</summary>
+    public int state_version;
+
     /// <summary>
     /// 后端选择的目标展品 ID。
     /// </summary>
@@ -138,6 +156,12 @@ public sealed class GuidanceResponse
 [Serializable]
 public sealed class GuidanceRequestContext
 {
+    /// <summary>协调器分配的决策 ID；为空时 AgentClient 会生成独立决策 ID。</summary>
+    public string decision_id;
+
+    /// <summary>请求对应的任务状态版本。</summary>
+    public int state_version;
+
     /// <summary>
     /// 默认实验条件，例如 B1_mllm_only 或 ours_full。
     /// </summary>

@@ -58,6 +58,9 @@ class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     # 字段名对应 Unity/backend 接口契约；除非同步更新 Unity 反序列化和分析脚本，否则不要改名。
+    request_id: str
+    decision_id: str
+    state_version: int = Field(ge=0)
     condition: Condition
     task_id: TaskId
     physical_space_id: str
@@ -93,6 +96,9 @@ class VerifierResult(BaseModel):
 
 
 class GuidanceResponse(BaseModel):
+    request_id: str
+    decision_id: str
+    state_version: int
     selected_target: str
     route_decision: str
     narration: str
@@ -145,6 +151,9 @@ class GuidanceLogRecord(BaseModel):
     """每个 condition 通用的稳定 JSONL 日志行，供实验分析使用。"""
 
     timestamp: str
+    request_id: str
+    decision_id: str
+    state_version: int
     participant_id: str
     condition: str
     physical_space: str
@@ -183,10 +192,17 @@ def project_to_xz(value: list[float]) -> tuple[float, float]:
     return float(value[0]), float(value[2])
 
 
-def response_from_draft(draft: GuideDraft, verifier: VerifierResult) -> GuidanceResponse:
+def response_from_draft(
+    request: GuidanceRequest,
+    draft: GuideDraft,
+    verifier: VerifierResult,
+) -> GuidanceResponse:
     """在不改动 Unity guidance 字段名的前提下附加 verifier 结果。"""
 
     return GuidanceResponse(
+        request_id=request.request_id,
+        decision_id=request.decision_id,
+        state_version=request.state_version,
         selected_target=draft.selected_target,
         route_decision=draft.route_decision,
         narration=draft.narration,
