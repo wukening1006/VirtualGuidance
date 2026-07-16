@@ -981,6 +981,67 @@ public sealed class GuidanceRuntimeEditModeTests
         var task = spec.ToTaskDefinition();
         Assert.That(task.routeTargetIds, Is.EqualTo(spec.routeTargetIds));
         Assert.That(ReferenceEquals(task.routeTargetIds, spec.routeTargetIds), Is.False);
+
+        var b1 = ExperimentConditionMatrix.GetPolicy("B1_mllm_only");
+        var b4 = ExperimentConditionMatrix.GetPolicy("B4_scripted_reset");
+        var b5 = ExperimentConditionMatrix.GetPolicy("B5_ours_without_verifier");
+        var full = ExperimentConditionMatrix.GetPolicy("ours_full");
+        Assert.That(b1.UseSafeCandidateFilter, Is.EqualTo(ConditionCapabilityMode.Disabled));
+        Assert.That(b4.UseRdwAffordance, Is.EqualTo(ConditionCapabilityMode.Scripted));
+        Assert.That(b5.UseRotationGain, Is.EqualTo(ConditionCapabilityMode.Enabled));
+        Assert.That(b5.UseModelVerifier, Is.EqualTo(ConditionCapabilityMode.Disabled));
+        Assert.That(full.UseModelVerifier, Is.EqualTo(ConditionCapabilityMode.Enabled));
+        Assert.That(ExperimentConditionPolicy.CurrentVersion, Is.EqualTo("condition-policy-v1"));
+    }
+
+    [Test]
+    public void SemanticTargetSelector_AppliesSafeFilterOnlyWhenConditionPolicyEnablesIt()
+    {
+        var root = new GameObject("ConditionPolicyTargetSelectionTest");
+        try
+        {
+            var current = new GameObject("PolicyCurrent");
+            current.transform.SetParent(root.transform, false);
+            current.AddComponent<ExhibitMetadata>().Configure(
+                "PolicyE1", "Current", null, null, null, new[] { "PolicyE3" }, current.transform, current.transform);
+            var detour = new GameObject("PolicyLeftCandidate");
+            detour.transform.SetParent(root.transform, false);
+            detour.transform.position = new Vector3(-2f, 0f, 0f);
+            detour.AddComponent<ExhibitMetadata>().Configure(
+                "PolicyE3", "Left", null, null, null, null, detour.transform, detour.transform);
+            var routeTarget = new GameObject("PolicyRouteTarget");
+            routeTarget.transform.SetParent(root.transform, false);
+            routeTarget.transform.position = new Vector3(0f, 0f, 2f);
+            routeTarget.AddComponent<ExhibitMetadata>().Configure(
+                "PolicyE5", "Forward", null, null, null, null, routeTarget.transform, routeTarget.transform);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.RebuildIndex();
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "PolicyE1", "PolicyE5", "PolicyE5");
+            var risk = new PhysicalRiskState
+            {
+                unsafe_directions = new[] { "forward" },
+                safe_directions = new[] { "left" }
+            };
+
+            var baselineTarget = selector.SelectNextTarget(
+                runtime,
+                risk,
+                ExperimentConditionMatrix.GetPolicy("B1_mllm_only"));
+            var fullTarget = selector.SelectNextTarget(
+                runtime,
+                risk,
+                ExperimentConditionMatrix.GetPolicy("ours_full"));
+
+            Assert.That(baselineTarget, Is.EqualTo("PolicyE5"));
+            Assert.That(fullTarget, Is.EqualTo("PolicyE3"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
     }
 
     [Test]

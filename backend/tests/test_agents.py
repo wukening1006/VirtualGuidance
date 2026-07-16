@@ -8,10 +8,12 @@ from backend.agents.rdw_state_agent import RDWStateAgent
 from backend.agents.safety_verifier_agent import SafetyVerifierAgent
 from backend.schemas import (
     Condition,
+    ConditionCapabilityMode,
     GuidanceRequest,
     GuideDraft,
     MovementInstruction,
     AvatarAction,
+    condition_policy_for,
 )
 
 
@@ -45,6 +47,20 @@ def test_affordance_selects_semantic_redirection_when_forward_unsafe() -> None:
     assert affordance.intervention_type == "semantic_redirection"
     assert affordance.preferred_direction == "left"
     assert affordance.semantic_anchor == "E3"
+
+
+def test_condition_policy_matrix_freezes_all_six_capability_boundaries() -> None:
+    policies = {condition: condition_policy_for(condition) for condition in Condition}
+
+    assert len(policies) == 6
+    assert policies[Condition.B1_MLLM_ONLY].use_safe_candidate_filter == ConditionCapabilityMode.DISABLED
+    assert policies[Condition.B2_RAW_PHYSICAL_DATA].use_raw_physical_data == ConditionCapabilityMode.ENABLED
+    assert policies[Condition.B3_RISK_LABELS].use_risk_labels == ConditionCapabilityMode.ENABLED
+    assert policies[Condition.B4_SCRIPTED_RESET].use_rdw_affordance == ConditionCapabilityMode.SCRIPTED
+    assert policies[Condition.B5_OURS_WITHOUT_VERIFIER].use_model_verifier == ConditionCapabilityMode.DISABLED
+    assert policies[Condition.B5_OURS_WITHOUT_VERIFIER].use_rotation_gain == ConditionCapabilityMode.ENABLED
+    assert policies[Condition.OURS_FULL].use_model_verifier == ConditionCapabilityMode.ENABLED
+    assert policies[Condition.OURS_FULL].policy_version == "condition-policy-v1"
 
 
 def test_verifier_rejects_unsafe_forward_movement() -> None:

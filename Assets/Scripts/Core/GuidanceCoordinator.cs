@@ -147,8 +147,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+        var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
         var selectedTarget = semanticTargetSelector != null
-            ? semanticTargetSelector.SelectNextTarget(taskController.RuntimeState, riskState)
+            ? semanticTargetSelector.SelectNextTarget(taskController.RuntimeState, riskState, conditionPolicy)
             : taskController.RuntimeState.nextTargetId;
 
         if (string.IsNullOrWhiteSpace(selectedTarget))

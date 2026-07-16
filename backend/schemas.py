@@ -19,6 +19,70 @@ class Condition(str, Enum):
     OURS_FULL = "ours_full"
 
 
+class ConditionCapabilityMode(str, Enum):
+    """实验条件对单项能力的固定使用方式。"""
+
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+    SCRIPTED = "scripted"
+
+
+class ConditionPolicy(BaseModel):
+    """冻结七项实验能力边界，避免公共逻辑提前改变 baseline 输出。"""
+
+    policy_version: str = "condition-policy-v1"
+    condition: Condition
+    use_raw_physical_data: ConditionCapabilityMode
+    use_risk_labels: ConditionCapabilityMode
+    use_rdw_affordance: ConditionCapabilityMode
+    use_safe_candidate_filter: ConditionCapabilityMode
+    use_semantic_redirection: ConditionCapabilityMode
+    use_rotation_gain: ConditionCapabilityMode
+    use_model_verifier: ConditionCapabilityMode
+
+
+def _policy(
+    condition: Condition,
+    raw: ConditionCapabilityMode,
+    risk: ConditionCapabilityMode,
+    affordance: ConditionCapabilityMode,
+    safe_filter: ConditionCapabilityMode,
+    redirection: ConditionCapabilityMode,
+    gain: ConditionCapabilityMode,
+    verifier: ConditionCapabilityMode,
+) -> ConditionPolicy:
+    return ConditionPolicy(
+        condition=condition,
+        use_raw_physical_data=raw,
+        use_risk_labels=risk,
+        use_rdw_affordance=affordance,
+        use_safe_candidate_filter=safe_filter,
+        use_semantic_redirection=redirection,
+        use_rotation_gain=gain,
+        use_model_verifier=verifier,
+    )
+
+
+_D = ConditionCapabilityMode.DISABLED
+_E = ConditionCapabilityMode.ENABLED
+_S = ConditionCapabilityMode.SCRIPTED
+
+CONDITION_POLICIES: dict[Condition, ConditionPolicy] = {
+    Condition.B1_MLLM_ONLY: _policy(Condition.B1_MLLM_ONLY, _D, _D, _D, _D, _D, _D, _D),
+    Condition.B2_RAW_PHYSICAL_DATA: _policy(Condition.B2_RAW_PHYSICAL_DATA, _E, _D, _D, _D, _D, _D, _D),
+    Condition.B3_RISK_LABELS: _policy(Condition.B3_RISK_LABELS, _D, _E, _D, _D, _D, _D, _D),
+    Condition.B4_SCRIPTED_RESET: _policy(Condition.B4_SCRIPTED_RESET, _D, _E, _S, _D, _D, _D, _D),
+    Condition.B5_OURS_WITHOUT_VERIFIER: _policy(Condition.B5_OURS_WITHOUT_VERIFIER, _E, _E, _E, _E, _E, _E, _D),
+    Condition.OURS_FULL: _policy(Condition.OURS_FULL, _E, _E, _E, _E, _E, _E, _E),
+}
+
+
+def condition_policy_for(condition: str | Condition) -> ConditionPolicy:
+    """返回已冻结策略；未知 Condition 不允许静默进入任一实验分支。"""
+
+    return CONDITION_POLICIES[Condition(condition)]
+
+
 class TaskId(str, Enum):
     T1_OVERVIEW = "T1_overview"
     T2_MAIN_TARGET = "T2_main_target"

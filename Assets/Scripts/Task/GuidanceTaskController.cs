@@ -19,6 +19,8 @@ public sealed class GuidanceTaskController : MonoBehaviour
 
     /// <summary>当前任务运行状态；由本控制器持有并在任务生命周期内复用。</summary>
     public GuidanceRuntimeState RuntimeState => runtimeState;
+    /// <summary>当前任务使用的实验 Condition ID。</summary>
+    public string CurrentCondition => defaultTask.condition;
 
     /// <summary>
     /// 从配置路线的首个展品开始任务，并将第二个展品设为下一目标。

@@ -28,6 +28,18 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     /// <returns>可用于请求的展品 ID；无可接受候选时返回空字符串。</returns>
     public string SelectNextTarget(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
     {
+        return SelectNextTarget(runtimeState, riskState, ExperimentConditionMatrix.GetPolicy("ours_full"));
+    }
+
+    /// <summary>
+    /// 按 Condition Policy 决定是否在实验决策层应用安全候选筛选。
+    /// </summary>
+    /// <returns>策略允许筛选时返回安全候选；否则原样返回路线目标。</returns>
+    public string SelectNextTarget(
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ExperimentConditionPolicy policy)
+    {
         ResolveReferences();
         if (runtimeState == null)
         {
@@ -35,6 +47,11 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
 
         var preferred = runtimeState.nextTargetId;
+        if (policy == null || policy.UseSafeCandidateFilter != ConditionCapabilityMode.Enabled)
+        {
+            return preferred;
+        }
+
         if (navigationTargets == null || riskState == null || string.IsNullOrWhiteSpace(preferred))
         {
             return preferred;

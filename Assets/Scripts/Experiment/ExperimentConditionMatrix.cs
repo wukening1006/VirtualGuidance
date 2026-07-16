@@ -2,6 +2,68 @@ using System;
 using UnityEngine;
 
 /// <summary>
+/// 表示实验条件对某项能力的使用方式。
+/// </summary>
+public enum ConditionCapabilityMode
+{
+    /// <summary>该条件不使用此能力。</summary>
+    Disabled,
+    /// <summary>该条件正常启用此能力。</summary>
+    Enabled,
+    /// <summary>该条件使用固定脚本替代动态能力。</summary>
+    Scripted
+}
+
+/// <summary>
+/// 冻结单个实验 Condition 的能力边界，供 Unity 决策层、Gain 和日志共同读取。
+/// </summary>
+public sealed class ExperimentConditionPolicy
+{
+    /// <summary>当前策略契约版本。</summary>
+    public const string CurrentVersion = "condition-policy-v1";
+
+    /// <summary>Condition ID。</summary>
+    public string Condition { get; }
+    /// <summary>是否向决策策略提供 Raw Physical Data。</summary>
+    public ConditionCapabilityMode UseRawPhysicalData { get; }
+    /// <summary>是否向决策策略提供风险标签。</summary>
+    public ConditionCapabilityMode UseRiskLabels { get; }
+    /// <summary>是否使用 RDW Affordance。</summary>
+    public ConditionCapabilityMode UseRdwAffordance { get; }
+    /// <summary>是否在实验决策层提前筛选安全候选。</summary>
+    public ConditionCapabilityMode UseSafeCandidateFilter { get; }
+    /// <summary>是否允许语义重定向。</summary>
+    public ConditionCapabilityMode UseSemanticRedirection { get; }
+    /// <summary>是否启用 Rotation Gain。</summary>
+    public ConditionCapabilityMode UseRotationGain { get; }
+    /// <summary>是否启用模型输出 Verifier。</summary>
+    public ConditionCapabilityMode UseModelVerifier { get; }
+
+    /// <summary>
+    /// 创建一份不可变 Condition 能力策略。
+    /// </summary>
+    public ExperimentConditionPolicy(
+        string condition,
+        ConditionCapabilityMode rawPhysicalData,
+        ConditionCapabilityMode riskLabels,
+        ConditionCapabilityMode rdwAffordance,
+        ConditionCapabilityMode safeCandidateFilter,
+        ConditionCapabilityMode semanticRedirection,
+        ConditionCapabilityMode rotationGain,
+        ConditionCapabilityMode modelVerifier)
+    {
+        Condition = condition;
+        UseRawPhysicalData = rawPhysicalData;
+        UseRiskLabels = riskLabels;
+        UseRdwAffordance = rdwAffordance;
+        UseSafeCandidateFilter = safeCandidateFilter;
+        UseSemanticRedirection = semanticRedirection;
+        UseRotationGain = rotationGain;
+        UseModelVerifier = modelVerifier;
+    }
+}
+
+/// <summary>
 /// 定义实验条件、任务和 physical space 的笛卡尔组合，并生成可复现的条件配置。
 /// Dashboard 使用循环索引遍历矩阵，生成结果提供给任务、风险输入和日志模块。
 /// </summary>
@@ -66,6 +128,51 @@ public static class ExperimentConditionMatrix
 
     /// <summary>条件、任务与 physical space 的组合总数。</summary>
     public static int TotalCombinations => Conditions.Length * TaskIds.Length * PhysicalSpaces.Length;
+
+    /// <summary>
+    /// 获取指定 Condition 的冻结能力策略；未知值按最保守的全部禁用策略处理。
+    /// </summary>
+    public static ExperimentConditionPolicy GetPolicy(string condition)
+    {
+        switch (condition)
+        {
+            case "B1_mllm_only":
+                return Policy(condition, false, false, ConditionCapabilityMode.Disabled, false, false, false, false);
+            case "B2_raw_physical_data":
+                return Policy(condition, true, false, ConditionCapabilityMode.Disabled, false, false, false, false);
+            case "B3_risk_labels":
+                return Policy(condition, false, true, ConditionCapabilityMode.Disabled, false, false, false, false);
+            case "B4_scripted_reset":
+                return Policy(condition, false, true, ConditionCapabilityMode.Scripted, false, false, false, false);
+            case "B5_ours_without_verifier":
+                return Policy(condition, true, true, ConditionCapabilityMode.Enabled, true, true, true, false);
+            case "ours_full":
+                return Policy(condition, true, true, ConditionCapabilityMode.Enabled, true, true, true, true);
+            default:
+                return Policy(string.IsNullOrWhiteSpace(condition) ? "unknown" : condition, false, false, ConditionCapabilityMode.Disabled, false, false, false, false);
+        }
+    }
+
+    private static ExperimentConditionPolicy Policy(
+        string condition,
+        bool enabledRaw,
+        bool enabledRisk,
+        ConditionCapabilityMode rdwAffordance,
+        bool safeCandidateFilter,
+        bool semanticRedirection,
+        bool rotationGain,
+        bool modelVerifier)
+    {
+        return new ExperimentConditionPolicy(
+            condition,
+            enabledRaw ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled,
+            enabledRisk ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled,
+            rdwAffordance,
+            safeCandidateFilter ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled,
+            semanticRedirection ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled,
+            rotationGain ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled,
+            modelVerifier ? ConditionCapabilityMode.Enabled : ConditionCapabilityMode.Disabled);
+    }
 
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
     {

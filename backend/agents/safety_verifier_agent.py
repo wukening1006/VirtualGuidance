@@ -5,10 +5,12 @@ from __future__ import annotations
 from backend.agents.rdw_affordance_agent import target_direction
 from backend.schemas import (
     Condition,
+    ConditionCapabilityMode,
     GuideDraft,
     MovementInstruction,
     PhysicalRiskState,
     VerifierResult,
+    condition_policy_for,
 )
 
 
@@ -31,7 +33,8 @@ class SafetyVerifierAgent:
         draft: GuideDraft,
         risk_state: PhysicalRiskState,
     ) -> VerifierResult:
-        if condition != Condition.OURS_FULL.value:
+        policy = condition_policy_for(condition)
+        if policy.use_model_verifier != ConditionCapabilityMode.ENABLED:
             # baseline 的输出需要完整保留到日志里，包括 unsafe 输出；只有 ours_full 执行最终拒绝。
             return VerifierResult(
                 approved=True,

@@ -230,6 +230,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         experimentLogger.StartSession(currentSpec);
         experimentLogger.LogConditionSelected(currentSpec);
+        var conditionPolicy = ExperimentConditionMatrix.GetPolicy(currentSpec.condition);
+        rotationGainController.SetGainEnabled(
+            conditionPolicy.UseRotationGain == ConditionCapabilityMode.Enabled);
         taskController.ConfigureTask(currentSpec.ToTaskDefinition());
         taskController.StartTask();
 
