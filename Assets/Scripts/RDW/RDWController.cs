@@ -34,13 +34,14 @@ public sealed class RDWController : MonoBehaviour
     /// </summary>
     public void Configure(PhysicalRiskEvaluator evaluator, PauseResetController resetController)
     {
+        var nextEvaluator = evaluator != null ? evaluator : riskEvaluator;
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged -= ApplyRiskState;
         }
 
-        riskEvaluator = evaluator;
-        pauseResetController = resetController;
+        riskEvaluator = nextEvaluator;
+        if (resetController != null) pauseResetController = resetController;
 
         if (isActiveAndEnabled && riskEvaluator != null)
         {

@@ -28,7 +28,10 @@ public sealed class XRTrackingAdapter : MonoBehaviour
     /// <summary>注入接收物理位姿的追踪器，并尝试绑定主相机作为虚拟头部。</summary>
     public void Configure(UserPoseTracker poseTracker)
     {
-        userPoseTracker = poseTracker;
+        if (poseTracker != null)
+        {
+            userPoseTracker = poseTracker;
+        }
         ResolveHeadsetTransform();
     }
 

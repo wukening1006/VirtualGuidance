@@ -16,7 +16,10 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
     /// <summary>注入用于解析目标物理方向的导航目标索引。</summary>
     public void Configure(NavigationTargetManager targetManager)
     {
-        navigationTargets = targetManager;
+        if (targetManager != null)
+        {
+            navigationTargets = targetManager;
+        }
     }
 
     /// <summary>

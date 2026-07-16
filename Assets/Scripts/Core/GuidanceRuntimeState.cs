@@ -23,6 +23,21 @@ public sealed class GuidanceRuntimeState
     /// <summary>当前任务是否已经到达完成阶段。</summary>
     public bool IsCompleted => phase == GuidanceRuntimePhase.Completed;
 
+    /// <summary>任务当前是否允许请求 guidance 或接受到达事件。</summary>
+    public bool IsNavigating => phase == GuidanceRuntimePhase.Navigating;
+
+    /// <summary>清空运行任务并回到 Idle；仅在状态实际变化时递增版本。</summary>
+    public void Reset()
+    {
+        if (phase == GuidanceRuntimePhase.Idle)
+        {
+            return;
+        }
+
+        phase = GuidanceRuntimePhase.Idle;
+        stateVersion++;
+    }
+
     /// <summary>
     /// 使用任务与路线起点初始化运行状态，并进入 Navigating 阶段。
     /// </summary>
@@ -52,7 +67,24 @@ public sealed class GuidanceRuntimeState
     /// </summary>
     public void PauseForReset()
     {
+        if (phase == GuidanceRuntimePhase.PausedForReset || phase == GuidanceRuntimePhase.Ended)
+        {
+            return;
+        }
+
         phase = GuidanceRuntimePhase.PausedForReset;
+        stateVersion++;
+    }
+
+    /// <summary>研究员暂停正在导航的任务。</summary>
+    public void PauseForResearcher()
+    {
+        if (phase != GuidanceRuntimePhase.Navigating)
+        {
+            return;
+        }
+
+        phase = GuidanceRuntimePhase.PausedByResearcher;
         stateVersion++;
     }
 
@@ -61,12 +93,24 @@ public sealed class GuidanceRuntimeState
     /// </summary>
     public void Resume()
     {
-        if (phase != GuidanceRuntimePhase.PausedForReset)
+        if (phase != GuidanceRuntimePhase.PausedForReset && phase != GuidanceRuntimePhase.PausedByResearcher)
         {
             return;
         }
 
         phase = string.IsNullOrWhiteSpace(nextTargetId) ? GuidanceRuntimePhase.Completed : GuidanceRuntimePhase.Navigating;
+        stateVersion++;
+    }
+
+    /// <summary>终止任务并使所有在途响应因版本变化失效。</summary>
+    public void End()
+    {
+        if (phase == GuidanceRuntimePhase.Ended)
+        {
+            return;
+        }
+
+        phase = GuidanceRuntimePhase.Ended;
         stateVersion++;
     }
 

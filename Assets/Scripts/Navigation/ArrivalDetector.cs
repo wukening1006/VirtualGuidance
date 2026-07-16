@@ -51,8 +51,8 @@ public sealed class ArrivalDetector : MonoBehaviour
     /// <summary>注入虚拟用户位姿与展品目标索引。</summary>
     public void Configure(UserPoseTracker poseTracker, NavigationTargetManager targetManager)
     {
-        userPoseTracker = poseTracker;
-        navigationTargets = targetManager;
+        if (poseTracker != null) userPoseTracker = poseTracker;
+        if (targetManager != null) navigationTargets = targetManager;
     }
 
     /// <summary>

@@ -20,8 +20,8 @@ public sealed class GuideAvatarController : MonoBehaviour
     /// </summary>
     public void Configure(Transform root, Transform pointer)
     {
-        avatarRoot = root;
-        pointingArm = pointer;
+        if (root != null) avatarRoot = root;
+        if (pointer != null) pointingArm = pointer;
         Wait();
     }
 

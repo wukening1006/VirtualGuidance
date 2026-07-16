@@ -45,9 +45,7 @@ public sealed class GazeCueController : MonoBehaviour
         hideTime = Time.unscaledTime + Mathf.Max(0f, cueVisibleSeconds);
         if (gazeCueText != null)
         {
-            gazeCueText.text = string.IsNullOrWhiteSpace(gazeCue)
-                ? string.Empty
-                : $"Gaze: {gazeCue} {TargetSuffix(gazeTargetId)}";
+            gazeCueText.text = ToDisplayText(gazeCue);
         }
     }
 
@@ -63,8 +61,18 @@ public sealed class GazeCueController : MonoBehaviour
         }
     }
 
-    private static string TargetSuffix(string targetId)
+    private static string ToDisplayText(string gazeCue)
     {
-        return string.IsNullOrWhiteSpace(targetId) ? string.Empty : $"({targetId})";
+        switch (gazeCue)
+        {
+            case "look_left":
+                return "请看向左侧";
+            case "look_right":
+                return "请看向右侧";
+            case "look_forward":
+                return "请看向前方";
+            default:
+                return string.Empty;
+        }
     }
 }

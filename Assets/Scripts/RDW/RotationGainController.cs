@@ -110,7 +110,7 @@ public sealed class RotationGainController : MonoBehaviour
     /// <summary>注入物理转头检测器，并绑定接收额外 yaw 的虚拟用户根节点。</summary>
     public void Configure(UserPoseTracker poseTracker, MotionDetector detector)
     {
-        motionDetector = detector;
+        if (detector != null) motionDetector = detector;
         if (poseTracker != null && poseTracker.VirtualUserRoot != null)
         {
             virtualUserRoot = poseTracker.VirtualUserRoot;

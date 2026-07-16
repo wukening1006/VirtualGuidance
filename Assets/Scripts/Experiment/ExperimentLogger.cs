@@ -15,11 +15,18 @@ public sealed class ExperimentLogger : MonoBehaviour
 
     private ExperimentSession session;
     private string logPath;
+    private ExperimentRunState runState = ExperimentRunState.Preparing;
 
     /// <summary>当前实验会话；尚未开始时为 null。</summary>
     public ExperimentSession Session => session;
     /// <summary>当前 JSONL 日志的绝对路径；尚未开始时为空。</summary>
     public string LogPath => logPath;
+
+    /// <summary>更新后续日志行使用的实验运行状态。</summary>
+    public void SetRunState(ExperimentRunState state)
+    {
+        runState = state;
+    }
 
     /// <summary>
     /// 根据实验条件开始新会话并创建对应 JSONL 路径；null 配置不会改变当前会话。
@@ -62,6 +69,18 @@ public sealed class ExperimentLogger : MonoBehaviour
         Write(eventType, null, null, null, riskState, runtimeState, message);
     }
 
+    /// <summary>先写入 session_ended，再关闭活动会话。</summary>
+    public void EndSession(string reason)
+    {
+        if (session == null || !session.IsActive)
+        {
+            return;
+        }
+
+        Write("session_ended", null, null, null, null, null, string.IsNullOrWhiteSpace(reason) ? "unspecified" : reason);
+        session.End(reason);
+    }
+
     private void Write(
         string eventType,
         ExperimentConditionSpec spec,
@@ -90,6 +109,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         Append(builder, "current_exhibit", FirstNonEmpty(request?.current_exhibit, spec?.startExhibitId, runtimeState?.currentExhibitId));
         Append(builder, "semantic_next_target", FirstNonEmpty(request?.semantic_next_target, spec?.semanticNextTargetId, runtimeState?.nextTargetId));
         Append(builder, "runtime_phase", runtimeState != null ? runtimeState.phase.ToString() : string.Empty);
+        Append(builder, "run_state", runState.ToString().ToLowerInvariant());
         Append(builder, "state_version", runtimeState != null ? runtimeState.stateVersion.ToString(CultureInfo.InvariantCulture) : "0", raw: true);
         Append(builder, "selected_target", response != null ? response.selected_target : string.Empty);
         Append(builder, "movement_instruction", response != null ? response.movement_instruction : string.Empty);

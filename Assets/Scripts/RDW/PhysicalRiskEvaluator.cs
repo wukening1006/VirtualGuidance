@@ -81,13 +81,15 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     /// <param name="poseTracker">提供用户 physical pose 的追踪器。</param>
     public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker)
     {
+        var nextSpaceManager = spaceManager != null ? spaceManager : physicalSpaceManager;
+        var nextPoseTracker = poseTracker != null ? poseTracker : userPoseTracker;
         if (physicalSpaceManager != null)
         {
             physicalSpaceManager.CurrentSpaceChanged -= HandleSpaceChanged;
         }
 
-        physicalSpaceManager = spaceManager;
-        userPoseTracker = poseTracker;
+        physicalSpaceManager = nextSpaceManager;
+        userPoseTracker = nextPoseTracker;
 
         if (isActiveAndEnabled && physicalSpaceManager != null)
         {

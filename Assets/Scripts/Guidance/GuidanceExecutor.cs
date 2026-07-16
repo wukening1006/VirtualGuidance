@@ -38,13 +38,13 @@ public sealed class GuidanceExecutor : MonoBehaviour
         RejectionPanel rejection,
         GuidanceDebugPanel debugPanel)
     {
-        narrationPlayer = narration;
-        gazeCueController = gazeCue;
-        movementHintController = movementHint;
-        guideAvatarController = avatar;
-        exhibitHighlightManager = highlight;
-        rejectionPanel = rejection;
-        guidanceDebugPanel = debugPanel;
+        if (narration != null) narrationPlayer = narration;
+        if (gazeCue != null) gazeCueController = gazeCue;
+        if (movementHint != null) movementHintController = movementHint;
+        if (avatar != null) guideAvatarController = avatar;
+        if (highlight != null) exhibitHighlightManager = highlight;
+        if (rejection != null) rejectionPanel = rejection;
+        if (debugPanel != null) guidanceDebugPanel = debugPanel;
     }
 
     /// <summary>

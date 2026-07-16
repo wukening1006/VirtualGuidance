@@ -19,9 +19,21 @@ public sealed class ExperimentSession
     public string physicalSpaceId;
     /// <summary>ISO 8601 round-trip 格式的 UTC 开始时间。</summary>
     public string startedAtUtc;
+    /// <summary>ISO 8601 round-trip 格式的 UTC 结束时间。</summary>
+    public string endedAtUtc;
+    /// <summary>会话结束原因。</summary>
+    public string endReason;
+    /// <summary>研究员暂停次数。</summary>
+    public int pauseCount;
+    /// <summary>累计暂停秒数。</summary>
+    public double totalPausedSeconds;
+    /// <summary>显式活动标记；结束后即使 sessionId 保留也为 false。</summary>
+    public bool isActive;
+
+    [NonSerialized] private DateTime? pauseStartedAtUtc;
 
     /// <summary>会话是否已生成可用于日志关联的 ID。</summary>
-    public bool IsActive => !string.IsNullOrWhiteSpace(sessionId);
+    public bool IsActive => isActive && !string.IsNullOrWhiteSpace(sessionId);
 
     /// <summary>
     /// 从当前实验条件创建会话快照，并以 UTC 秒级时间生成 sessionId。
@@ -37,8 +49,47 @@ public sealed class ExperimentSession
             condition = spec.condition,
             taskId = spec.taskId,
             physicalSpaceId = spec.physicalSpaceId,
-            startedAtUtc = timestamp.ToString("o")
+            startedAtUtc = timestamp.ToString("o"),
+            isActive = true
         };
+    }
+
+    /// <summary>开始一次暂停；重复调用不会重复计数。</summary>
+    public void BeginPause()
+    {
+        if (!IsActive || pauseStartedAtUtc.HasValue)
+        {
+            return;
+        }
+
+        pauseStartedAtUtc = DateTime.UtcNow;
+        pauseCount++;
+    }
+
+    /// <summary>结束当前暂停并累计持续时间。</summary>
+    public void EndPause()
+    {
+        if (!pauseStartedAtUtc.HasValue)
+        {
+            return;
+        }
+
+        totalPausedSeconds += Math.Max(0d, (DateTime.UtcNow - pauseStartedAtUtc.Value).TotalSeconds);
+        pauseStartedAtUtc = null;
+    }
+
+    /// <summary>关闭会话并记录结束信息。</summary>
+    public void End(string reason)
+    {
+        if (!IsActive)
+        {
+            return;
+        }
+
+        EndPause();
+        endedAtUtc = DateTime.UtcNow.ToString("o");
+        endReason = string.IsNullOrWhiteSpace(reason) ? "unspecified" : reason;
+        isActive = false;
     }
 
     private static string Safe(string value)

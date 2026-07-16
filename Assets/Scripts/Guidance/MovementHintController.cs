@@ -41,7 +41,7 @@ public sealed class MovementHintController : MonoBehaviour
         ResolveReferences();
         if (movementHintText != null)
         {
-            movementHintText.text = "Movement: waiting";
+            movementHintText.text = string.Empty;
         }
     }
 
@@ -64,23 +64,23 @@ public sealed class MovementHintController : MonoBehaviour
         switch (instruction)
         {
             case "move_forward_slowly":
-                return "Movement: move forward slowly";
+                return "缓慢向前移动";
             case "turn_left_slowly":
-                return "Movement: turn left slowly";
+                return "缓慢向左转";
             case "turn_right_slowly":
-                return "Movement: turn right slowly";
+                return "缓慢向右转";
             case "look_left":
-                return "Movement: look left";
+                return "请看向左侧";
             case "look_right":
-                return "Movement: look right";
+                return "请看向右侧";
             case "look_forward":
-                return "Movement: look forward";
+                return "请看向前方";
             case "pause_and_wait":
-                return "Movement: pause and wait";
+                return "请暂停等待";
             case "reset_required":
-                return "Movement: reset required";
+                return "请暂停等待";
             default:
-                return "Movement: pause and wait";
+                return "请暂停等待";
         }
     }
 }

@@ -10,7 +10,7 @@ public sealed class NarrationPlayer : MonoBehaviour
     [Tooltip("显示后端 narration 的 TextMeshPro 文本控件；未配置时自动查找 GuidanceTextPanel_Text。")]
     [SerializeField] private TMP_Text narrationText;
     [Tooltip("没有话术时显示的占位文本。")]
-    [SerializeField] private string idleText = "Guide narration will appear here.";
+    [SerializeField] private string idleText = string.Empty;
 
     private void Awake()
     {

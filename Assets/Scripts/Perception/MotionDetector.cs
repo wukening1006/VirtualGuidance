@@ -70,7 +70,10 @@ public sealed class MotionDetector : MonoBehaviour
     /// </summary>
     public void Configure(UserPoseTracker poseTracker)
     {
-        userPoseTracker = poseTracker;
+        if (poseTracker != null)
+        {
+            userPoseTracker = poseTracker;
+        }
         hasPreviousForward = false;
         IsTurning = false;
         LastSignedYawDeltaDegrees = 0f;

@@ -22,6 +22,7 @@ public static class GuidanceLiveBackendValidator
     private static UserPoseTracker userPoseTracker;
     private static PhysicalRiskEvaluator riskEvaluator;
     private static XRTrackingAdapter xrTrackingAdapter;
+    private static ExperimentDashboard experimentDashboard;
     private static GuidanceTaskController taskController;
     private static NavigationTargetManager navigationTargets;
     private static ArrivalDetector arrivalDetector;
@@ -31,6 +32,7 @@ public static class GuidanceLiveBackendValidator
     private static string requestFailure;
     private static string arrivedTarget;
     private static string reportPath;
+    private static string guidanceSessionLogPath;
 
     static GuidanceLiveBackendValidator()
     {
@@ -138,6 +140,9 @@ public static class GuidanceLiveBackendValidator
                 case ValidationStage.WaitingForE5Arrival:
                     VerifyArrival("E5", string.Empty, true);
                     break;
+                case ValidationStage.WaitingForAutomaticEnd:
+                    VerifyAutomaticEnd();
+                    break;
                 case ValidationStage.VerifyingSessionLog:
                     VerifySessionLog();
                     break;
@@ -164,19 +169,27 @@ public static class GuidanceLiveBackendValidator
         userPoseTracker = UnityEngine.Object.FindObjectOfType<UserPoseTracker>();
         riskEvaluator = UnityEngine.Object.FindObjectOfType<PhysicalRiskEvaluator>();
         xrTrackingAdapter = UnityEngine.Object.FindObjectOfType<XRTrackingAdapter>();
+        experimentDashboard = UnityEngine.Object.FindObjectOfType<ExperimentDashboard>();
         taskController = UnityEngine.Object.FindObjectOfType<GuidanceTaskController>();
         navigationTargets = UnityEngine.Object.FindObjectOfType<NavigationTargetManager>();
         arrivalDetector = UnityEngine.Object.FindObjectOfType<ArrivalDetector>();
         experimentLogger = UnityEngine.Object.FindObjectOfType<ExperimentLogger>();
 
         if (agentClient == null || physicalSpaceManager == null || userPoseTracker == null ||
-            riskEvaluator == null || xrTrackingAdapter == null || taskController == null || navigationTargets == null ||
+            riskEvaluator == null || xrTrackingAdapter == null || experimentDashboard == null || taskController == null || navigationTargets == null ||
             arrivalDetector == null || experimentLogger == null)
         {
             return;
         }
 
         Record("scene_contract", true, "Installer resolved AgentClient, RDW, task, navigation, arrival, and experiment logging components.");
+
+        if (experimentLogger.Session != null || taskController.RuntimeState.phase != GuidanceRuntimePhase.Idle)
+        {
+            Fail("Play Mode created a formal session or started the task before the researcher pressed Start.");
+            return;
+        }
+        Record("play_does_not_auto_start", true, "Play Mode initialized the environment without creating a session or starting the task.");
 
         agentClient.GuidanceReceived.RemoveListener(HandleGuidanceReceived);
         agentClient.GuidanceReceived.AddListener(HandleGuidanceReceived);
@@ -201,7 +214,7 @@ public static class GuidanceLiveBackendValidator
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
         xrTrackingAdapter.SetHeadsetTrackingEnabled(false);
         userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
-        userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.8f, 4.3f), 0f);
+        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.8f, 1.65f, 4.3f), Quaternion.identity, validationUser.transform);
 
         if (!physicalSpaceManager.SetPhysicalSpace("narrow_room"))
         {
@@ -217,22 +230,25 @@ public static class GuidanceLiveBackendValidator
         }
 
         var spec = ExperimentConditionMatrix.Build(5, 1, 1, "CODEX_VALIDATION");
-        experimentLogger.StartSession(spec);
-        taskController.ConfigureTask(spec.ToTaskDefinition());
+        agentClient.SetBackendOnlineForTesting(true);
+        experimentDashboard.SetParticipantId(spec.participantId);
+        experimentDashboard.SetConditionIndex(5);
+        experimentDashboard.SetTaskIndex(1);
+        experimentDashboard.SetPhysicalSpaceIndex(1);
 
         requestFailure = string.Empty;
         liveResponse = null;
         stage = ValidationStage.WaitingForApprovedResponse;
         deadline = EditorApplication.timeSinceStartup + 12d;
-        agentClient.RequestGuidance(new GuidanceRequestContext
+        experimentDashboard.StartSession();
+        if (experimentDashboard.RunState != ExperimentRunState.Running ||
+            experimentLogger.Session == null || !experimentLogger.Session.IsActive ||
+            !taskController.RuntimeState.IsNavigating)
         {
-            condition = spec.condition,
-            task_id = spec.taskId,
-            current_exhibit = spec.startExhibitId,
-            semantic_next_target = spec.semanticNextTargetId,
-            participant_id = spec.participantId,
-            user_task = spec.userTask
-        });
+            Fail("Dashboard Start gate did not create one running formal session.");
+            return;
+        }
+        Record("dashboard_start_gate", true, "Valid backend, tracking, physical space, and participant inputs started exactly one formal session.");
     }
 
     private static void HandleGuidanceReceived(GuidanceResponse response)
@@ -274,7 +290,7 @@ public static class GuidanceLiveBackendValidator
         var movementText = FindText("MovementHintPanel_Text");
         var rejectionText = FindText("RejectionPanel_Text");
         var presentationApplied = narrationText != null && narrationText.text == liveResponse.narration &&
-                                  movementText != null && movementText.text == "Movement: turn left slowly" &&
+                                  movementText != null && movementText.text == "缓慢向左转" &&
                                   (rejectionText == null || string.IsNullOrWhiteSpace(rejectionText.text));
         if (!presentationApplied)
         {
@@ -283,6 +299,56 @@ public static class GuidanceLiveBackendValidator
         }
 
         Record("live_backend_approved", true, "Unity received E3 / turn_left_slowly from the Anaconda-hosted backend and applied the visible guidance.");
+
+        experimentDashboard.PauseSession();
+        var pauseText = FindText("SafetyText");
+        if (experimentDashboard.RunState != ExperimentRunState.Paused ||
+            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedByResearcher ||
+            pauseText == null || pauseText.text != "实验已暂停，请保持原地")
+        {
+            Fail("Researcher pause did not freeze the task and show the semantic participant pause message.");
+            return;
+        }
+        riskEvaluator.EvaluateNow();
+        var pausedLog = File.ReadAllText(experimentLogger.LogPath);
+        if (!pausedLog.Contains("\"event_type\":\"risk_state_changed\"") || !pausedLog.Contains("\"run_state\":\"paused\""))
+        {
+            Fail("Risk evaluation did not continue logging with run_state=paused.");
+            return;
+        }
+        Record("researcher_pause_risk_continues", true, "Pause froze navigation while risk evaluation continued and logged run_state=paused.");
+
+        experimentDashboard.ResumeSession();
+        agentClient.CancelPendingRequest();
+        if (experimentDashboard.RunState != ExperimentRunState.Running || !taskController.RuntimeState.IsNavigating)
+        {
+            Fail("Researcher resume did not restore the running task after a safe risk evaluation.");
+            return;
+        }
+
+        userPoseTracker.SetSimulatedPhysicalPose(new Vector2(10f, 10f), 0f);
+        riskEvaluator.EvaluateNow();
+        if (experimentDashboard.RunState != ExperimentRunState.SafetyHold)
+        {
+            Fail("Critical/reset risk did not enter SafetyHold.");
+            return;
+        }
+        experimentDashboard.ResumeSession();
+        if (experimentDashboard.RunState != ExperimentRunState.SafetyHold)
+        {
+            Fail("SafetyHold resumed while risk was still critical.");
+            return;
+        }
+        userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.8f, 4.3f), 0f);
+        riskEvaluator.EvaluateNow();
+        experimentDashboard.ResumeSession();
+        agentClient.CancelPendingRequest();
+        if (experimentDashboard.RunState != ExperimentRunState.Running)
+        {
+            Fail("SafetyHold did not resume after risk returned to a safe state.");
+            return;
+        }
+        Record("safety_hold_resume_gate", true, "Critical risk entered SafetyHold, blocked unsafe resume, and resumed only after risk recovery.");
 
         var rejected = CopyResponse(liveResponse);
         rejected.verifier = new VerifierResult
@@ -301,16 +367,31 @@ public static class GuidanceLiveBackendValidator
         var narrationText = FindText("GuidanceTextPanel_Text");
         var movementText = FindText("MovementHintPanel_Text");
         var rejectionText = FindText("RejectionPanel_Text");
-        var rejectedCleanly = narrationText != null && narrationText.text == "Guide narration will appear here." &&
-                              movementText != null && movementText.text == "Movement: waiting" &&
-                              rejectionText != null && rejectionText.text.Contains(RejectionReason);
+        var safetyText = FindText("SafetyText");
+        var rejectedCleanly = narrationText != null && string.IsNullOrEmpty(narrationText.text) &&
+                              movementText != null && string.IsNullOrEmpty(movementText.text) &&
+                              rejectionText != null && rejectionText.text.Contains(RejectionReason) &&
+                              safetyText != null && safetyText.text == "系统暂时无法继续，请保持原地" &&
+                              !safetyText.text.Contains(RejectionReason);
         if (!rejectedCleanly)
         {
             Fail("Verifier-rejected response did not clear guidance and expose its rejection reason.");
             return;
         }
 
-        Record("verifier_rejected_presentation", true, "A rejected clone of the live response traversed the real event wiring, cleared guidance, and displayed the verifier reason.");
+        Record("verifier_rejected_presentation", true, "Rejected guidance cleared participant presentation, showed a semantic safety message, and kept the raw verifier reason in Debug only.");
+        guidanceSessionLogPath = experimentLogger.LogPath;
+        experimentDashboard.EndSession("validation_rejected");
+        experimentDashboard.SetParticipantId("CODEX_VALIDATION_ROUTE");
+        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.8f, 1.65f, 4.3f), Quaternion.identity, validationUser.transform);
+        agentClient.SetBackendOnlineForTesting(true);
+        experimentDashboard.StartSession();
+        agentClient.CancelPendingRequest();
+        if (experimentDashboard.RunState != ExperimentRunState.Running)
+        {
+            Fail("Could not open a second participant session after ending the rejected session.");
+            return;
+        }
         StartArrivalCheck("E3", ValidationStage.WaitingForE3Arrival);
     }
 
@@ -320,12 +401,6 @@ public static class GuidanceLiveBackendValidator
         {
             Fail($"Could not resolve scene target {targetId}.");
             return;
-        }
-
-        if (targetId == "E3")
-        {
-            var spec = ExperimentConditionMatrix.Build(5, 1, 1, "CODEX_VALIDATION");
-            taskController.ConfigureTask(spec.ToTaskDefinition());
         }
 
         arrivedTarget = string.Empty;
@@ -359,9 +434,14 @@ public static class GuidanceLiveBackendValidator
 
         if (expectCompleted)
         {
-            stage = ValidationStage.VerifyingSessionLog;
+            if (experimentDashboard.RunState != ExperimentRunState.Completing)
+            {
+                Fail("Final arrival did not enter the 10-second Completing state.");
+                return;
+            }
+            stage = ValidationStage.WaitingForAutomaticEnd;
             notBefore = EditorApplication.timeSinceStartup + 0.1d;
-            deadline = EditorApplication.timeSinceStartup + 3d;
+            deadline = EditorApplication.timeSinceStartup + 12d;
         }
         else
         {
@@ -369,27 +449,47 @@ public static class GuidanceLiveBackendValidator
         }
     }
 
+    private static void VerifyAutomaticEnd()
+    {
+        if (experimentDashboard.RunState != ExperimentRunState.Ended)
+        {
+            return;
+        }
+
+        Record("completion_auto_end", true, "Final arrival entered Completing and automatically ended the session after the 10-second countdown.");
+        stage = ValidationStage.VerifyingSessionLog;
+        notBefore = EditorApplication.timeSinceStartup + 0.1d;
+        deadline = EditorApplication.timeSinceStartup + 3d;
+    }
+
     private static void VerifySessionLog()
     {
         var path = experimentLogger != null ? experimentLogger.LogPath : string.Empty;
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path) ||
+            string.IsNullOrWhiteSpace(guidanceSessionLogPath) || !File.Exists(guidanceSessionLogPath))
         {
             Fail("Experiment session log was not created.");
             return;
         }
 
-        var lines = File.ReadAllLines(path);
-        var hasRequest = Contains(lines, "\"event_type\":\"request_built\"");
-        var hasResponse = Contains(lines, "\"event_type\":\"response_received\"");
-        var hasTaskState = Contains(lines, "\"event_type\":\"task_state_changed\"");
-        var hasParticipant = Contains(lines, "\"participant_id\":\"CODEX_VALIDATION\"");
-        if (!hasRequest || !hasResponse || !hasTaskState || !hasParticipant)
+        var guidanceLines = File.ReadAllLines(guidanceSessionLogPath);
+        var routeLines = File.ReadAllLines(path);
+        var guidanceComplete = Contains(guidanceLines, "\"event_type\":\"request_built\"") &&
+                               Contains(guidanceLines, "\"event_type\":\"response_received\"") &&
+                               Contains(guidanceLines, "\"participant_id\":\"CODEX_VALIDATION\"") &&
+                               Contains(guidanceLines, "\"event_type\":\"session_ended\"");
+        var routeComplete = Contains(routeLines, "\"event_type\":\"request_built\"") &&
+                            Contains(routeLines, "\"event_type\":\"task_state_changed\"") &&
+                            Contains(routeLines, "\"participant_id\":\"CODEX_VALIDATION_ROUTE\"") &&
+                            Contains(routeLines, "\"event_type\":\"session_ended\"") &&
+                            Contains(routeLines, "\"message\":\"completed_auto\"");
+        if (!guidanceComplete || !routeComplete)
         {
-            Fail("Experiment session JSONL is missing request, response, task-state, or participant evidence.");
+            Fail("Experiment session JSONL is missing request, response, task-state, participant, or session-ended evidence.");
             return;
         }
 
-        Record("experiment_session_log", true, $"Validated {lines.Length} JSONL records at {path}.");
+        Record("experiment_session_log", true, $"Validated closed guidance and route JSONL sessions; route log: {path}.");
         Complete();
     }
 
@@ -533,6 +633,7 @@ public static class GuidanceLiveBackendValidator
         userPoseTracker = null;
         riskEvaluator = null;
         xrTrackingAdapter = null;
+        experimentDashboard = null;
         taskController = null;
         navigationTargets = null;
         arrivalDetector = null;
@@ -542,6 +643,7 @@ public static class GuidanceLiveBackendValidator
         requestFailure = string.Empty;
         arrivedTarget = string.Empty;
         reportPath = string.Empty;
+        guidanceSessionLogPath = string.Empty;
     }
 
     private enum ValidationStage
@@ -553,6 +655,7 @@ public static class GuidanceLiveBackendValidator
         VerifyingRejectedPresentation,
         WaitingForE3Arrival,
         WaitingForE5Arrival,
+        WaitingForAutomaticEnd,
         VerifyingSessionLog,
         Exiting
     }

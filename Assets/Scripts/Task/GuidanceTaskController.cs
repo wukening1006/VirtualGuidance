@@ -20,11 +20,6 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// <summary>当前任务运行状态；由本控制器持有并在任务生命周期内复用。</summary>
     public GuidanceRuntimeState RuntimeState => runtimeState;
 
-    private void Awake()
-    {
-        BeginDefaultTask();
-    }
-
     /// <summary>
     /// 从配置路线的首个展品开始任务，并将第二个展品设为下一目标。
     /// </summary>
@@ -36,7 +31,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
     }
 
     /// <summary>
-    /// 替换当前任务定义并立即重新开始任务；null 输入保持现有任务不变。
+    /// 替换当前任务定义，但不开始任务；正式任务只能由 StartTask 显式启动。
     /// </summary>
     public void ConfigureTask(GuidanceTaskDefinition taskDefinition)
     {
@@ -46,21 +41,24 @@ public sealed class GuidanceTaskController : MonoBehaviour
         }
 
         defaultTask = taskDefinition;
+        routeIndex = 0;
+        runtimeState.Reset();
+        StateChanged?.Invoke(runtimeState);
+    }
+
+    /// <summary>使用当前任务定义显式开始任务。</summary>
+    public void StartTask()
+    {
         BeginDefaultTask();
     }
 
     /// <summary>
-    /// 从当前任务状态生成后端请求上下文；Idle 状态会先启动默认任务。
+    /// 从当前任务状态生成后端请求上下文；本方法不会隐式启动任务。
     /// </summary>
     /// <param name="semanticNextTargetOverride">安全选择器给出的目标；为空时使用路线下一目标。</param>
     /// <returns>包含实验条件、任务位置和参与者信息的请求上下文。</returns>
     public GuidanceRequestContext BuildRequestContext(string semanticNextTargetOverride = null)
     {
-        if (runtimeState.phase == GuidanceRuntimePhase.Idle)
-        {
-            BeginDefaultTask();
-        }
-
         return new GuidanceRequestContext
         {
             condition = defaultTask.condition,
@@ -79,7 +77,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// </summary>
     public void HandleArrived(string targetId)
     {
-        if (runtimeState.IsCompleted || string.IsNullOrWhiteSpace(targetId))
+        if (!runtimeState.IsNavigating || string.IsNullOrWhiteSpace(targetId))
         {
             return;
         }
@@ -103,15 +101,56 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// <summary>将任务置为等待物理 reset，并发布一次状态变化。</summary>
     public void PauseForReset()
     {
+        var previousVersion = runtimeState.stateVersion;
         runtimeState.PauseForReset();
-        StateChanged?.Invoke(runtimeState);
+        if (runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
     }
 
     /// <summary>尝试从 reset 暂停恢复，并发布恢复后的任务状态。</summary>
     public void ResumeAfterReset()
     {
+        var previousVersion = runtimeState.stateVersion;
         runtimeState.Resume();
-        StateChanged?.Invoke(runtimeState);
+        if (runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+    }
+
+    /// <summary>研究员暂停任务；暂停期间到达事件不会推进路线。</summary>
+    public void PauseForResearcher()
+    {
+        var previousVersion = runtimeState.stateVersion;
+        runtimeState.PauseForResearcher();
+        if (runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+    }
+
+    /// <summary>研究员恢复任务。</summary>
+    public void ResumeAfterResearcherPause()
+    {
+        var previousVersion = runtimeState.stateVersion;
+        runtimeState.Resume();
+        if (runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+    }
+
+    /// <summary>结束任务并废弃所有在途状态快照。</summary>
+    public void EndTask()
+    {
+        var previousVersion = runtimeState.stateVersion;
+        runtimeState.End();
+        if (runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
     }
 
     private string GetRouteTarget(int index)

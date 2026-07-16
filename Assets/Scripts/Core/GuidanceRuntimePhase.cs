@@ -10,8 +10,12 @@ public enum GuidanceRuntimePhase
     Idle,
     /// <summary>任务已启动且仍有下一路线目标。</summary>
     Navigating,
+    /// <summary>研究员显式暂停任务，等待恢复。</summary>
+    PausedByResearcher,
     /// <summary>物理安全条件要求暂停，等待完成显式 reset。</summary>
     PausedForReset,
     /// <summary>路线中已无下一目标，任务结束。</summary>
-    Completed
+    Completed,
+    /// <summary>实验会话已结束，任务不得继续推进。</summary>
+    Ended
 }

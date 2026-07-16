@@ -16,9 +16,9 @@ public sealed class PauseResetController : MonoBehaviour
     /// <summary>注入暂停流程使用的导览表现、拒绝面板和可选旋转增益控制器。</summary>
     public void Configure(GuidanceExecutor executor, RejectionPanel panel, RotationGainController gainController = null)
     {
-        guidanceExecutor = executor;
-        rejectionPanel = panel;
-        rotationGainController = gainController;
+        if (executor != null) guidanceExecutor = executor;
+        if (panel != null) rejectionPanel = panel;
+        if (gainController != null) rotationGainController = gainController;
     }
 
     /// <summary>

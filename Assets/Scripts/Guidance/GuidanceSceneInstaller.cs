@@ -18,9 +18,9 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [Tooltip("缺少 guidance 核心组件时自动补齐。正式接线稳定后可以关闭，用于发现漏挂组件。")]
     [SerializeField] private bool createMissingCoreComponents = true;
     [Tooltip("缺少调试文本时自动创建运行时 HUD。正式 ExperimentDashboard 接管后可以关闭。")]
-    [SerializeField] private bool createDebugUiIfMissing = true;
+    [SerializeField] private bool createDebugUiIfMissing;
     [Tooltip("创建临时 Request Guidance 按钮。后续由 ExperimentDashboard 驱动请求时应关闭。")]
-    [SerializeField] private bool createRequestButton = true;
+    [SerializeField] private bool createRequestButton;
     [Tooltip("通过 GuidanceCoordinator 执行本地任务/RDW 校验；关闭后保持旧的 AgentClient -> Executor 直连。")]
     [SerializeField] private bool routeResponsesThroughCoordinator = true;
     [Tooltip("安装时打印缺失引用 warning，方便检查场景接线。")]
@@ -54,6 +54,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private ExhibitHighlightManager exhibitHighlightManager;
     [SerializeField] private RejectionPanel rejectionPanel;
     [SerializeField] private GuidanceDebugPanel guidanceDebugPanel;
+    [SerializeField] private ParticipantUiController participantUiController;
 
     [Header("表现对象")]
     [SerializeField] private Transform avatarRoot;
@@ -266,6 +267,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         exhibitHighlightManager = GetOrAdd(exhibitHighlightManager, createMissingCoreComponents);
         rejectionPanel = GetOrAdd(rejectionPanel, createMissingCoreComponents);
         guidanceDebugPanel = GetOrAdd(guidanceDebugPanel, createMissingCoreComponents);
+        participantUiController = GetOrAdd(participantUiController, createMissingCoreComponents);
     }
 
     private void ConfigureComponents()
@@ -279,19 +281,23 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         semanticTargetSelector?.Configure(navigationTargetManager);
         arrivalDetector?.Configure(userPoseTracker, navigationTargetManager);
         localGuidanceValidator?.Configure(navigationTargetManager);
-        narrationPlayer?.Configure(narrationText);
-        movementHintController?.Configure(movementHintText);
-        gazeCueController?.Configure(gazeCueText);
+        if (narrationText != null) narrationPlayer?.Configure(narrationText);
+        if (movementHintText != null) movementHintController?.Configure(movementHintText);
+        if (gazeCueText != null) gazeCueController?.Configure(gazeCueText);
         guideAvatarController?.Configure(avatarRoot, pointingArm);
         exhibitHighlightManager?.RebuildIndex();
-        rejectionPanel?.Configure(rejectionText, rejectionPanelRoot != null ? rejectionPanelRoot : rejectionText != null ? rejectionText.gameObject : null);
-        guidanceDebugPanel?.Configure(debugText);
+        if (rejectionText != null || rejectionPanelRoot != null)
+            rejectionPanel?.Configure(rejectionText, rejectionPanelRoot != null ? rejectionPanelRoot : rejectionText.gameObject);
+        if (debugText != null) guidanceDebugPanel?.Configure(debugText);
         guidanceExecutor?.Configure(narrationPlayer, gazeCueController, movementHintController, guideAvatarController, exhibitHighlightManager, rejectionPanel, guidanceDebugPanel);
         pauseResetController?.Configure(guidanceExecutor, rejectionPanel, rotationGainController);
         rdwController?.Configure(riskEvaluator, pauseResetController);
         rotationGainController?.Configure(userPoseTracker, motionDetector);
         guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
-        experimentDashboard?.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, taskController, guidanceCoordinator, agentClient, experimentLogger, null);
+        experimentDashboard?.Configure(
+            physicalSpaceManager, userPoseTracker, riskEvaluator, xrTrackingAdapter, taskController,
+            guidanceCoordinator, agentClient, experimentLogger, arrivalDetector, rotationGainController,
+            guidanceExecutor, pauseResetController, participantUiController, null);
     }
 
     private void WireEvents()
@@ -381,6 +387,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         WarnIfMissing(exhibitHighlightManager, "ExhibitHighlightManager");
         WarnIfMissing(rejectionPanel, "RejectionPanel");
         WarnIfMissing(guidanceDebugPanel, "GuidanceDebugPanel");
+        WarnIfMissing(participantUiController, "ParticipantUiController");
         WarnIfMissing(narrationText, "GuidanceTextPanel_Text");
         WarnIfMissing(avatarRoot, "GuideAvatar");
         WarnIfMissing(pointingArm, "PointingArm_Debug");

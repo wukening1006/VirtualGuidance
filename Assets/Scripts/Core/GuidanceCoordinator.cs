@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 /// <summary>
@@ -19,6 +20,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private RejectionPanel rejectionPanel;
 
     private GuidanceRequestSnapshot activeSnapshot;
+
+    public event Action<string> GuidanceRejected;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -56,17 +59,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRequestCapture();
         UnbindArrival();
 
-        agentClient = client;
-        guidanceExecutor = executor;
-        taskController = task;
-        navigationTargets = targetManager;
-        semanticTargetSelector = selector;
-        arrivalDetector = detector;
-        riskEvaluator = evaluator;
-        localValidator = validator;
-        pauseResetController = resetController;
-        rotationGainController = gainController;
-        rejectionPanel = rejection;
+        if (client != null) agentClient = client;
+        if (executor != null) guidanceExecutor = executor;
+        if (task != null) taskController = task;
+        if (targetManager != null) navigationTargets = targetManager;
+        if (selector != null) semanticTargetSelector = selector;
+        if (detector != null) arrivalDetector = detector;
+        if (evaluator != null) riskEvaluator = evaluator;
+        if (validator != null) localValidator = validator;
+        if (resetController != null) pauseResetController = resetController;
+        if (gainController != null) rotationGainController = gainController;
+        if (rejection != null) rejectionPanel = rejection;
 
         BindRequestCapture();
         BindArrival();
@@ -77,7 +80,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// </summary>
     public void RequestNextGuidance()
     {
-        if (agentClient == null || taskController == null)
+        if (agentClient == null || taskController == null || !taskController.RuntimeState.IsNavigating)
         {
             return;
         }
@@ -107,6 +110,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var runtimeState = taskController != null ? taskController.RuntimeState : null;
         var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
 
+        if (runtimeState == null || !runtimeState.IsNavigating)
+        {
+            guidanceExecutor?.Clear();
+            return;
+        }
+
+        if (response == null || response.verifier == null || !response.verifier.approved)
+        {
+            guidanceExecutor?.Apply(response);
+            var verifierReason = response == null
+                ? "Guidance response is null."
+                : response.verifier == null
+                    ? "Guidance verifier result is missing."
+                    : response.verifier.reason;
+            GuidanceRejected?.Invoke(string.IsNullOrWhiteSpace(verifierReason) ? "Guidance rejected by verifier." : verifierReason);
+            return;
+        }
+
         // 请求发出后任务或物理风险可能已变化，旧响应必须在任何表现执行前被拒绝。
         if (localValidator != null &&
             !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
@@ -118,6 +139,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 pauseResetController?.PauseForReset(reason);
                 taskController?.PauseForReset();
             }
+
+            GuidanceRejected?.Invoke(reason);
 
             return;
         }

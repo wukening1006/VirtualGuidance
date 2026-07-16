@@ -62,8 +62,8 @@ class GuideMockAgent:
             direction=direction,
             route_decision=route_decision_for_target(target),
             narration=(
-                f"The main route continues ahead. Current forward clearance is "
-                f"{risk_state.clearance_forward:.2f} meters, so keep moving slowly."
+                f"主路线在前方，当前前方可用距离为 {risk_state.clearance_forward:.2f} 米，"
+                "请缓慢前进。"
             ),
             physical_intent="raw_clearance_exposed_without_semantic_intervention",
             intervention_type="raw_physical_data",
@@ -80,8 +80,7 @@ class GuideMockAgent:
                 selected_target=target,
                 route_decision="pause_due_to_risk_label",
                 narration=(
-                    f"The next important exhibit is {target}, but the current "
-                    f"tracking-space risk is {risk_state.boundary_risk}. Please pause briefly."
+                    "下一个重要展品暂时不适合直接前往，请在原地暂停等待。"
                 ),
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
@@ -102,7 +101,7 @@ class GuideMockAgent:
             return GuideDraft(
                 selected_target=target,
                 route_decision="scripted_reset_due_to_boundary_risk",
-                narration="Please stop here. A reset is required before continuing the tour.",
+                narration="请在此停下，继续参观前需要重新校准活动空间。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
                 avatar_action=AvatarAction.WAIT,
@@ -129,8 +128,7 @@ class GuideMockAgent:
                 direction="forward",
                 route_decision="unsafe_forward_without_final_verifier",
                 narration=(
-                    "Let's continue straight toward the key exhibit first, then we can "
-                    "use the side exhibits for context."
+                    "我们先直行前往重点展品，之后再通过两侧展品补充背景。"
                 ),
                 physical_intent="affordance_pipeline_without_final_safety_check",
                 intervention_type="semantic_redirection_without_verifier_failure",
@@ -146,7 +144,7 @@ class GuideMockAgent:
             return GuideDraft(
                 selected_target=request.current_exhibit,
                 route_decision="pause_until_safe_direction_available",
-                narration="Let's pause here for a moment before continuing the tour.",
+                narration="请在此暂停片刻，等待可以安全继续参观。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{request.current_exhibit}_GazeTarget",
                 avatar_action=AvatarAction.WAIT,
@@ -187,20 +185,17 @@ def route_decision_for_affordance(affordance: Affordance, target: str) -> str:
 
 def narration_for_direct_target(request: GuidanceRequest, target: str) -> str:
     if request.task_id == TaskId.T2_MAIN_TARGET.value and target == "E5":
-        return "Let's continue forward to the key exhibit."
+        return "请继续向前，前往重点展品。"
     if request.task_id == TaskId.T3_COMPARE.value:
-        return "Let's move to the comparison exhibit and use it to contrast the ideas."
+        return "请前往对比展品，观察它与当前内容的差异。"
     if request.task_id == TaskId.T4_NEXT_STEP.value:
-        return "A good next step is the exhibit ahead that continues the main storyline."
-    return "Let's continue to the next exhibit for a quick overview."
+        return "请前往前方展品，继续了解主要参观内容。"
+    return "请前往下一个展品，快速了解整体内容。"
 
 
 def narration_for_redirection(target: str, direction: str) -> str:
-    side = "left" if direction == "left" else "right"
-    return (
-        f"Before we move to the main exhibit, let's first look at the related "
-        f"object on your {side}."
-    )
+    side = "左侧" if direction == "left" else "右侧"
+    return f"前往主要展品前，请先看向您{side}的相关展品。"
 
 
 def draft_for_direction(

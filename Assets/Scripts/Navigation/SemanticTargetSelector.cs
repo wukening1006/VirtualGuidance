@@ -16,7 +16,10 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     /// <summary>注入用于查询目标、关联展品及方向的导航索引。</summary>
     public void Configure(NavigationTargetManager targetManager)
     {
-        navigationTargets = targetManager;
+        if (targetManager != null)
+        {
+            navigationTargets = targetManager;
+        }
     }
 
     /// <summary>

@@ -1,3 +1,5 @@
+using System.Collections;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
@@ -6,6 +8,176 @@ using UnityEngine;
 
 public sealed class GuidanceRuntimeEditModeTests
 {
+    [Test]
+    public void ExperimentDashboard_AwakeDoesNotCreateOrStartSession()
+    {
+        var go = new GameObject("ExperimentDashboardLifecycleTest");
+        try
+        {
+            var dashboard = go.AddComponent<ExperimentDashboard>();
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Preparing));
+            Assert.That(dashboard.CurrentSpec, Is.Null);
+        }
+        finally
+        {
+            Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_StartSessionRejectsActiveStateReentry()
+    {
+        var go = new GameObject("ExperimentDashboardReentryTest");
+        go.SetActive(false);
+        try
+        {
+            var dashboard = go.AddComponent<ExperimentDashboard>();
+            var originalSpec = ExperimentConditionMatrix.Build(5, 1, 1, "P-active");
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+            SetPrivateField(dashboard, "currentSpec", originalSpec);
+
+            dashboard.StartSession();
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(dashboard.CurrentSpec, Is.SameAs(originalSpec));
+        }
+        finally
+        {
+            Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_TaskResetStateEntersSafetyHold()
+    {
+        var go = new GameObject("ExperimentDashboardTaskResetTest");
+        go.SetActive(false);
+        try
+        {
+            var dashboard = go.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+            var state = new GuidanceRuntimeState();
+            state.Begin("T2_main_target", "E1", "E3", "E5");
+            state.PauseForReset();
+
+            InvokePrivate(dashboard, "HandleTaskStateChanged", state);
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+        }
+        finally
+        {
+            Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_UnsafeGuidanceShowsSemanticStopMessage()
+    {
+        var root = new GameObject("ExperimentDashboardUnsafeGuidanceTest");
+        root.SetActive(false);
+        try
+        {
+            var guidanceRoot = new GameObject("GuidancePanel");
+            guidanceRoot.transform.SetParent(root.transform, false);
+            var safetyRoot = new GameObject("SafetyPanel");
+            safetyRoot.transform.SetParent(root.transform, false);
+            var participantUi = root.AddComponent<ParticipantUiController>();
+            var safetyText = CreateText(safetyRoot.transform, "SafetyText");
+            participantUi.Configure(
+                guidanceRoot.AddComponent<CanvasGroup>(),
+                safetyRoot.AddComponent<CanvasGroup>(),
+                null,
+                null,
+                null,
+                safetyText);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "participantUiController", participantUi);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+
+            InvokePrivate(dashboard, "HandleGuidanceRejected", "movement_instruction uses unsafe forward");
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Error));
+            Assert.That(safetyText.text, Is.EqualTo("请停止前进"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_CompletionSafetyHoldPreservesCountdownAndRequiresSafeRisk()
+    {
+        var root = new GameObject("ExperimentDashboardCompletionSafetyTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            task.HandleArrived("E5");
+
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+            SetPrivateField(dashboard, "stateBeforeSafetyHold", ExperimentRunState.Completing);
+            SetPrivateField(dashboard, "completionSecondsRemaining", 6f);
+
+            InvokePrivate(dashboard, "ResumeSessionWithRisk", new PhysicalRiskState
+            {
+                boundary_risk = "critical",
+                reset_risk = "critical",
+                reset_required = true,
+                safe_directions = new string[0]
+            });
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(dashboard.CompletionSecondsRemaining, Is.EqualTo(6f));
+
+            InvokePrivate(dashboard, "ResumeSessionWithRisk", new PhysicalRiskState
+            {
+                boundary_risk = "low",
+                reset_risk = "low",
+                reset_required = false,
+                safe_directions = new[] { "forward" }
+            });
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Completing));
+            Assert.That(dashboard.CompletionSecondsRemaining, Is.EqualTo(6f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_CompletionCountdownDoesNotTickOutsideCompleting()
+    {
+        var root = new GameObject("ExperimentDashboardCountdownFreezeTest");
+        root.SetActive(false);
+        try
+        {
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+            SetPrivateField(dashboard, "completionSecondsRemaining", 4f);
+
+            var routine = (IEnumerator)InvokePrivateWithResult(dashboard, "CompletionCountdownRoutine");
+            Assert.That(routine.MoveNext(), Is.False);
+            Assert.That(dashboard.CompletionSecondsRemaining, Is.EqualTo(4f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
     [Test]
     public void GuidanceTaskController_AdvancesConfiguredRouteToCompleted()
     {
@@ -23,6 +195,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 finalTargetId = "E5",
                 routeTargetIds = new[] { "E1", "E3", "E5" }
             });
+            Assert.That(controller.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Idle));
+            controller.StartTask();
 
             Assert.That(controller.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
             Assert.That(controller.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
@@ -231,15 +405,15 @@ public sealed class GuidanceRuntimeEditModeTests
             });
 
             Assert.That(narrationText.text, Is.EqualTo("Move toward exhibit E5."));
-            Assert.That(movementText.text, Is.EqualTo("Movement: move forward slowly"));
-            Assert.That(gazeText.text, Does.Contain("look_forward"));
+            Assert.That(movementText.text, Is.EqualTo("缓慢向前移动"));
+            Assert.That(gazeText.text, Is.EqualTo("请看向前方"));
             Assert.That(gain.IsActive, Is.True);
 
             pauseReset.PauseForReset("All directions unsafe.");
 
             Assert.That(pauseReset.IsPaused, Is.True);
-            Assert.That(narrationText.text, Is.EqualTo("Guide narration will appear here."));
-            Assert.That(movementText.text, Is.EqualTo("Movement: waiting"));
+            Assert.That(narrationText.text, Is.Empty);
+            Assert.That(movementText.text, Is.Empty);
             Assert.That(gazeText.text, Is.Empty);
             Assert.That(rejectionRoot.activeSelf, Is.True);
             Assert.That(rejectionText.text, Does.Contain("All directions unsafe."));
@@ -350,6 +524,169 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceCoordinator_VerifierRejectionPublishesReasonWithoutApplyingGuidance()
+    {
+        var root = new GameObject("GuidanceCoordinatorVerifierTest");
+        root.SetActive(false);
+        try
+        {
+            var narrationText = CreateText(root.transform, "NarrationText");
+            var rejectionRoot = new GameObject("RejectionRoot");
+            rejectionRoot.transform.SetParent(root.transform, false);
+            var rejectionText = CreateText(rejectionRoot.transform, "RejectionText");
+            var narration = root.AddComponent<NarrationPlayer>();
+            narration.Configure(narrationText);
+            var rejection = root.AddComponent<RejectionPanel>();
+            rejection.Configure(rejectionText, rejectionRoot);
+            var executor = root.AddComponent<GuidanceExecutor>();
+            executor.Configure(narration, null, null, null, null, rejection, null);
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, executor, task, null, null, null, null, null, null, null, rejection);
+            string rejectedReason = null;
+            coordinator.GuidanceRejected += reason => rejectedReason = reason;
+
+            coordinator.HandleGuidanceResponse(new GuidanceResponse
+            {
+                narration = "不应显示",
+                movement_instruction = "turn_left_slowly",
+                verifier = new VerifierResult { approved = false, reason = "verifier blocked" }
+            });
+
+            Assert.That(rejectedReason, Is.EqualTo("verifier blocked"));
+            Assert.That(narrationText.text, Is.Empty);
+            Assert.That(rejectionText.text, Does.Contain("verifier blocked"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceTaskController_ResearcherPauseBlocksArrivalAndIncrementsVersion()
+    {
+        var go = new GameObject("GuidanceTaskPauseTest");
+        try
+        {
+            var controller = go.AddComponent<GuidanceTaskController>();
+            controller.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            controller.StartTask();
+            var runningVersion = controller.RuntimeState.stateVersion;
+
+            controller.PauseForResearcher();
+            Assert.That(controller.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
+            Assert.That(controller.RuntimeState.stateVersion, Is.GreaterThan(runningVersion));
+
+            controller.HandleArrived("E3");
+            Assert.That(controller.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+
+            controller.ResumeAfterResearcherPause();
+            Assert.That(controller.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            controller.HandleArrived("E3");
+            Assert.That(controller.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void ExperimentSession_TracksPauseAndExplicitEnd()
+    {
+        var session = ExperimentSession.Start(ExperimentConditionMatrix.Build(5, 1, 1, "P099"));
+        Assert.That(session.IsActive, Is.True);
+
+        session.BeginPause();
+        session.BeginPause();
+        Assert.That(session.pauseCount, Is.EqualTo(1));
+        session.EndPause();
+        session.End("researcher_ended");
+
+        Assert.That(session.IsActive, Is.False);
+        Assert.That(session.endReason, Is.EqualTo("researcher_ended"));
+        Assert.That(session.endedAtUtc, Is.Not.Empty);
+        Assert.That(session.totalPausedSeconds, Is.GreaterThanOrEqualTo(0d));
+    }
+
+    [Test]
+    public void ExperimentLogger_WritesSessionEndedBeforeClosingSession()
+    {
+        var root = new GameObject("ExperimentLoggerEndSessionTest");
+        string logPath = null;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-log"));
+            logPath = logger.LogPath;
+
+            logger.EndSession("completed_auto");
+
+            Assert.That(logger.Session.IsActive, Is.False);
+            Assert.That(File.Exists(logPath), Is.True);
+            var lines = File.ReadAllLines(logPath);
+            Assert.That(lines.Length, Is.EqualTo(2));
+            Assert.That(lines[0], Does.Contain("\"event_type\":\"session_started\""));
+            Assert.That(lines[1], Does.Contain("\"event_type\":\"session_ended\""));
+            Assert.That(lines[1], Does.Contain("\"message\":\"completed_auto\""));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
+    public void ParticipantUiController_SafetyPanelExcludesGuidancePanel()
+    {
+        var root = new GameObject("ParticipantUiControllerTest");
+        try
+        {
+            var guidanceRoot = new GameObject("GuidancePanel");
+            guidanceRoot.transform.SetParent(root.transform, false);
+            var safetyRoot = new GameObject("SafetyPanel");
+            safetyRoot.transform.SetParent(root.transform, false);
+            var guidanceGroup = guidanceRoot.AddComponent<CanvasGroup>();
+            var safetyGroup = safetyRoot.AddComponent<CanvasGroup>();
+            var safetyText = CreateText(safetyRoot.transform, "SafetyText");
+            var controller = root.AddComponent<ParticipantUiController>();
+            controller.Configure(guidanceGroup, safetyGroup, null, null, null, safetyText);
+
+            controller.ShowGuidance();
+            Assert.That(guidanceGroup.alpha, Is.EqualTo(1f));
+            Assert.That(safetyGroup.alpha, Is.EqualTo(0f));
+
+            controller.ShowCriticalSafety();
+            Assert.That(guidanceGroup.alpha, Is.EqualTo(0f));
+            Assert.That(safetyGroup.alpha, Is.EqualTo(1f));
+            Assert.That(safetyText.text, Is.EqualTo("请立即停止移动，等待研究员指引"));
+            Assert.That(controller.SafetyVisible, Is.True);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void GuidanceDtos_KeepBackendJsonContractFieldNames()
     {
         AssertPublicFieldNames<GuidanceRequest>(
@@ -397,5 +734,24 @@ public sealed class GuidanceRuntimeEditModeTests
             .ToArray();
 
         Assert.That(actualNames, Is.EqualTo(expectedNames), typeof(T).Name);
+    }
+
+    private static void SetPrivateField<T>(object target, string fieldName, T value)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(field, Is.Not.Null, fieldName);
+        field.SetValue(target, value);
+    }
+
+    private static void InvokePrivate(object target, string methodName, params object[] args)
+    {
+        InvokePrivateWithResult(target, methodName, args);
+    }
+
+    private static object InvokePrivateWithResult(object target, string methodName, params object[] args)
+    {
+        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null, methodName);
+        return method.Invoke(target, args);
     }
 }

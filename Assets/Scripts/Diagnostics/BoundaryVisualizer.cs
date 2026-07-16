@@ -21,6 +21,8 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     [SerializeField] private float directionArrowLength = 0.9f;
     [Tooltip("边界线和方向线宽度，单位：米。")]
     [SerializeField] private float lineWidth = 0.04f;
+    [Tooltip("研究员专用调试 Layer；运行时生成的所有可视化对象都会使用该 Layer。")]
+    [SerializeField] private string researcherOnlyLayerName = "ResearcherOnly";
 
     // 三个方向线随 risk state 改色，使用字典可避免每帧按名称查找对象。
     private readonly Dictionary<string, LineRenderer> directionLines = new Dictionary<string, LineRenderer>();
@@ -31,6 +33,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     private LineRenderer boundaryLine;
     private GameObject userMarker;
     private Material lineMaterial;
+    private Vector2 physicalSpaceCenter;
 
     private void Awake()
     {
@@ -118,9 +121,12 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         var space = physicalSpaceManager != null ? physicalSpaceManager.CurrentSpace : null;
         if (space == null)
         {
+            physicalSpaceCenter = Vector2.zero;
             boundaryLine.positionCount = 0;
             return;
         }
+
+        physicalSpaceCenter = ComputeBoundaryCenter(space.boundary);
 
         boundaryLine.positionCount = space.boundary.Length + 1;
         for (var i = 0; i < space.boundary.Length; i++)
@@ -141,6 +147,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             // 障碍物使用薄圆柱体表达 footprint，便于从 Scene View 俯视检查阻挡方向。
             var obstacleObject = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             obstacleObject.name = $"PhysicalObstacle_{obstacle.id}";
+            ApplyResearcherLayer(obstacleObject);
             obstacleObject.transform.SetParent(visualizationRoot, false);
             obstacleObject.transform.position = ToWorld(obstacle.center) + Vector3.up * 0.02f;
             obstacleObject.transform.localScale = new Vector3(obstacle.radius * 2f, 0.04f, obstacle.radius * 2f);
@@ -218,6 +225,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         {
             // 所有调试对象统一挂在组件下，便于场景层级管理和后续整体隐藏。
             var rootObject = new GameObject("PhysicalSpaceDebugView");
+            ApplyResearcherLayer(rootObject);
             rootObject.transform.SetParent(transform, false);
             visualizationRoot = rootObject.transform;
         }
@@ -242,6 +250,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         {
             userMarker = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             userMarker.name = "PhysicalUserPose";
+            ApplyResearcherLayer(userMarker);
             userMarker.transform.SetParent(visualizationRoot, false);
             userMarker.transform.localScale = new Vector3(0.18f, 0.05f, 0.18f);
             var renderer = userMarker.GetComponent<Renderer>();
@@ -263,6 +272,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     private LineRenderer CreateLine(string lineName, Color color)
     {
         var lineObject = new GameObject(lineName);
+        ApplyResearcherLayer(lineObject);
         lineObject.transform.SetParent(visualizationRoot, false);
         var line = lineObject.AddComponent<LineRenderer>();
         line.useWorldSpace = true;
@@ -273,6 +283,20 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         line.startColor = color;
         line.endColor = color;
         return line;
+    }
+
+    private void ApplyResearcherLayer(GameObject target)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        var layer = LayerMask.NameToLayer(researcherOnlyLayerName);
+        if (layer >= 0)
+        {
+            target.layer = layer;
+        }
     }
 
     private Material CreateColorMaterial(Color color)
@@ -308,7 +332,26 @@ public sealed class BoundaryVisualizer : MonoBehaviour
 
     private Vector3 ToWorld(Vector2 physicalPoint)
     {
-        return visualizationOrigin + new Vector3(physicalPoint.x, 0f, physicalPoint.y);
+        var centered = physicalPoint - physicalSpaceCenter;
+        return visualizationOrigin + new Vector3(centered.x, 0f, centered.y);
+    }
+
+    private static Vector2 ComputeBoundaryCenter(Vector2[] boundary)
+    {
+        if (boundary == null || boundary.Length == 0)
+        {
+            return Vector2.zero;
+        }
+
+        var min = boundary[0];
+        var max = boundary[0];
+        for (var i = 1; i < boundary.Length; i++)
+        {
+            min = Vector2.Min(min, boundary[i]);
+            max = Vector2.Max(max, boundary[i]);
+        }
+
+        return (min + max) * 0.5f;
     }
 
     private void ResolveReferences()

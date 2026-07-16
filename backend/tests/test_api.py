@@ -31,6 +31,10 @@ def read_log_records(tmp_path: Path) -> list[dict]:
     return [json.loads(line) for line in log_files[0].read_text(encoding="utf-8").splitlines()]
 
 
+def assert_chinese_narration(body: dict) -> None:
+    assert any("\u4e00" <= char <= "\u9fff" for char in body["narration"])
+
+
 def test_health_reports_loaded_configs(tmp_path: Path) -> None:
     response = make_client(tmp_path).get("/health")
 
@@ -57,6 +61,7 @@ def test_b1_narrow_room_returns_forward_and_logs_risk(tmp_path: Path) -> None:
     assert body["movement_instruction"] == "move_forward_slowly"
     assert body["avatar_action"] == "point_forward"
     assert body["verifier"]["approved"] is True
+    assert_chinese_narration(body)
 
     record = read_log_records(tmp_path)[0]
     assert record["selected_target"] == "E5"
@@ -83,6 +88,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "verifier",
     }
     assert set(body["verifier"]) == {"approved", "reason"}
+    assert_chinese_narration(body)
 
 
 def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> None:
@@ -98,6 +104,7 @@ def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> No
     assert body["movement_instruction"] == "turn_left_slowly"
     assert body["movement_instruction"] != "move_forward_slowly"
     assert body["verifier"]["approved"] is True
+    assert_chinese_narration(body)
 
 
 def test_b5_narrow_room_returns_unsafe_forward_without_verifier(tmp_path: Path) -> None:
@@ -111,6 +118,7 @@ def test_b5_narrow_room_returns_unsafe_forward_without_verifier(tmp_path: Path) 
     assert body["movement_instruction"] == "move_forward_slowly"
     assert body["verifier"]["approved"] is True
     assert "not applied" in body["verifier"]["reason"]
+    assert_chinese_narration(body)
 
 
 def test_b4_scripted_reset_logs_explicit_reset(tmp_path: Path) -> None:
@@ -121,6 +129,7 @@ def test_b4_scripted_reset_logs_explicit_reset(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["movement_instruction"] == "reset_required"
+    assert_chinese_narration(body)
 
     record = read_log_records(tmp_path)[0]
     assert record["explicit_reset_triggered"] is True
