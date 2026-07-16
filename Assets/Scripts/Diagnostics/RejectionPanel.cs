@@ -61,6 +61,11 @@ public sealed class RejectionPanel : MonoBehaviour
         if (rejectionText == null)
         {
             var textObject = GameObject.Find("RejectionPanel_Text");
+            if (textObject == null)
+            {
+                textObject = GameObject.Find("ResearcherDebugPanel_Text");
+            }
+
             if (textObject != null)
             {
                 rejectionText = textObject.GetComponent<TMP_Text>();

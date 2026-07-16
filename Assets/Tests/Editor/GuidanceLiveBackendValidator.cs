@@ -214,7 +214,7 @@ public static class GuidanceLiveBackendValidator
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
         xrTrackingAdapter.SetHeadsetTrackingEnabled(false);
         userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
-        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.8f, 1.65f, 4.3f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
 
         if (!physicalSpaceManager.SetPhysicalSpace("narrow_room"))
         {
@@ -339,7 +339,7 @@ public static class GuidanceLiveBackendValidator
             Fail("SafetyHold resumed while risk was still critical.");
             return;
         }
-        userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.8f, 4.3f), 0f);
+        userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.0f, 2.5f), 0f);
         riskEvaluator.EvaluateNow();
         experimentDashboard.ResumeSession();
         agentClient.CancelPendingRequest();
@@ -366,7 +366,7 @@ public static class GuidanceLiveBackendValidator
     {
         var narrationText = FindText("GuidanceTextPanel_Text");
         var movementText = FindText("MovementHintPanel_Text");
-        var rejectionText = FindText("RejectionPanel_Text");
+        var rejectionText = FindText("RejectionPanel_Text") ?? FindText("ResearcherDebugPanel_Text");
         var safetyText = FindText("SafetyText");
         var rejectedCleanly = narrationText != null && string.IsNullOrEmpty(narrationText.text) &&
                               movementText != null && string.IsNullOrEmpty(movementText.text) &&
@@ -383,7 +383,7 @@ public static class GuidanceLiveBackendValidator
         guidanceSessionLogPath = experimentLogger.LogPath;
         experimentDashboard.EndSession("validation_rejected");
         experimentDashboard.SetParticipantId("CODEX_VALIDATION_ROUTE");
-        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.8f, 1.65f, 4.3f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         agentClient.SetBackendOnlineForTesting(true);
         experimentDashboard.StartSession();
         agentClient.CancelPendingRequest();

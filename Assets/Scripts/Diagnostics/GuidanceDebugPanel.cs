@@ -72,6 +72,11 @@ public sealed class GuidanceDebugPanel : MonoBehaviour
         }
 
         var textObject = GameObject.Find("GuidanceDebugPanel_Text");
+        if (textObject == null)
+        {
+            textObject = GameObject.Find("ResearcherDebugPanel_Text");
+        }
+
         if (textObject != null)
         {
             debugText = textObject.GetComponent<TMP_Text>();
