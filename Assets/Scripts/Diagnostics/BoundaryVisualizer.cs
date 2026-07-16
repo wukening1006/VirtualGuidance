@@ -13,6 +13,8 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     [SerializeField] private UserPoseTracker userPoseTracker;
     [Tooltip("提供方向安全/危险标签的计算器；未配置时自动查找。")]
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [Tooltip("提供固定校准点和校准状态；未校准时隐藏 Physical User Marker。")]
+    [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
 
     [Header("可视化参数")]
     [Tooltip("physical debug view 在 Unity 世界中的起点，单位：米；用于把调试图放在展厅旁边。")]
@@ -31,6 +33,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     private readonly List<GameObject> obstacleObjects = new List<GameObject>();
     private Transform visualizationRoot;
     private LineRenderer boundaryLine;
+    private GameObject calibrationPointMarker;
     private GameObject userMarker;
     private Material lineMaterial;
     private Vector2 physicalSpaceCenter;
@@ -54,6 +57,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
         }
 
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
+        }
+
         RebuildSpace();
         RefreshPoseAndDirections();
     }
@@ -69,6 +77,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         {
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         }
+
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+        }
     }
 
     private void Update()
@@ -82,7 +95,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     /// <param name="spaceManager">提供当前 physical space 边界和障碍物配置的管理器。</param>
     /// <param name="poseTracker">提供用户 physical pose 的追踪器。</param>
     /// <param name="evaluator">提供方向风险标签的计算器。</param>
-    public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker, PhysicalRiskEvaluator evaluator)
+    public void Configure(
+        PhysicalSpaceManager spaceManager,
+        UserPoseTracker poseTracker,
+        PhysicalRiskEvaluator evaluator,
+        PhysicalSpaceCalibration calibration = null)
     {
         if (physicalSpaceManager != null)
         {
@@ -94,9 +111,15 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         }
 
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+        }
+
         physicalSpaceManager = spaceManager;
         userPoseTracker = poseTracker;
         riskEvaluator = evaluator;
+        if (calibration != null) physicalSpaceCalibration = calibration;
 
         if (isActiveAndEnabled && physicalSpaceManager != null)
         {
@@ -106,6 +129,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (isActiveAndEnabled && riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
+        }
+
+        if (isActiveAndEnabled && physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
         }
 
         EnsureObjects();
@@ -127,6 +155,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         }
 
         physicalSpaceCenter = ComputeBoundaryCenter(space.boundary);
+        RefreshCalibrationPoint();
 
         boundaryLine.positionCount = space.boundary.Length + 1;
         for (var i = 0; i < space.boundary.Length; i++)
@@ -164,7 +193,19 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     private void RefreshPoseAndDirections()
     {
         EnsureObjects();
+        RefreshCalibrationPoint();
         if (userPoseTracker == null)
+        {
+            return;
+        }
+
+        var showPhysicalUser = physicalSpaceCalibration == null || physicalSpaceCalibration.IsCalibrationValid;
+        userMarker.SetActive(showPhysicalUser);
+        foreach (var line in directionLines.Values)
+        {
+            line.gameObject.SetActive(showPhysicalUser);
+        }
+        if (!showPhysicalUser)
         {
             return;
         }
@@ -242,6 +283,20 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             boundaryLine = CreateLine("PhysicalBoundary", Color.white);
         }
 
+        if (calibrationPointMarker == null)
+        {
+            calibrationPointMarker = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            calibrationPointMarker.name = "CalibrationPoint";
+            ApplyResearcherLayer(calibrationPointMarker);
+            calibrationPointMarker.transform.SetParent(visualizationRoot, false);
+            calibrationPointMarker.transform.localScale = new Vector3(0.24f, 0.025f, 0.24f);
+            var renderer = calibrationPointMarker.GetComponent<Renderer>();
+            if (renderer != null)
+            {
+                renderer.sharedMaterial = CreateColorMaterial(new Color(1f, 0.82f, 0.12f, 0.9f));
+            }
+        }
+
         EnsureDirectionLine("forward");
         EnsureDirectionLine("left");
         EnsureDirectionLine("right");
@@ -249,7 +304,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (userMarker == null)
         {
             userMarker = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            userMarker.name = "PhysicalUserPose";
+            userMarker.name = "PhysicalUserMarker";
             ApplyResearcherLayer(userMarker);
             userMarker.transform.SetParent(visualizationRoot, false);
             userMarker.transform.localScale = new Vector3(0.18f, 0.05f, 0.18f);
@@ -317,6 +372,23 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         return material;
     }
 
+    private void RefreshCalibrationPoint()
+    {
+        if (calibrationPointMarker == null)
+        {
+            return;
+        }
+
+        var point = physicalSpaceCalibration != null
+            ? physicalSpaceCalibration.CalibrationPointInRoom
+            : Vector2.zero;
+        var yaw = physicalSpaceCalibration != null
+            ? physicalSpaceCalibration.CalibrationForwardYawDegrees
+            : 0f;
+        calibrationPointMarker.transform.position = ToWorld(point) + Vector3.up * 0.025f;
+        calibrationPointMarker.transform.rotation = Quaternion.Euler(0f, yaw, 0f);
+    }
+
     private void ClearObstacles()
     {
         foreach (var obstacleObject in obstacleObjects)
@@ -370,6 +442,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         {
             riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         }
+
+        if (physicalSpaceCalibration == null)
+        {
+            physicalSpaceCalibration = FindObjectOfType<PhysicalSpaceCalibration>();
+        }
     }
 
     private void HandleSpaceChanged(PhysicalSpaceConfig _)
@@ -378,6 +455,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     }
 
     private void HandleRiskStateChanged(PhysicalRiskState _)
+    {
+        RefreshPoseAndDirections();
+    }
+
+    private void HandleCalibrationStateChanged(PhysicalCalibrationState _)
     {
         RefreshPoseAndDirections();
     }

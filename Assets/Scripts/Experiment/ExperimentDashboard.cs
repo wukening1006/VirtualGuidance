@@ -18,6 +18,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     [Header("Dependencies")]
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [SerializeField] private UserPoseTracker userPoseTracker;
+    [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
     [SerializeField] private XRTrackingAdapter xrTrackingAdapter;
     [SerializeField] private GuidanceTaskController taskController;
@@ -90,11 +91,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
         GuidanceExecutor executor,
         PauseResetController resetController,
         ParticipantUiController participantUi,
-        TMP_Text status)
+        TMP_Text status,
+        PhysicalSpaceCalibration calibration = null)
     {
         Unsubscribe();
         if (spaceManager != null) physicalSpaceManager = spaceManager;
         if (poseTracker != null) userPoseTracker = poseTracker;
+        if (calibration != null) physicalSpaceCalibration = calibration;
         if (evaluator != null) riskEvaluator = evaluator;
         if (trackingAdapter != null) xrTrackingAdapter = trackingAdapter;
         if (task != null) taskController = task;
@@ -140,12 +143,41 @@ public sealed class ExperimentDashboard : MonoBehaviour
         PrepareForNextParticipant();
     }
 
-    /// <summary>兼容旧入口：只刷新配置预览，不创建日志或启动任务。</summary>
+    /// <summary>应用配置预览并切换待校准的 Physical Space，不创建日志或启动任务。</summary>
     public void ApplySelection()
     {
         if (IsConfigurationLocked()) return;
         currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
+        physicalSpaceManager?.SetPhysicalSpace(currentSpec.physicalSpaceId);
         RefreshReadinessState();
+    }
+
+    /// <summary>
+    /// 使用最近一份 Raw Tracking Pose 对齐所选 Physical Space 的固定校准点。
+    /// </summary>
+    /// <returns>校准完成且可用于正式实验时返回 true。</returns>
+    public bool CalibratePhysicalSpace()
+    {
+        if (IsConfigurationLocked())
+        {
+            return false;
+        }
+
+        ResolveReferences();
+        currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
+        if (physicalSpaceManager == null ||
+            !physicalSpaceManager.SetPhysicalSpace(currentSpec.physicalSpaceId) ||
+            physicalSpaceCalibration == null ||
+            !physicalSpaceCalibration.CalibrateCurrentPose())
+        {
+            lastStatusMessage = "Calibration failed";
+            RefreshReadinessState();
+            return false;
+        }
+
+        lastStatusMessage = "Calibration valid";
+        RefreshReadinessState();
+        return true;
     }
 
     public void NextCondition() => SetConditionIndex(conditionIndex + 1);
@@ -303,7 +335,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
     public bool CanStartSession(out string missingConditions)
     {
         if (physicalSpaceManager == null || userPoseTracker == null || riskEvaluator == null ||
-            xrTrackingAdapter == null || taskController == null || guidanceCoordinator == null ||
+            physicalSpaceCalibration == null || xrTrackingAdapter == null ||
+            taskController == null || guidanceCoordinator == null ||
             agentClient == null || experimentLogger == null || arrivalDetector == null ||
             rotationGainController == null || guidanceExecutor == null)
         {
@@ -326,6 +359,16 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (!xrTrackingAdapter.IsHeadsetTrackingActive)
         {
             missingConditions = "XR tracking";
+            return false;
+        }
+
+        if (!physicalSpaceCalibration.IsCalibrationValid ||
+            !string.Equals(
+                physicalSpaceCalibration.CalibratedSpaceId,
+                physicalSpaceManager.CurrentSpaceId,
+                StringComparison.Ordinal))
+        {
+            missingConditions = "physical calibration";
             return false;
         }
 
@@ -639,6 +682,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             $"Participant: {spec.participantId}\nCondition: {spec.condition}\nTask: {spec.taskId}\n" +
             $"Physical Space: {spec.physicalSpaceId}\nBackend: {(agentClient != null && agentClient.BackendOnline ? "Online" : "Offline")}\n" +
             $"Tracking: {(xrTrackingAdapter != null && xrTrackingAdapter.IsHeadsetTrackingActive ? "Valid" : "Invalid")}\n" +
+            $"Calibration: {(physicalSpaceCalibration != null ? physicalSpaceCalibration.State.ToString() : "Missing")}\n" +
             $"Risk: {(riskEvaluator != null && riskEvaluator.CurrentRiskState != null ? riskEvaluator.CurrentRiskState.boundary_risk : "unknown")}\n" +
             $"Task State: {(taskController != null ? taskController.RuntimeState.phase.ToString() : "missing")}\n" +
             $"Session State: {runState}\nStatus: {lastStatusMessage}{countdown}";
@@ -648,6 +692,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         if (physicalSpaceManager == null) physicalSpaceManager = FindObjectOfType<PhysicalSpaceManager>();
         if (userPoseTracker == null) userPoseTracker = FindObjectOfType<UserPoseTracker>();
+        if (physicalSpaceCalibration == null) physicalSpaceCalibration = FindObjectOfType<PhysicalSpaceCalibration>();
         if (riskEvaluator == null) riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         if (xrTrackingAdapter == null) xrTrackingAdapter = FindObjectOfType<XRTrackingAdapter>();
         if (taskController == null) taskController = FindObjectOfType<GuidanceTaskController>();

@@ -703,6 +703,98 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentDashboard_RequiresCalibrationBeforeSessionCanStart()
+    {
+        var root = new GameObject("ExperimentDashboardCalibrationGateTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(new Vector3(1f, 1.65f, 2f), Quaternion.identity);
+            var task = root.AddComponent<GuidanceTaskController>();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            var client = root.AddComponent<AgentClient>();
+            client.SetBackendOnlineForTesting(true);
+            var logger = root.AddComponent<ExperimentLogger>();
+            var arrival = root.AddComponent<ArrivalDetector>();
+            var gain = root.AddComponent<RotationGainController>();
+            var executor = root.AddComponent<GuidanceExecutor>();
+            var reset = root.AddComponent<PauseResetController>();
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            dashboard.Configure(
+                space,
+                pose,
+                risk,
+                tracking,
+                task,
+                coordinator,
+                client,
+                logger,
+                arrival,
+                gain,
+                executor,
+                reset,
+                null,
+                null,
+                calibration);
+
+            Assert.That(dashboard.CanStartSession(out var missingBefore), Is.False);
+            Assert.That(missingBefore, Is.EqualTo("physical calibration"));
+
+            Assert.That(dashboard.CalibratePhysicalSpace(), Is.True);
+            Assert.That(space.CurrentSpaceId, Is.EqualTo("narrow_room"));
+            Assert.That(calibration.IsCalibrationValid, Is.True);
+            Assert.That(dashboard.CanStartSession(out var missingAfter), Is.True, missingAfter);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void BoundaryVisualizer_KeepsCalibrationPointFixedWhilePhysicalUserMarkerMoves()
+    {
+        var root = new GameObject("BoundaryCalibrationMarkersTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(1f, 2f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(5f, 5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose);
+            var visualizer = root.AddComponent<BoundaryVisualizer>();
+            visualizer.Configure(space, pose, risk, calibration);
+
+            var calibrationPoint = root.transform.Find("PhysicalSpaceDebugView/CalibrationPoint");
+            var userMarker = root.transform.Find("PhysicalSpaceDebugView/PhysicalUserMarker");
+            Assert.That(calibrationPoint, Is.Not.Null);
+            Assert.That(userMarker, Is.Not.Null);
+            Assert.That(userMarker.gameObject.activeSelf, Is.True);
+            Assert.That(userMarker.position.x, Is.EqualTo(calibrationPoint.position.x).Within(0.001f));
+            Assert.That(userMarker.position.z, Is.EqualTo(calibrationPoint.position.z).Within(0.001f));
+            var fixedCalibrationPosition = calibrationPoint.position;
+
+            calibration.UpdateRawTrackingPose(new Vector2(6f, 5f), 0f);
+            InvokePrivate(visualizer, "RefreshPoseAndDirections");
+
+            Assert.That(calibrationPoint.position, Is.EqualTo(fixedCalibrationPosition));
+            Assert.That(userMarker.position.x, Is.EqualTo(fixedCalibrationPosition.x + 1f).Within(0.001f));
+            Assert.That(userMarker.position.z, Is.EqualTo(fixedCalibrationPosition.z).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void ExperimentConditionMatrix_CoversExpectedExperimentGrid()
     {
         Assert.That(ExperimentConditionMatrix.TotalCombinations, Is.EqualTo(96));
