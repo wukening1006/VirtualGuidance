@@ -2,12 +2,14 @@ using UnityEngine;
 using UnityEngine.XR;
 
 /// <summary>
-/// 将 Unity XR 头显局部位姿转换为 UserPoseTracker 使用的 physical XZ 位姿。
-/// 可在无头显时通过 ApplyTrackedPose 注入采样，统一向请求和实验模块提供用户状态。
+/// 读取 Unity XR 头显局部位姿，并将 Raw Tracking Pose 交给 PhysicalSpaceCalibration。
+/// 虚拟位姿仍由头显 Transform 提供，Physical Room Pose 必须经过独立校准后写入追踪器。
 /// </summary>
 public sealed class XRTrackingAdapter : MonoBehaviour
 {
     [SerializeField] private UserPoseTracker userPoseTracker;
+    [Tooltip("将 Raw Tracking Pose 转换为 Physical Room Pose 的校准组件。")]
+    [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
     [SerializeField] private bool readHeadsetTrackingWhenAvailable = true;
     [SerializeField] private Transform headsetTransform;
 
@@ -26,11 +28,15 @@ public sealed class XRTrackingAdapter : MonoBehaviour
     }
 
     /// <summary>注入接收物理位姿的追踪器，并尝试绑定主相机作为虚拟头部。</summary>
-    public void Configure(UserPoseTracker poseTracker)
+    public void Configure(UserPoseTracker poseTracker, PhysicalSpaceCalibration calibration = null)
     {
         if (poseTracker != null)
         {
             userPoseTracker = poseTracker;
+        }
+        if (calibration != null)
+        {
+            physicalSpaceCalibration = calibration;
         }
         ResolveHeadsetTransform();
     }
@@ -42,6 +48,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
         if (!enabled)
         {
             IsHeadsetTrackingActive = false;
+            physicalSpaceCalibration?.ReportTrackingLost();
         }
     }
 
@@ -50,6 +57,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
         if (!readHeadsetTrackingWhenAvailable || userPoseTracker == null)
         {
             IsHeadsetTrackingActive = false;
+            physicalSpaceCalibration?.ReportTrackingLost();
             return;
         }
 
@@ -60,6 +68,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
             !headDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out var localRotation))
         {
             IsHeadsetTrackingActive = false;
+            physicalSpaceCalibration?.ReportTrackingLost();
             return;
         }
 
@@ -82,8 +91,8 @@ public sealed class XRTrackingAdapter : MonoBehaviour
 
         LastHeadLocalPosition = localPosition;
         LastHeadLocalRotation = localRotation;
-        // physical 二维坐标使用 x 承载 X、y 承载 Unity Z，并以 +Z 为 yaw 0 度。
-        userPoseTracker.SetTrackedPhysicalPose(
+        // Raw Tracking 二维坐标使用 x 承载 X、y 承载 Unity Z；校准组件负责转换到 Room Space。
+        physicalSpaceCalibration?.UpdateRawTrackingPose(
             new Vector2(localPosition.x, localPosition.z),
             HorizontalYawDegrees(localRotation));
 
@@ -117,6 +126,11 @@ public sealed class XRTrackingAdapter : MonoBehaviour
         if (userPoseTracker == null)
         {
             userPoseTracker = FindObjectOfType<UserPoseTracker>();
+        }
+
+        if (physicalSpaceCalibration == null)
+        {
+            physicalSpaceCalibration = FindObjectOfType<PhysicalSpaceCalibration>();
         }
 
         ResolveHeadsetTransform();

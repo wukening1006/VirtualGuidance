@@ -12,7 +12,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     [Header("风险计算依赖")]
     [Tooltip("提供当前 physical space 配置的管理器；未配置时自动查找。")]
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
-    [Tooltip("提供用户 physical pose 的追踪器；未配置时自动查找。")]
+    [Tooltip("提供校准后的 Physical Room Pose；XR Raw Tracking Pose 不得直接写入此追踪器。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
 
     [Header("风险阈值")]

@@ -1,7 +1,7 @@
 using UnityEngine;
 
 /// <summary>
-/// 维护用户虚拟位姿和可模拟的 physical 位姿，后续可替换为真实 XR tracking 输入。
+/// 分别维护用户虚拟位姿与 Physical Room 位姿；XR Raw Tracking Pose 必须先经过校准组件转换。
 /// </summary>
 public sealed class UserPoseTracker : MonoBehaviour
 {
@@ -71,11 +71,11 @@ public sealed class UserPoseTracker : MonoBehaviour
     }
 
     /// <summary>
-    /// 写入 XR 设备提供的 physical 位姿，与模拟输入共用同一运行时状态。
+    /// 写入已由 PhysicalSpaceCalibration 转换的 Physical Room 位姿。
     /// </summary>
     /// <param name="position">physical XZ 平面位置，x/y 分别对应 Unity X/Z，单位：米。</param>
     /// <param name="yawDegrees">以 +Z 为 0 度的水平朝向角，单位：度。</param>
-    public void SetTrackedPhysicalPose(Vector2 position, float yawDegrees)
+    public void SetCalibratedPhysicalPose(Vector2 position, float yawDegrees)
     {
         SetPhysicalPose(position, yawDegrees);
     }

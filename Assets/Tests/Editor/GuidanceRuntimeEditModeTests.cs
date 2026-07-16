@@ -466,7 +466,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void XRTrackingAdapter_MapsHeadPoseIntoPhysicalAndVirtualState()
+    public void XRTrackingAdapter_SeparatesRawTrackingFromCalibratedPhysicalPose()
     {
         var root = new GameObject("XRTrackingAdapterTest");
         var virtualHead = new GameObject("XRTrackingAdapterVirtualHead");
@@ -477,28 +477,228 @@ public sealed class GuidanceRuntimeEditModeTests
                 Quaternion.Euler(0f, 70f, 0f));
 
             var pose = root.AddComponent<UserPoseTracker>();
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2f, 3f), 0f);
             var adapter = root.AddComponent<XRTrackingAdapter>();
-            adapter.Configure(pose);
+            adapter.Configure(pose, calibration);
             adapter.ApplyTrackedPose(
                 new Vector3(1.25f, 1.65f, -0.5f),
                 Quaternion.Euler(0f, 35f, 0f),
                 virtualHead.transform);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
 
             Assert.That(adapter.IsHeadsetTrackingActive, Is.True);
             Assert.That(adapter.LastHeadLocalPosition, Is.EqualTo(new Vector3(1.25f, 1.65f, -0.5f)));
-            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(1.25f, -0.5f)));
-            Assert.That(adapter.PhysicalYawDegrees, Is.EqualTo(35f).Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(2f, 3f)));
+            Assert.That(adapter.PhysicalYawDegrees, Is.Zero.Within(0.001f));
 
             var snapshot = adapter.CaptureSnapshot();
             Assert.That(snapshot.virtualPosition, Is.EqualTo(virtualHead.transform.position));
             Assert.That(snapshot.virtualForward, Is.EqualTo(virtualHead.transform.forward));
-            Assert.That(snapshot.physicalPosition, Is.EqualTo(new Vector2(1.25f, -0.5f)));
-            Assert.That(snapshot.physicalYawDegrees, Is.EqualTo(35f).Within(0.001f));
+            Assert.That(snapshot.physicalPosition, Is.EqualTo(new Vector2(2f, 3f)));
+            Assert.That(snapshot.physicalYawDegrees, Is.Zero.Within(0.001f));
         }
         finally
         {
             Object.DestroyImmediate(root);
             Object.DestroyImmediate(virtualHead);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_ZeroOffsetMapsRawPoseDirectly()
+    {
+        var root = new GameObject("PhysicalCalibrationZeroTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.UpdateRawTrackingPose(new Vector2(1f, 2f), 25f);
+            calibration.SetCalibrationPoint(new Vector2(1f, 2f), 25f);
+
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(1f, 2f)));
+            Assert.That(YawOf(pose.PhysicalForwardXZ), Is.EqualTo(25f).Within(0.001f));
+
+            calibration.UpdateRawTrackingPose(new Vector2(2f, 4f), 40f);
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(2f, 4f)));
+            Assert.That(YawOf(pose.PhysicalForwardXZ), Is.EqualTo(40f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_TranslationAlignsRawOriginToRoomPoint()
+    {
+        var root = new GameObject("PhysicalCalibrationTranslationTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(1f, 2f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(10f, 20f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            calibration.UpdateRawTrackingPose(new Vector2(11f, 22f), 0f);
+
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(2f, 4f)));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_NinetyDegreeYawRotatesTrackingDeltaIntoRoom()
+    {
+        var root = new GameObject("PhysicalCalibrationYaw90Test");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(Vector2.zero, 90f);
+            calibration.UpdateRawTrackingPose(new Vector2(5f, 5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            calibration.UpdateRawTrackingPose(new Vector2(5f, 6f), 0f);
+
+            Assert.That(pose.PhysicalPositionXZ.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ.y, Is.Zero.Within(0.001f));
+            Assert.That(YawOf(pose.PhysicalForwardXZ), Is.EqualTo(90f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_OneHundredEightyDegreeYawReversesTrackingDelta()
+    {
+        var root = new GameObject("PhysicalCalibrationYaw180Test");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(Vector2.zero, 180f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            calibration.UpdateRawTrackingPose(Vector2.up, 0f);
+
+            Assert.That(pose.PhysicalPositionXZ.x, Is.Zero.Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ.y, Is.EqualTo(-1f).Within(0.001f));
+            Assert.That(Mathf.Abs(YawOf(pose.PhysicalForwardXZ)), Is.EqualTo(180f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_RecalibrationCreatesNewIdAndRealignsPose()
+    {
+        var root = new GameObject("PhysicalCalibrationRepeatTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(1f, 2f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(5f, 5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var firstId = calibration.CalibrationId;
+
+            calibration.SetCalibrationPoint(new Vector2(3f, 4f), 90f);
+            calibration.UpdateRawTrackingPose(new Vector2(8f, 9f), 20f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            Assert.That(calibration.CalibrationId, Is.Not.EqualTo(firstId));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(3f, 4f)));
+            Assert.That(YawOf(pose.PhysicalForwardXZ), Is.EqualTo(90f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_TrackingLossRetainsCalibrationUntilRawPoseReturns()
+    {
+        var root = new GameObject("PhysicalCalibrationTrackingLossTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var calibrationId = calibration.CalibrationId;
+
+            calibration.ReportTrackingLost();
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
+            Assert.That(calibration.CalibrationId, Is.EqualTo(calibrationId));
+
+            calibration.UpdateRawTrackingPose(Vector2.right, 0f);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(Vector2.right));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceCalibration_SpaceChangeInvalidatesCalibration()
+    {
+        var root = new GameObject("PhysicalCalibrationSpaceChangeTest");
+        try
+        {
+            CreateCalibrationRig(root, out _, out var space, out var calibration);
+            Assert.That(space.CurrentSpaceId, Is.EqualTo("wide_room"));
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
+
+            Assert.That(space.SetPhysicalSpace("narrow_room"), Is.True);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Invalid));
+            Assert.That(calibration.IsCalibrationValid, Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalRiskEvaluator_UsesCalibratedRoomPoseInsteadOfRawTrackingPose()
+    {
+        var root = new GameObject("PhysicalRiskCalibratedPoseTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(1f, 2f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(10f, 20f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            calibration.UpdateRawTrackingPose(new Vector2(11f, 20f), 0f);
+
+            var evaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            evaluator.Configure(space, pose);
+            var risk = evaluator.EvaluateNow();
+
+            Assert.That(risk, Is.Not.Null);
+            Assert.That(risk.user_physical_position, Is.EqualTo(new Vector2(2f, 2f)));
+            Assert.That(risk.user_physical_position, Is.Not.EqualTo(new Vector2(11f, 20f)));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
         }
     }
 
@@ -734,6 +934,25 @@ public sealed class GuidanceRuntimeEditModeTests
             .ToArray();
 
         Assert.That(actualNames, Is.EqualTo(expectedNames), typeof(T).Name);
+    }
+
+    private static void CreateCalibrationRig(
+        GameObject root,
+        out UserPoseTracker pose,
+        out PhysicalSpaceManager space,
+        out PhysicalSpaceCalibration calibration)
+    {
+        pose = root.AddComponent<UserPoseTracker>();
+        space = root.AddComponent<PhysicalSpaceManager>();
+        space.LoadSpaces();
+        Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+        calibration = root.AddComponent<PhysicalSpaceCalibration>();
+        calibration.Configure(space, pose);
+    }
+
+    private static float YawOf(Vector2 forward)
+    {
+        return Mathf.Atan2(forward.x, forward.y) * Mathf.Rad2Deg;
     }
 
     private static void SetPrivateField<T>(object target, string fieldName, T value)
