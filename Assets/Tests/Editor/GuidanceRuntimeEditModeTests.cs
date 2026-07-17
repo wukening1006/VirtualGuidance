@@ -1887,6 +1887,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             var lines = File.ReadAllLines(logPath);
             Assert.That(lines.Length, Is.EqualTo(4));
+            Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_received\""));
             Assert.That(lines[1], Does.Contain("\"raw_guidance\":"));
             Assert.That(lines[1], Does.Contain("\"runtime_validation_result\":\"pending\""));
             Assert.That(lines[2], Does.Contain("\"event_type\":\"runtime_intervention\""));
@@ -1895,6 +1896,104 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_executed\""));
             Assert.That(lines[3], Does.Contain("\"runtime_intervention\":false"));
             Assert.That(lines[3], Does.Not.Contain("\"executed_guidance\":\"\""));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
+    public void ExperimentLogger_PreservesActiveTraceAcrossDownstreamEvents()
+    {
+        var root = new GameObject("ExperimentLoggerTraceContextTest");
+        string logPath = null;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-trace-log"));
+            logPath = logger.LogPath;
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E3", "E5");
+            var request = new GuidanceRequest
+            {
+                calibration_id = "calibration-trace",
+                request_id = "request-trace",
+                decision_id = "decision-trace",
+                state_version = runtime.stateVersion,
+                risk_snapshot_id = "risk-request",
+                target_role = "route_subgoal",
+                condition = "ours_full",
+                task_id = "T2_main_target",
+                current_exhibit = "E1",
+                semantic_next_target = "E3"
+            };
+            var response = ResponseForRequest(request, "E3");
+
+            logger.LogRequest(request, new PhysicalRiskState
+            {
+                calibration_id = "calibration-trace",
+                risk_snapshot_id = "risk-request"
+            });
+            logger.LogResponse(response, null);
+            logger.LogGuidanceVerified(runtime, null);
+            runtime.AdvanceTo("E3", "E5");
+            logger.LogStatus("gain_started", runtime, new PhysicalRiskState
+            {
+                calibration_id = "calibration-trace",
+                risk_snapshot_id = "risk-runtime"
+            }, "gain started");
+
+            var lines = File.ReadAllLines(logPath);
+            Assert.That(lines.Length, Is.EqualTo(5));
+            Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_requested\""));
+            Assert.That(lines[2], Does.Contain("\"event_type\":\"guidance_received\""));
+            Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_verified\""));
+            Assert.That(lines[4], Does.Contain("\"event_type\":\"gain_started\""));
+            Assert.That(lines[4], Does.Contain("\"calibration_id\":\"calibration-trace\""));
+            Assert.That(lines[4], Does.Contain("\"request_id\":\"request-trace\""));
+            Assert.That(lines[4], Does.Contain("\"decision_id\":\"decision-trace\""));
+            Assert.That(lines[4], Does.Contain("\"risk_snapshot_id\":\"risk-runtime\""));
+            Assert.That(lines[4], Does.Contain($"\"state_version\":{runtime.stateVersion}"));
+            Assert.That(lines[4], Does.Not.Contain("\"raw_guidance\":\"\""));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
+    public void ExperimentLogger_FlushesPreSessionCalibrationEvents()
+    {
+        var root = new GameObject("ExperimentLoggerCalibrationQueueTest");
+        string logPath = null;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.LogCalibrationStarted();
+            logger.LogCalibrationCompleted("calibration-before-session");
+
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-calibration-log"));
+            logPath = logger.LogPath;
+            logger.LogStatus("risk_changed", null, null, "risk refreshed");
+
+            var lines = File.ReadAllLines(logPath);
+            Assert.That(lines.Length, Is.EqualTo(4));
+            Assert.That(lines[1], Does.Contain("\"event_type\":\"calibration_started\""));
+            Assert.That(lines[2], Does.Contain("\"event_type\":\"calibration_completed\""));
+            Assert.That(lines[2], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
+            Assert.That(lines[3], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
         }
         finally
         {

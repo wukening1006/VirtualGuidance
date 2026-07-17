@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -16,6 +17,11 @@ public sealed class ExperimentLogger : MonoBehaviour
     private ExperimentSession session;
     private string logPath;
     private ExperimentRunState runState = ExperimentRunState.Preparing;
+    private GuidanceRequest activeRequest;
+    private GuidanceResponse activeResponse;
+    private PhysicalRiskState activeRiskState;
+    private string activeCalibrationId = string.Empty;
+    private readonly List<PendingCalibrationEvent> pendingCalibrationEvents = new List<PendingCalibrationEvent>();
 
     /// <summary>当前实验会话；尚未开始时为 null。</summary>
     public ExperimentSession Session => session;
@@ -39,10 +45,15 @@ public sealed class ExperimentLogger : MonoBehaviour
         }
 
         session = ExperimentSession.Start(spec);
+        activeRequest = null;
+        activeResponse = null;
+        activeRiskState = null;
+        activeCalibrationId = string.Empty;
         var folder = Path.GetFullPath(Path.Combine(Application.dataPath, "..", logFolderRelativeToProject));
         Directory.CreateDirectory(folder);
         logPath = Path.Combine(folder, $"unity_session_{session.sessionId}.jsonl");
         Write("session_started", spec, null, null, null, null, "session started");
+        FlushPendingCalibrationEvents();
     }
 
     /// <summary>记录条件已应用事件；没有有效会话时忽略。</summary>
@@ -54,13 +65,70 @@ public sealed class ExperimentLogger : MonoBehaviour
     /// <summary>记录发送给后端的请求及请求时的物理风险状态。</summary>
     public void LogRequest(GuidanceRequest request, PhysicalRiskState riskState)
     {
-        Write("request_built", null, request, null, riskState, null, "request built");
+        activeRequest = request;
+        activeResponse = null;
+        activeRiskState = riskState;
+        activeCalibrationId = FirstNonEmpty(request?.calibration_id, riskState?.calibration_id, activeCalibrationId);
+        Write("guidance_requested", null, request, null, riskState, null, "guidance requested");
     }
 
     /// <summary>记录后端响应及响应到达时的物理风险状态。</summary>
     public void LogResponse(GuidanceResponse response, PhysicalRiskState riskState)
     {
-        Write("response_received", null, null, response, riskState, null, "response received", "pending");
+        activeResponse = response;
+        if (riskState != null)
+        {
+            activeRiskState = riskState;
+        }
+        activeCalibrationId = FirstNonEmpty(response?.calibration_id, riskState?.calibration_id, activeCalibrationId);
+        Write("guidance_received", null, null, response, riskState, null, "guidance received", "pending");
+    }
+
+    /// <summary>记录 Guidance 已通过条件与运行时验证。</summary>
+    public void LogGuidanceVerified(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        Write("guidance_verified", null, null, null, riskState, runtimeState, "guidance verified", "approved");
+    }
+
+    /// <summary>记录 Guidance 因协议或 Verifier 契约不成立而被拒绝。</summary>
+    public void LogGuidanceRejected(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string reason)
+    {
+        Write("guidance_rejected", null, null, null, riskState, runtimeState, reason, "rejected");
+    }
+
+    /// <summary>记录 Guidance 因暂停、重规划或会话终止而取消。</summary>
+    public void LogGuidanceCancelled(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string reason)
+    {
+        Write("guidance_cancelled", null, null, null, riskState, runtimeState, reason);
+    }
+
+    /// <summary>记录 Guidance 因请求身份或状态版本变化而过期。</summary>
+    public void LogGuidanceExpired(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string reason)
+    {
+        Write("guidance_expired", null, null, null, riskState, runtimeState, reason);
+    }
+
+    /// <summary>记录一次 Physical Space 校准尝试开始；会话未开始时暂存到下一份会话日志。</summary>
+    public void LogCalibrationStarted()
+    {
+        LogOrQueueCalibrationEvent("calibration_started", string.Empty, "calibration started");
+    }
+
+    /// <summary>记录成功校准及其 Calibration ID；会话未开始时暂存到下一份会话日志。</summary>
+    public void LogCalibrationCompleted(string calibrationId)
+    {
+        activeCalibrationId = FirstNonEmpty(calibrationId, activeCalibrationId);
+        LogOrQueueCalibrationEvent("calibration_completed", calibrationId, "calibration completed");
+    }
+
+    /// <summary>记录校准失效；会话未开始时暂存到下一份会话日志。</summary>
+    public void LogCalibrationInvalidated(string calibrationId, string reason)
+    {
+        activeCalibrationId = FirstNonEmpty(calibrationId, activeCalibrationId);
+        LogOrQueueCalibrationEvent(
+            "calibration_invalidated",
+            calibrationId,
+            string.IsNullOrWhiteSpace(reason) ? "calibration invalidated" : reason);
     }
 
     /// <summary>记录 Hard Runtime Safety 阻止的原始 Guidance 与干预原因。</summary>
@@ -103,6 +171,11 @@ public sealed class ExperimentLogger : MonoBehaviour
     /// <summary>记录任务、风险或请求失败等通用运行事件。</summary>
     public void LogStatus(string eventType, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string message)
     {
+        if (riskState != null)
+        {
+            activeRiskState = riskState;
+            activeCalibrationId = FirstNonEmpty(riskState.calibration_id, activeCalibrationId);
+        }
         Write(eventType, null, null, null, riskState, runtimeState, message);
     }
 
@@ -116,6 +189,9 @@ public sealed class ExperimentLogger : MonoBehaviour
 
         Write("session_ended", null, null, null, null, null, string.IsNullOrWhiteSpace(reason) ? "unspecified" : reason);
         session.End(reason);
+        activeRequest = null;
+        activeResponse = null;
+        activeRiskState = null;
     }
 
     private void Write(
@@ -128,7 +204,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         string message,
         string runtimeValidationResult = "",
         bool runtimeIntervention = false,
-        bool executed = false)
+        bool executed = false,
+        string calibrationIdOverride = "",
+        string timestampOverride = "")
     {
         // 没有有效会话时不创建无归属日志，避免不同实验运行的数据混入同一文件。
         if (session == null || !session.IsActive || string.IsNullOrWhiteSpace(logPath))
@@ -136,56 +214,77 @@ public sealed class ExperimentLogger : MonoBehaviour
             return;
         }
 
+        var tracedRequest = request ?? activeRequest;
+        var tracedResponse = response ?? activeResponse;
+        var tracedRiskState = riskState ?? activeRiskState;
         var builder = new StringBuilder(512);
         builder.Append('{');
-        Append(builder, "timestamp", DateTime.UtcNow.ToString("o"), false);
+        Append(builder, "timestamp", FirstNonEmpty(timestampOverride, DateTime.UtcNow.ToString("o")), false);
         Append(builder, "event_type", eventType);
         Append(builder, "session_id", session.sessionId);
         Append(
             builder,
             "calibration_id",
-            FirstNonEmpty(request?.calibration_id, response?.calibration_id, riskState?.calibration_id));
+            FirstNonEmpty(
+                calibrationIdOverride,
+                riskState?.calibration_id,
+                request?.calibration_id,
+                response?.calibration_id,
+                activeCalibrationId,
+                tracedRiskState?.calibration_id,
+                tracedRequest?.calibration_id,
+                tracedResponse?.calibration_id));
         // 事件携带的数据最接近发生时状态，缺失时才回退到条件和会话快照。
-        var condition = FirstNonEmpty(request?.condition, spec?.condition, session.condition);
-        Append(builder, "participant_id", FirstNonEmpty(request?.participant_id, spec?.participantId, session.participantId));
+        var condition = FirstNonEmpty(tracedRequest?.condition, spec?.condition, session.condition);
+        Append(builder, "participant_id", FirstNonEmpty(tracedRequest?.participant_id, spec?.participantId, session.participantId));
         Append(builder, "condition", condition);
         Append(builder, "policy_version", ExperimentConditionPolicy.CurrentVersion);
-        Append(builder, "task_id", FirstNonEmpty(request?.task_id, spec?.taskId, session.taskId));
-        Append(builder, "physical_space", FirstNonEmpty(request?.physical_space_id, spec?.physicalSpaceId, session.physicalSpaceId));
-        Append(builder, "current_exhibit", FirstNonEmpty(request?.current_exhibit, spec?.startExhibitId, runtimeState?.currentExhibitId));
-        Append(builder, "semantic_next_target", FirstNonEmpty(request?.semantic_next_target, spec?.semanticNextTargetId, runtimeState?.nextTargetId));
+        Append(builder, "task_id", FirstNonEmpty(runtimeState?.taskId, tracedRequest?.task_id, spec?.taskId, session.taskId));
+        Append(builder, "physical_space", FirstNonEmpty(tracedRequest?.physical_space_id, spec?.physicalSpaceId, session.physicalSpaceId));
+        Append(builder, "current_exhibit", FirstNonEmpty(runtimeState?.currentExhibitId, tracedRequest?.current_exhibit, spec?.startExhibitId));
+        Append(builder, "semantic_next_target", FirstNonEmpty(runtimeState?.nextTargetId, tracedRequest?.semantic_next_target, spec?.semanticNextTargetId));
         Append(builder, "runtime_phase", runtimeState != null ? runtimeState.phase.ToString() : string.Empty);
         Append(builder, "run_state", runState.ToString().ToLowerInvariant());
-        Append(builder, "request_id", FirstNonEmpty(request?.request_id, response?.request_id));
-        Append(builder, "decision_id", FirstNonEmpty(request?.decision_id, response?.decision_id));
+        Append(builder, "request_id", FirstNonEmpty(request?.request_id, response?.request_id, tracedRequest?.request_id, tracedResponse?.request_id));
+        Append(builder, "decision_id", FirstNonEmpty(request?.decision_id, response?.decision_id, tracedRequest?.decision_id, tracedResponse?.decision_id));
         Append(
             builder,
             "risk_snapshot_id",
-            FirstNonEmpty(request?.risk_snapshot_id, response?.risk_snapshot_id, riskState?.risk_snapshot_id));
-        Append(builder, "target_role", FirstNonEmpty(request?.target_role, response?.target_role));
+            FirstNonEmpty(
+                riskState?.risk_snapshot_id,
+                request?.risk_snapshot_id,
+                response?.risk_snapshot_id,
+                tracedRiskState?.risk_snapshot_id,
+                tracedRequest?.risk_snapshot_id,
+                tracedResponse?.risk_snapshot_id));
+        Append(builder, "target_role", FirstNonEmpty(request?.target_role, response?.target_role, tracedRequest?.target_role, tracedResponse?.target_role));
         var stateVersion = request != null
             ? request.state_version
             : response != null
                 ? response.state_version
-                : runtimeState != null ? runtimeState.stateVersion : 0;
+                : runtimeState != null
+                    ? runtimeState.stateVersion
+                    : tracedRequest != null
+                        ? tracedRequest.state_version
+                        : tracedResponse != null ? tracedResponse.state_version : 0;
         Append(builder, "state_version", stateVersion.ToString(CultureInfo.InvariantCulture), raw: true);
-        Append(builder, "selected_target", response != null ? response.selected_target : string.Empty);
-        Append(builder, "movement_instruction", response != null ? response.movement_instruction : string.Empty);
-        Append(builder, "verifier_approved", response != null && response.verifier != null && response.verifier.approved ? "true" : "false", raw: true);
-        Append(builder, "verifier_reason", response != null && response.verifier != null ? response.verifier.reason : string.Empty);
-        Append(builder, "raw_guidance", response != null ? JsonUtility.ToJson(response) : string.Empty);
+        Append(builder, "selected_target", tracedResponse != null ? tracedResponse.selected_target : string.Empty);
+        Append(builder, "movement_instruction", tracedResponse != null ? tracedResponse.movement_instruction : string.Empty);
+        Append(builder, "verifier_approved", tracedResponse != null && tracedResponse.verifier != null && tracedResponse.verifier.approved ? "true" : "false", raw: true);
+        Append(builder, "verifier_reason", tracedResponse != null && tracedResponse.verifier != null ? tracedResponse.verifier.reason : string.Empty);
+        Append(builder, "raw_guidance", tracedResponse != null ? JsonUtility.ToJson(tracedResponse) : string.Empty);
         Append(
             builder,
             "condition_verifier_result",
-            response == null || response.verifier == null
+            tracedResponse == null || tracedResponse.verifier == null
                 ? string.Empty
-                : response.verifier.approved ? "approved" : "rejected");
+                : tracedResponse.verifier.approved ? "approved" : "rejected");
         Append(builder, "runtime_validation_result", runtimeValidationResult);
         Append(builder, "runtime_intervention", runtimeIntervention ? "true" : "false", raw: true);
-        Append(builder, "executed_guidance", executed && response != null ? JsonUtility.ToJson(response) : string.Empty);
-        Append(builder, "boundary_risk", riskState != null ? riskState.boundary_risk : string.Empty);
-        Append(builder, "reset_required", riskState != null && riskState.reset_required ? "true" : "false", raw: true);
-        Append(builder, "unsafe_directions", riskState != null ? Join(riskState.unsafe_directions) : string.Empty);
+        Append(builder, "executed_guidance", executed && tracedResponse != null ? JsonUtility.ToJson(tracedResponse) : string.Empty);
+        Append(builder, "boundary_risk", tracedRiskState != null ? tracedRiskState.boundary_risk : string.Empty);
+        Append(builder, "reset_required", tracedRiskState != null && tracedRiskState.reset_required ? "true" : "false", raw: true);
+        Append(builder, "unsafe_directions", tracedRiskState != null ? Join(tracedRiskState.unsafe_directions) : string.Empty);
         Append(builder, "message", message);
         builder.Append('}');
 
@@ -197,6 +296,47 @@ public sealed class ExperimentLogger : MonoBehaviour
                 writer.Flush();
             }
         }
+    }
+
+    private void LogOrQueueCalibrationEvent(string eventType, string calibrationId, string message)
+    {
+        var timestamp = DateTime.UtcNow.ToString("o");
+        if (session != null && session.IsActive && !string.IsNullOrWhiteSpace(logPath))
+        {
+            Write(
+                eventType,
+                null,
+                null,
+                null,
+                null,
+                null,
+                message,
+                calibrationIdOverride: calibrationId,
+                timestampOverride: timestamp);
+            return;
+        }
+
+        pendingCalibrationEvents.Add(new PendingCalibrationEvent(eventType, calibrationId, message, timestamp));
+    }
+
+    private void FlushPendingCalibrationEvents()
+    {
+        foreach (var calibrationEvent in pendingCalibrationEvents)
+        {
+            activeCalibrationId = FirstNonEmpty(calibrationEvent.CalibrationId, activeCalibrationId);
+            Write(
+                calibrationEvent.EventType,
+                null,
+                null,
+                null,
+                null,
+                null,
+                calibrationEvent.Message,
+                calibrationIdOverride: calibrationEvent.CalibrationId,
+                timestampOverride: calibrationEvent.Timestamp);
+        }
+
+        pendingCalibrationEvents.Clear();
     }
 
     private static void Append(StringBuilder builder, string key, string value, bool comma = true, bool raw = false)
@@ -245,5 +385,21 @@ public sealed class ExperimentLogger : MonoBehaviour
         return string.IsNullOrEmpty(value)
             ? string.Empty
             : value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+    }
+
+    private sealed class PendingCalibrationEvent
+    {
+        public string EventType { get; }
+        public string CalibrationId { get; }
+        public string Message { get; }
+        public string Timestamp { get; }
+
+        public PendingCalibrationEvent(string eventType, string calibrationId, string message, string timestamp)
+        {
+            EventType = eventType;
+            CalibrationId = calibrationId;
+            Message = message;
+            Timestamp = timestamp;
+        }
     }
 }

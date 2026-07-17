@@ -474,11 +474,11 @@ public static class GuidanceLiveBackendValidator
 
         var guidanceLines = File.ReadAllLines(guidanceSessionLogPath);
         var routeLines = File.ReadAllLines(path);
-        var guidanceComplete = Contains(guidanceLines, "\"event_type\":\"request_built\"") &&
-                               Contains(guidanceLines, "\"event_type\":\"response_received\"") &&
+        var guidanceComplete = Contains(guidanceLines, "\"event_type\":\"guidance_requested\"") &&
+                               Contains(guidanceLines, "\"event_type\":\"guidance_received\"") &&
                                Contains(guidanceLines, "\"participant_id\":\"CODEX_VALIDATION\"") &&
                                Contains(guidanceLines, "\"event_type\":\"session_ended\"");
-        var routeComplete = Contains(routeLines, "\"event_type\":\"request_built\"") &&
+        var routeComplete = Contains(routeLines, "\"event_type\":\"guidance_requested\"") &&
                             Contains(routeLines, "\"event_type\":\"task_state_changed\"") &&
                             Contains(routeLines, "\"participant_id\":\"CODEX_VALIDATION_ROUTE\"") &&
                             Contains(routeLines, "\"event_type\":\"session_ended\"") &&
