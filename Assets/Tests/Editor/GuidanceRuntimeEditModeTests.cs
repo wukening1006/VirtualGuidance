@@ -270,6 +270,92 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ResearcherRuntimeConsole_CreatesSixReadOnlyRegionsAndBoundedEventFeed()
+    {
+        var root = new GameObject("ResearcherRuntimeConsoleTest");
+        root.SetActive(false);
+        var canvasObject = new GameObject("ResearcherCanvas_Test", typeof(RectTransform), typeof(Canvas));
+        try
+        {
+            var canvas = canvasObject.GetComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            var canvasRect = canvasObject.GetComponent<RectTransform>();
+            canvasRect.sizeDelta = new Vector2(1920f, 1080f);
+            var legacyObject = new GameObject("ResearcherStatusText", typeof(RectTransform), typeof(CanvasRenderer), typeof(TextMeshProUGUI));
+            legacyObject.transform.SetParent(canvasObject.transform, false);
+            var legacyText = legacyObject.GetComponent<TMP_Text>();
+
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                taskId = "T2_main_target",
+                participantId = "P-console",
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.SetSimulatedPhysicalPose(new Vector2(2.5f, 2.5f), 0f);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, risk, null, null, null, null);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+            var runtimeConsole = root.AddComponent<ResearcherRuntimeConsole>();
+            runtimeConsole.Configure(
+                dashboard,
+                null,
+                space,
+                null,
+                null,
+                task,
+                coordinator,
+                null,
+                risk,
+                null,
+                null,
+                canvas);
+
+            for (var index = 0; index < 30; index++)
+            {
+                runtimeConsole.AppendEvent(RuntimeConsoleLevel.Warning, $"bounded event {index}");
+            }
+            runtimeConsole.RefreshNow();
+
+            Assert.That(runtimeConsole.ConsoleRoot, Is.Not.Null);
+            Assert.That(runtimeConsole.ConsoleRoot.transform.parent, Is.EqualTo(canvasObject.transform));
+            var consoleRect = runtimeConsole.ConsoleRoot.GetComponent<RectTransform>();
+            Assert.That(consoleRect.anchorMin, Is.EqualTo(Vector2.zero));
+            Assert.That(consoleRect.anchorMax, Is.EqualTo(Vector2.one));
+            Assert.That(consoleRect.offsetMin.x, Is.EqualTo(568f));
+            Assert.That(runtimeConsole.ConsoleRoot.GetComponent<UnityEngine.UI.Image>().raycastTarget, Is.False);
+            var regions = runtimeConsole.ConsoleRoot.GetComponentsInChildren<TMP_Text>(true);
+            Assert.That(regions.Length, Is.EqualTo(6));
+            Assert.That(regions.All(text => !text.raycastTarget), Is.True);
+            Assert.That(legacyText.enabled, Is.False);
+            Assert.That(runtimeConsole.EventCount, Is.EqualTo(24));
+            Assert.That(FindRuntimeConsoleText(runtimeConsole.ConsoleRoot, "RuntimeConsole_Session").text, Does.Contain("SESSION"));
+            Assert.That(FindRuntimeConsoleText(runtimeConsole.ConsoleRoot, "RuntimeConsole_Navigation").text, Does.Contain("E5"));
+            Assert.That(FindRuntimeConsoleText(runtimeConsole.ConsoleRoot, "RuntimeConsole_RDW").text, Does.Contain("Clearance F/L/R"));
+            var feed = FindRuntimeConsoleText(runtimeConsole.ConsoleRoot, "RuntimeConsole_Events").text;
+            Assert.That(feed, Does.Contain("WARNING"));
+            Assert.That(feed, Does.Contain("bounded event 29"));
+            Assert.That(feed, Does.Not.Contain("bounded event 0\n"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(canvasObject);
+        }
+    }
+
+    [Test]
     public void GuidanceTaskController_AdvancesConfiguredRouteToCompleted()
     {
         var go = new GameObject("GuidanceTaskControllerTest");
@@ -1875,6 +1961,13 @@ public sealed class GuidanceRuntimeEditModeTests
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         return go.AddComponent<TextMeshProUGUI>();
+    }
+
+    private static TMP_Text FindRuntimeConsoleText(GameObject consoleRoot, string objectName)
+    {
+        var child = consoleRoot != null ? consoleRoot.transform.Find(objectName) : null;
+        Assert.That(child, Is.Not.Null, objectName);
+        return child.GetComponent<TMP_Text>();
     }
 
     private static void AssertPublicFieldNames<T>(params string[] expectedNames)

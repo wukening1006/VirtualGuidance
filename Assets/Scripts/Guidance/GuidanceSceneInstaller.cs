@@ -55,6 +55,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     [SerializeField] private ExhibitHighlightManager exhibitHighlightManager;
     [SerializeField] private RejectionPanel rejectionPanel;
     [SerializeField] private GuidanceDebugPanel guidanceDebugPanel;
+    [SerializeField] private ResearcherRuntimeConsole researcherRuntimeConsole;
     [SerializeField] private ParticipantUiController participantUiController;
     [SerializeField] private BoundaryVisualizer boundaryVisualizer;
 
@@ -220,6 +221,11 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         {
             debugText = FindText("GuidanceDebugPanel_Text");
         }
+
+        if (researcherRuntimeConsole == null)
+        {
+            researcherRuntimeConsole = FindObjectOfType<ResearcherRuntimeConsole>();
+        }
     }
 
     private void EnsureOptionalUi()
@@ -281,6 +287,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         exhibitHighlightManager = GetOrAdd(exhibitHighlightManager, createMissingCoreComponents);
         rejectionPanel = GetOrAdd(rejectionPanel, createMissingCoreComponents);
         guidanceDebugPanel = GetOrAdd(guidanceDebugPanel, createMissingCoreComponents);
+        researcherRuntimeConsole = GetOrAdd(researcherRuntimeConsole, createMissingCoreComponents);
         participantUiController = GetOrAdd(participantUiController, createMissingCoreComponents);
         boundaryVisualizer = GetOrAdd(boundaryVisualizer, createMissingCoreComponents);
     }
@@ -321,6 +328,19 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
             physicalSpaceManager, userPoseTracker, riskEvaluator, xrTrackingAdapter, taskController,
             guidanceCoordinator, agentClient, experimentLogger, arrivalDetector, rotationGainController,
             guidanceExecutor, pauseResetController, participantUiController, null, physicalSpaceCalibration);
+        researcherRuntimeConsole?.Configure(
+            experimentDashboard,
+            experimentLogger,
+            physicalSpaceManager,
+            physicalSpaceCalibration,
+            xrTrackingAdapter,
+            taskController,
+            guidanceCoordinator,
+            agentClient,
+            riskEvaluator,
+            rotationGainController,
+            pauseResetController,
+            FindCanvas("ResearcherCanvas"));
     }
 
     private void WireEvents()
@@ -411,6 +431,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         WarnIfMissing(exhibitHighlightManager, "ExhibitHighlightManager");
         WarnIfMissing(rejectionPanel, "RejectionPanel");
         WarnIfMissing(guidanceDebugPanel, "GuidanceDebugPanel");
+        WarnIfMissing(researcherRuntimeConsole, "ResearcherRuntimeConsole");
         WarnIfMissing(participantUiController, "ParticipantUiController");
         WarnIfMissing(boundaryVisualizer, "BoundaryVisualizer");
         WarnIfMissing(narrationText, "GuidanceTextPanel_Text");
@@ -436,6 +457,12 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     {
         var found = GameObject.Find(objectName);
         return found != null ? found.GetComponent<TMP_Text>() : null;
+    }
+
+    private static Canvas FindCanvas(string objectName)
+    {
+        var found = GameObject.Find(objectName);
+        return found != null ? found.GetComponent<Canvas>() : null;
     }
 
     private static TMP_Text CreateHudText(string objectName, Vector2 anchoredPosition, Vector2 size, int fontSize, bool anchorRight = false)
