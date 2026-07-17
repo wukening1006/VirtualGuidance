@@ -195,6 +195,81 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentDashboard_ResetCompletionPreservesProgressAndReplans()
+    {
+        var root = new GameObject("ExperimentDashboardResetRecoveryTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                taskId = "T2_main_target",
+                participantId = "P-reset",
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            task.HandleArrived("E3");
+            Assert.That(task.TrySetGuidanceTarget(new GuidanceTarget("E5", NavigationTargetRole.FinalTarget)), Is.True);
+            task.PauseForReset();
+            var versionDuringReset = task.RuntimeState.stateVersion;
+
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var replanningCount = 0;
+            coordinator.Replanning += _ => replanningCount++;
+
+            var pose = root.AddComponent<UserPoseTracker>();
+            var reset = root.AddComponent<PauseResetController>();
+            reset.Configure(null, null, null, pose);
+            reset.PauseForReset("critical risk", new PhysicalRiskState
+            {
+                clearance_forward = 1.5f,
+                clearance_left = 0.4f,
+                clearance_right = 0.3f,
+                reset_required = true
+            });
+            pose.SetSimulatedPhysicalPose(new Vector2(2.5f, 2.5f), 0f);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose);
+            Assert.That(risk.CurrentRiskState.boundary_risk, Is.EqualTo("low"));
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "guidanceCoordinator", coordinator);
+            SetPrivateField(dashboard, "pauseResetController", reset);
+            SetPrivateField(dashboard, "riskEvaluator", risk);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+            InvokePrivate(dashboard, "Subscribe");
+
+            reset.ProcessPhysicalForward(Vector2.up);
+
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+            Assert.That(task.RuntimeState.finalTargetId, Is.EqualTo("E5"));
+            Assert.That(task.RuntimeState.stateVersion, Is.GreaterThan(versionDuringReset));
+            Assert.That(replanningCount, Is.EqualTo(1));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E5"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void GuidanceTaskController_AdvancesConfiguredRouteToCompleted()
     {
         var go = new GameObject("GuidanceTaskControllerTest");

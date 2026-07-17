@@ -382,6 +382,30 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// ResetCompleted 且风险重算安全后恢复原任务，发布 Replanning 并请求下一段 Guidance。
+    /// </summary>
+    /// <returns>任务从 PausedForReset 恢复并进入导航时返回 true。</returns>
+    public bool ResumeAfterResetAndReplan()
+    {
+        if (taskController == null ||
+            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedForReset)
+        {
+            return false;
+        }
+
+        taskController.ResumeAfterReset();
+        var state = taskController.RuntimeState;
+        if (!state.IsNavigating)
+        {
+            return false;
+        }
+
+        Replanning?.Invoke(state);
+        RequestNextGuidance();
+        return true;
+    }
+
     private void SetRequestPhase(GuidanceRequestPhase nextPhase)
     {
         if (requestPhase == nextPhase)

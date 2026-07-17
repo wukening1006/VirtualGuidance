@@ -271,6 +271,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
+        if (runState == ExperimentRunState.SafetyHold &&
+            pauseResetController != null &&
+            pauseResetController.State != ResetLifecycleState.Completed)
+        {
+            return;
+        }
+
         var risk = riskEvaluator?.EvaluateNow();
         ResumeSessionWithRisk(risk);
     }
@@ -283,13 +290,25 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        pauseResetController?.ResumeAfterReset();
+        if (pauseResetController != null &&
+            pauseResetController.State != ResetLifecycleState.Inactive &&
+            !pauseResetController.ResumeAfterReset())
+        {
+            EnterSafetyHold("reset turn has not completed");
+            return;
+        }
         runtimeInterventionActive = false;
         experimentLogger?.Session?.EndPause();
+        var requestedDuringResetRecovery = false;
         if (taskController != null)
         {
             if (taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
-                taskController.ResumeAfterReset();
+            {
+                if (guidanceCoordinator != null)
+                    requestedDuringResetRecovery = guidanceCoordinator.ResumeAfterResetAndReplan();
+                else
+                    taskController.ResumeAfterReset();
+            }
             else
                 taskController.ResumeAfterResearcherPause();
         }
@@ -305,7 +324,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
         TransitionTo(ExperimentRunState.Running, "Session resumed");
         participantUiController?.ShowGuidance();
         arrivalDetector?.WatchTarget(taskController != null ? taskController.RuntimeState.nextTargetId : null);
-        guidanceCoordinator?.RequestNextGuidance();
+        if (!requestedDuringResetRecovery)
+            guidanceCoordinator?.RequestNextGuidance();
     }
 
     public void TogglePauseSession()
@@ -462,6 +482,31 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             EnterSafetyHold("critical physical risk");
         }
+    }
+
+    private void HandleResetStarted(ResetEventInfo info)
+    {
+        experimentLogger?.LogStatus(
+            "reset_started",
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            info != null ? $"safe direction: {info.SafeDirection}" : "reset started");
+    }
+
+    private void HandleResetCompleted(ResetEventInfo _)
+    {
+        experimentLogger?.LogStatus(
+            "reset_completed",
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            "safe direction reached");
+        if (runState != ExperimentRunState.SafetyHold)
+        {
+            return;
+        }
+
+        // Reset 完成只表示朝向达标；必须基于最新 Physical Pose 重算风险后才能恢复任务。
+        ResumeSessionWithRisk(riskEvaluator?.EvaluateNow());
     }
 
     private void HandleBackendOnlineChanged(bool online)
@@ -683,6 +728,14 @@ public sealed class ExperimentDashboard : MonoBehaviour
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
         }
+
+        if (pauseResetController != null)
+        {
+            pauseResetController.ResetStarted -= HandleResetStarted;
+            pauseResetController.ResetStarted += HandleResetStarted;
+            pauseResetController.ResetCompleted -= HandleResetCompleted;
+            pauseResetController.ResetCompleted += HandleResetCompleted;
+        }
     }
 
     private void Unsubscribe()
@@ -703,6 +756,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        if (pauseResetController != null)
+        {
+            pauseResetController.ResetStarted -= HandleResetStarted;
+            pauseResetController.ResetCompleted -= HandleResetCompleted;
+        }
     }
 
     private void WriteStatus()
