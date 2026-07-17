@@ -166,6 +166,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         ResolveReferences();
         currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
+        experimentLogger?.LogCalibrationStarted();
         if (physicalSpaceManager == null ||
             !physicalSpaceManager.SetPhysicalSpace(currentSpec.physicalSpaceId) ||
             physicalSpaceCalibration == null ||
@@ -176,6 +177,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return false;
         }
 
+        experimentLogger?.LogCalibrationCompleted(physicalSpaceCalibration.CalibrationId);
         lastStatusMessage = "Calibration valid";
         RefreshReadinessState();
         return true;
@@ -438,7 +440,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         FreezeExperimentBehavior();
         TransitionTo(ExperimentRunState.Error, reason);
         participantUiController?.ShowSystemUnavailable();
-        experimentLogger?.LogStatus("session_error", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);
+        experimentLogger?.LogStatus("task_failed", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);
     }
 
     private void FreezeExperimentBehavior()
@@ -477,7 +479,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleRiskStateChanged(PhysicalRiskState state)
     {
-        experimentLogger?.LogStatus("risk_state_changed", taskController?.RuntimeState, state, "risk state changed");
+        experimentLogger?.LogStatus("risk_changed", taskController?.RuntimeState, state, "risk state changed");
         if ((runState == ExperimentRunState.Running || runState == ExperimentRunState.Paused || runState == ExperimentRunState.Completing) && IsCritical(state))
         {
             EnterSafetyHold("critical physical risk");
@@ -541,6 +543,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleGuidanceRejected(string reason)
     {
+        experimentLogger?.LogGuidanceRejected(
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            string.IsNullOrWhiteSpace(reason) ? "guidance rejected" : reason);
         if (runState == ExperimentRunState.SafetyHold)
         {
             return;
@@ -574,11 +580,91 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleGuidanceExpired(string reason)
     {
-        experimentLogger?.LogStatus(
-            "guidance_expired",
+        experimentLogger?.LogGuidanceExpired(
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
             reason);
+    }
+
+    private void HandleRequestPhaseChanged(GuidanceRequestPhase phase)
+    {
+        if (phase == GuidanceRequestPhase.Verified)
+        {
+            experimentLogger?.LogGuidanceVerified(taskController?.RuntimeState, riskEvaluator?.CurrentRiskState);
+        }
+        else if (phase == GuidanceRequestPhase.Cancelled)
+        {
+            experimentLogger?.LogGuidanceCancelled(
+                taskController?.RuntimeState,
+                riskEvaluator?.CurrentRiskState,
+                "guidance lifecycle cancelled");
+        }
+    }
+
+    private void HandleReplanning(GuidanceRuntimeState state)
+    {
+        experimentLogger?.LogStatus("replanning", state, riskEvaluator?.CurrentRiskState, "replanning requested");
+    }
+
+    private void HandleTaskCompleted(GuidanceRuntimeState state)
+    {
+        experimentLogger?.LogStatus("task_completed", state, riskEvaluator?.CurrentRiskState, "task completed");
+    }
+
+    private void HandleGuidanceTargetSelected(GuidanceTarget target)
+    {
+        if (target != null && target.TargetRole == NavigationTargetRole.NavigableDetour)
+        {
+            experimentLogger?.LogDetourSelected(target, taskController?.RuntimeState, riskEvaluator?.CurrentRiskState);
+        }
+    }
+
+    private void HandleTargetReached(GuidanceTarget target)
+    {
+        experimentLogger?.LogTargetReached(target, taskController?.RuntimeState, riskEvaluator?.CurrentRiskState);
+    }
+
+    private void HandleDetourCompleted(GuidanceTarget target)
+    {
+        experimentLogger?.LogDetourCompleted(target, taskController?.RuntimeState, riskEvaluator?.CurrentRiskState);
+    }
+
+    private void HandleRotationGainEvent(RotationGainEventInfo info)
+    {
+        if (info == null)
+        {
+            return;
+        }
+
+        var eventType = GainEventName(info.EventType);
+        var message = string.IsNullOrWhiteSpace(info.Reason)
+            ? $"physical yaw: {info.PhysicalYawDegrees:F1}, extra yaw: {info.ExtraYawDegrees:F1}"
+            : info.Reason;
+        experimentLogger?.LogStatus(eventType, taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, message);
+    }
+
+    private void HandleCalibrationStateChanged(PhysicalCalibrationState state)
+    {
+        if (state == PhysicalCalibrationState.Invalid || state == PhysicalCalibrationState.CalibrationSuspect)
+        {
+            experimentLogger?.LogCalibrationInvalidated(
+                physicalSpaceCalibration != null ? physicalSpaceCalibration.CalibrationId : string.Empty,
+                $"calibration state: {state}");
+        }
+    }
+
+    private static string GainEventName(RotationGainEventType eventType)
+    {
+        switch (eventType)
+        {
+            case RotationGainEventType.TurnRequested: return "turn_requested";
+            case RotationGainEventType.UserTurnStarted: return "user_turn_started";
+            case RotationGainEventType.GainStarted: return "gain_started";
+            case RotationGainEventType.UserTurnCompleted: return "user_turn_completed";
+            case RotationGainEventType.GainCompleted: return "gain_completed";
+            case RotationGainEventType.GainCancelled: return "gain_cancelled";
+            default: return "gain_event";
+        }
     }
 
     private void StartCompletionCountdown()
@@ -721,6 +807,18 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceExecuted += HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
             guidanceCoordinator.GuidanceExpired += HandleGuidanceExpired;
+            guidanceCoordinator.RequestPhaseChanged -= HandleRequestPhaseChanged;
+            guidanceCoordinator.RequestPhaseChanged += HandleRequestPhaseChanged;
+            guidanceCoordinator.Replanning -= HandleReplanning;
+            guidanceCoordinator.Replanning += HandleReplanning;
+            guidanceCoordinator.TaskCompleted -= HandleTaskCompleted;
+            guidanceCoordinator.TaskCompleted += HandleTaskCompleted;
+            guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
+            guidanceCoordinator.GuidanceTargetSelected += HandleGuidanceTargetSelected;
+            guidanceCoordinator.TargetReached -= HandleTargetReached;
+            guidanceCoordinator.TargetReached += HandleTargetReached;
+            guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
+            guidanceCoordinator.DetourCompleted += HandleDetourCompleted;
         }
 
         if (riskEvaluator != null)
@@ -735,6 +833,18 @@ public sealed class ExperimentDashboard : MonoBehaviour
             pauseResetController.ResetStarted += HandleResetStarted;
             pauseResetController.ResetCompleted -= HandleResetCompleted;
             pauseResetController.ResetCompleted += HandleResetCompleted;
+        }
+
+        if (rotationGainController != null)
+        {
+            rotationGainController.LifecycleEventOccurred -= HandleRotationGainEvent;
+            rotationGainController.LifecycleEventOccurred += HandleRotationGainEvent;
+        }
+
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
         }
     }
 
@@ -754,6 +864,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.RuntimeIntervention -= HandleRuntimeIntervention;
             guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
+            guidanceCoordinator.RequestPhaseChanged -= HandleRequestPhaseChanged;
+            guidanceCoordinator.Replanning -= HandleReplanning;
+            guidanceCoordinator.TaskCompleted -= HandleTaskCompleted;
+            guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
+            guidanceCoordinator.TargetReached -= HandleTargetReached;
+            guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         if (pauseResetController != null)
@@ -761,6 +877,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             pauseResetController.ResetStarted -= HandleResetStarted;
             pauseResetController.ResetCompleted -= HandleResetCompleted;
         }
+        if (rotationGainController != null) rotationGainController.LifecycleEventOccurred -= HandleRotationGainEvent;
+        if (physicalSpaceCalibration != null) physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
     }
 
     private void WriteStatus()

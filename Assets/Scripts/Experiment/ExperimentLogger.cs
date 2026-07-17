@@ -131,6 +131,24 @@ public sealed class ExperimentLogger : MonoBehaviour
             string.IsNullOrWhiteSpace(reason) ? "calibration invalidated" : reason);
     }
 
+    /// <summary>记录到达当前 Guidance Target，并保留目标 ID 与角色。</summary>
+    public void LogTargetReached(GuidanceTarget target, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        LogTargetEvent("target_reached", target, runtimeState, riskState, "target reached");
+    }
+
+    /// <summary>记录一次 NavigableDetour 被选为当前 Guidance Target。</summary>
+    public void LogDetourSelected(GuidanceTarget target, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        LogTargetEvent("detour_selected", target, runtimeState, riskState, "detour selected");
+    }
+
+    /// <summary>记录 NavigableDetour 已完成且原路线进度保持不变。</summary>
+    public void LogDetourCompleted(GuidanceTarget target, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        LogTargetEvent("detour_completed", target, runtimeState, riskState, "detour completed");
+    }
+
     /// <summary>记录 Hard Runtime Safety 阻止的原始 Guidance 与干预原因。</summary>
     public void LogRuntimeIntervention(
         GuidanceResponse response,
@@ -206,7 +224,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         bool runtimeIntervention = false,
         bool executed = false,
         string calibrationIdOverride = "",
-        string timestampOverride = "")
+        string timestampOverride = "",
+        string selectedTargetOverride = "",
+        string targetRoleOverride = "")
     {
         // 没有有效会话时不创建无归属日志，避免不同实验运行的数据混入同一文件。
         if (session == null || !session.IsActive || string.IsNullOrWhiteSpace(logPath))
@@ -257,7 +277,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 tracedRiskState?.risk_snapshot_id,
                 tracedRequest?.risk_snapshot_id,
                 tracedResponse?.risk_snapshot_id));
-        Append(builder, "target_role", FirstNonEmpty(request?.target_role, response?.target_role, tracedRequest?.target_role, tracedResponse?.target_role));
+        Append(builder, "target_role", FirstNonEmpty(targetRoleOverride, request?.target_role, response?.target_role, tracedRequest?.target_role, tracedResponse?.target_role));
         var stateVersion = request != null
             ? request.state_version
             : response != null
@@ -268,7 +288,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                         ? tracedRequest.state_version
                         : tracedResponse != null ? tracedResponse.state_version : 0;
         Append(builder, "state_version", stateVersion.ToString(CultureInfo.InvariantCulture), raw: true);
-        Append(builder, "selected_target", tracedResponse != null ? tracedResponse.selected_target : string.Empty);
+        Append(builder, "selected_target", FirstNonEmpty(selectedTargetOverride, tracedResponse?.selected_target));
         Append(builder, "movement_instruction", tracedResponse != null ? tracedResponse.movement_instruction : string.Empty);
         Append(builder, "verifier_approved", tracedResponse != null && tracedResponse.verifier != null && tracedResponse.verifier.approved ? "true" : "false", raw: true);
         Append(builder, "verifier_reason", tracedResponse != null && tracedResponse.verifier != null ? tracedResponse.verifier.reason : string.Empty);
@@ -296,6 +316,29 @@ public sealed class ExperimentLogger : MonoBehaviour
                 writer.Flush();
             }
         }
+    }
+
+    private void LogTargetEvent(
+        string eventType,
+        GuidanceTarget target,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string message)
+    {
+        Write(
+            eventType,
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            target != null && !string.IsNullOrWhiteSpace(target.TargetId)
+                ? $"{message}: {target.TargetId}"
+                : message,
+            selectedTargetOverride: target != null ? target.TargetId : string.Empty,
+            targetRoleOverride: target != null
+                ? GuidanceTypeUtility.TargetRoleToProtocol(target.TargetRole)
+                : string.Empty);
     }
 
     private void LogOrQueueCalibrationEvent(string eventType, string calibrationId, string message)

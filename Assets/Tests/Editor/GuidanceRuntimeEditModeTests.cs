@@ -897,8 +897,12 @@ public sealed class GuidanceRuntimeEditModeTests
             coordinator.ConfigureRequestClient(requests);
             var replanningCount = 0;
             var completedCount = 0;
+            var selectedTargets = new List<GuidanceTarget>();
+            var reachedTargets = new List<GuidanceTarget>();
             coordinator.Replanning += _ => replanningCount++;
             coordinator.TaskCompleted += _ => completedCount++;
+            coordinator.GuidanceTargetSelected += selectedTargets.Add;
+            coordinator.TargetReached += reachedTargets.Add;
 
             coordinator.RequestNextGuidance();
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
@@ -918,6 +922,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
             Assert.That(completedCount, Is.EqualTo(1));
             Assert.That(requests.CancelCount, Is.EqualTo(2));
+            Assert.That(selectedTargets.Select(target => target.TargetId), Is.EqualTo(new[] { "E3", "E5" }));
+            Assert.That(reachedTargets.Select(target => target.TargetId), Is.EqualTo(new[] { "E3", "E5" }));
         }
         finally
         {
@@ -973,6 +979,10 @@ public sealed class GuidanceRuntimeEditModeTests
             coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
+            GuidanceTarget reachedTarget = null;
+            GuidanceTarget completedDetour = null;
+            coordinator.TargetReached += target => reachedTarget = target;
+            coordinator.DetourCompleted += target => completedDetour = target;
 
             coordinator.HandleTargetArrived("E2");
 
@@ -983,6 +993,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E2"));
             Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
             Assert.That(requests.Contexts[0].target_role, Is.EqualTo("route_subgoal"));
+            Assert.That(reachedTarget, Is.Not.Null);
+            Assert.That(reachedTarget.TargetId, Is.EqualTo("E2"));
+            Assert.That(completedDetour, Is.SameAs(reachedTarget));
         }
         finally
         {
@@ -1994,6 +2007,133 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(lines[2], Does.Contain("\"event_type\":\"calibration_completed\""));
             Assert.That(lines[2], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
             Assert.That(lines[3], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_ProducesRequiredTraceabilityEvents()
+    {
+        var root = new GameObject("ExperimentRequiredEventsTest");
+        string logPath = null;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-required-events"));
+            logPath = logger.LogPath;
+            var request = new GuidanceRequest
+            {
+                calibration_id = "calibration-required-events",
+                request_id = "request-required-events",
+                decision_id = "decision-required-events",
+                state_version = 1,
+                risk_snapshot_id = "risk-required-events",
+                target_role = "navigable_detour",
+                condition = "ours_full",
+                task_id = "T2_main_target",
+                current_exhibit = "E1",
+                semantic_next_target = "E2"
+            };
+            var response = ResponseForRequest(request, "E2");
+            var risk = new PhysicalRiskState
+            {
+                calibration_id = request.calibration_id,
+                risk_snapshot_id = request.risk_snapshot_id,
+                boundary_risk = "safe",
+                safe_directions = new[] { "forward" }
+            };
+            logger.LogCalibrationStarted();
+            logger.LogCalibrationCompleted(request.calibration_id);
+            logger.LogRequest(request, risk);
+            logger.LogResponse(response, risk);
+
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "experimentLogger", logger);
+            InvokePrivate(dashboard, "HandleRequestPhaseChanged", GuidanceRequestPhase.Verified);
+            InvokePrivate(dashboard, "HandleRequestPhaseChanged", GuidanceRequestPhase.Cancelled);
+            InvokePrivate(dashboard, "HandleGuidanceRejected", "protocol rejected");
+            InvokePrivate(dashboard, "HandleGuidanceExpired", "state changed");
+            InvokePrivate(dashboard, "HandleGuidanceExecuted", response);
+            InvokePrivate(dashboard, "HandleRuntimeIntervention", new RuntimeInterventionInfo(response, "unsafe forward"));
+            InvokePrivate(dashboard, "HandleRiskStateChanged", risk);
+
+            foreach (var gainEventType in new[]
+                     {
+                         RotationGainEventType.TurnRequested,
+                         RotationGainEventType.UserTurnStarted,
+                         RotationGainEventType.GainStarted,
+                         RotationGainEventType.GainCompleted,
+                         RotationGainEventType.GainCancelled
+                     })
+            {
+                InvokePrivate(
+                    dashboard,
+                    "HandleRotationGainEvent",
+                    new RotationGainEventInfo(
+                        gainEventType,
+                        RotationGainController.GainState.GainActive,
+                        1,
+                        string.Empty,
+                        10f,
+                        1.5f));
+            }
+
+            var detour = new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour);
+            InvokePrivate(dashboard, "HandleGuidanceTargetSelected", detour);
+            InvokePrivate(dashboard, "HandleTargetReached", detour);
+            InvokePrivate(dashboard, "HandleDetourCompleted", detour);
+            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleTaskCompleted", new GuidanceRuntimeState());
+            logger.LogCalibrationInvalidated(request.calibration_id, "space changed");
+            InvokePrivate(dashboard, "EnterError", "backend unavailable");
+
+            var lines = File.ReadAllLines(logPath);
+            foreach (var requiredEventType in new[]
+            {
+                "calibration_started",
+                "calibration_completed",
+                "calibration_invalidated",
+                "guidance_requested",
+                "guidance_received",
+                "guidance_verified",
+                "guidance_rejected",
+                "guidance_expired",
+                "guidance_cancelled",
+                "guidance_executed",
+                "risk_changed",
+                "runtime_intervention",
+                "turn_requested",
+                "user_turn_started",
+                "gain_started",
+                "gain_completed",
+                "gain_cancelled",
+                "target_reached",
+                "detour_selected",
+                "detour_completed",
+                "reset_started",
+                "reset_completed",
+                "task_completed",
+                "task_failed"
+            })
+            {
+                Assert.That(
+                    lines.Any(line => line.Contains($"\"event_type\":\"{requiredEventType}\"")),
+                    Is.True,
+                    requiredEventType);
+            }
+            var targetLine = lines.Single(line => line.Contains("\"event_type\":\"target_reached\""));
+            Assert.That(targetLine, Does.Contain("\"selected_target\":\"E2\""));
+            Assert.That(targetLine, Does.Contain("\"target_role\":\"navigable_detour\""));
+            Assert.That(targetLine, Does.Contain("\"request_id\":\"request-required-events\""));
         }
         finally
         {

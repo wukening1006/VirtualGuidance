@@ -79,6 +79,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceResponse> GuidanceExecuted;
     /// <summary>响应因请求身份或状态变化过期时触发。</summary>
     public event Action<string> GuidanceExpired;
+    /// <summary>新 Guidance Target 已选定并已发起对应请求时触发。</summary>
+    public event Action<GuidanceTarget> GuidanceTargetSelected;
+    /// <summary>用户到达并确认完成当前可导航目标时触发。</summary>
+    public event Action<GuidanceTarget> TargetReached;
+    /// <summary>NavigableDetour 完成且准备返回原路线时触发。</summary>
+    public event Action<GuidanceTarget> DetourCompleted;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -212,6 +218,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         context.target_role = GuidanceTypeUtility.TargetRoleToProtocol(selectedTarget.TargetRole);
         SetRequestPhase(GuidanceRequestPhase.Requested);
         requestClient.RequestGuidance(context);
+        GuidanceTargetSelected?.Invoke(selectedTarget);
     }
 
     /// <summary>
@@ -315,6 +322,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
+            TargetReached?.Invoke(guidanceTarget);
+            DetourCompleted?.Invoke(guidanceTarget);
             Replanning?.Invoke(state);
             RequestNextGuidance();
             return;
@@ -332,6 +341,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        TargetReached?.Invoke(guidanceTarget);
         if (state.IsCompleted)
         {
             arrivalDetector?.WatchTarget(null);
