@@ -16,9 +16,12 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def base_payload(condition: str) -> dict:
     return {
+        "session_id": "session-test-001",
+        "calibration_id": "calibration-test-001",
         "request_id": "request-test-001",
         "decision_id": "decision-test-001",
         "state_version": 3,
+        "risk_snapshot_id": "risk-test-001",
         "target_role": "route_subgoal",
         "condition": condition,
         "task_id": "T2_main_target",
@@ -81,9 +84,12 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
+        "session_id",
+        "calibration_id",
         "request_id",
         "decision_id",
         "state_version",
+        "risk_snapshot_id",
         "target_role",
         "selected_target",
         "route_decision",
@@ -97,6 +103,9 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     }
     assert set(body["verifier"]) == {"approved", "reason"}
     assert body["request_id"] == "request-test-001"
+    assert body["session_id"] == "session-test-001"
+    assert body["calibration_id"] == "calibration-test-001"
+    assert body["risk_snapshot_id"] == "risk-test-001"
     assert body["decision_id"] == "decision-test-001"
     assert body["state_version"] == 3
     assert body["target_role"] == "route_subgoal"
@@ -104,6 +113,9 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
 
     record = read_log_records(tmp_path)[0]
     assert record["request_id"] == "request-test-001"
+    assert record["session_id"] == "session-test-001"
+    assert record["calibration_id"] == "calibration-test-001"
+    assert record["risk_snapshot_id"] == "risk-test-001"
     assert record["decision_id"] == "decision-test-001"
     assert record["state_version"] == 3
     assert record["policy_version"] == "condition-policy-v1"

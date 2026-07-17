@@ -295,9 +295,15 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     private void ConfigureComponents()
     {
         var context = new GuidanceRequestContext();
-        agentClient?.Configure(physicalSpaceManager, userPoseTracker, context);
+        agentClient?.Configure(
+            physicalSpaceManager,
+            userPoseTracker,
+            context,
+            riskEvaluator,
+            physicalSpaceCalibration,
+            experimentLogger);
         physicalSpaceCalibration?.Configure(physicalSpaceManager, userPoseTracker);
-        riskEvaluator?.Configure(physicalSpaceManager, userPoseTracker);
+        riskEvaluator?.Configure(physicalSpaceManager, userPoseTracker, physicalSpaceCalibration);
         motionDetector?.Configure(userPoseTracker);
         xrTrackingAdapter?.Configure(userPoseTracker, physicalSpaceCalibration);
         boundaryVisualizer?.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, physicalSpaceCalibration);

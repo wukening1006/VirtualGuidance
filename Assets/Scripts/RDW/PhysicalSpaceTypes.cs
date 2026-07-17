@@ -59,6 +59,12 @@ public sealed class PhysicalSpaceConfig
 [Serializable]
 public sealed class PhysicalRiskState
 {
+    /// <summary>本次 deterministic risk 计算的唯一快照 ID。</summary>
+    public string risk_snapshot_id;
+
+    /// <summary>生成本风险快照时使用的 Physical Space Calibration ID。</summary>
+    public string calibration_id;
+
     /// <summary>
     /// 当前 physical tracking space 的 ID。
     /// </summary>

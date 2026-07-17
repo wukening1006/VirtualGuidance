@@ -1163,9 +1163,12 @@ public sealed class GuidanceRuntimeEditModeTests
         runtime.Begin("T2_main_target", "E1", "E3", "E5");
         var request = new GuidanceRequest
         {
+            session_id = "session-current",
+            calibration_id = "calibration-current",
             request_id = "request-current",
             decision_id = "decision-current",
             state_version = runtime.stateVersion,
+            risk_snapshot_id = "risk-current",
             current_exhibit = "E1",
             semantic_next_target = "E3",
             physical_space_id = "narrow_room"
@@ -1185,6 +1188,14 @@ public sealed class GuidanceRuntimeEditModeTests
         var wrongState = ResponseForRequest(request, "E3");
         wrongState.state_version++;
         Assert.That(snapshot.MatchesResponse(wrongState), Is.False);
+
+        var wrongCalibration = ResponseForRequest(request, "E3");
+        wrongCalibration.calibration_id = "calibration-old";
+        Assert.That(snapshot.MatchesResponse(wrongCalibration), Is.False);
+
+        var wrongRisk = ResponseForRequest(request, "E3");
+        wrongRisk.risk_snapshot_id = "risk-old";
+        Assert.That(snapshot.MatchesResponse(wrongRisk), Is.False);
     }
 
     [Test]
@@ -1198,10 +1209,18 @@ public sealed class GuidanceRuntimeEditModeTests
             var space = root.AddComponent<PhysicalSpaceManager>();
             space.LoadSpaces();
             Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.UpdateRawTrackingPose(new Vector2(2.5f, 2.5f), 0f);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
             var client = root.AddComponent<AgentClient>();
-            client.Configure(space, pose);
+            client.Configure(space, pose, null, risk, calibration);
             var context = new GuidanceRequestContext
             {
+                session_id = "session-stable",
                 decision_id = "decision-stable",
                 state_version = 9,
                 current_exhibit = "E1",
@@ -1215,6 +1234,10 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(second.request_id, Is.Not.EqualTo(first.request_id));
             Assert.That(first.decision_id, Is.EqualTo("decision-stable"));
             Assert.That(first.state_version, Is.EqualTo(9));
+            Assert.That(first.session_id, Is.EqualTo("session-stable"));
+            Assert.That(first.calibration_id, Is.EqualTo(calibration.CalibrationId));
+            Assert.That(first.risk_snapshot_id, Is.EqualTo(risk.CurrentRiskState.risk_snapshot_id));
+            Assert.That(second.risk_snapshot_id, Is.EqualTo(first.risk_snapshot_id));
         }
         finally
         {
@@ -1402,10 +1425,12 @@ public sealed class GuidanceRuntimeEditModeTests
             calibration.UpdateRawTrackingPose(new Vector2(11f, 20f), 0f);
 
             var evaluator = root.AddComponent<PhysicalRiskEvaluator>();
-            evaluator.Configure(space, pose);
+            evaluator.Configure(space, pose, calibration);
             var risk = evaluator.EvaluateNow();
 
             Assert.That(risk, Is.Not.Null);
+            Assert.That(risk.risk_snapshot_id, Is.Not.Empty);
+            Assert.That(risk.calibration_id, Is.EqualTo(calibration.CalibrationId));
             Assert.That(risk.user_physical_position, Is.EqualTo(new Vector2(2f, 2f)));
             Assert.That(risk.user_physical_position, Is.Not.EqualTo(new Vector2(11f, 20f)));
         }
@@ -1920,9 +1945,12 @@ public sealed class GuidanceRuntimeEditModeTests
     public void GuidanceDtos_KeepBackendJsonContractFieldNames()
     {
         AssertPublicFieldNames<GuidanceRequest>(
+            "session_id",
+            "calibration_id",
             "request_id",
             "decision_id",
             "state_version",
+            "risk_snapshot_id",
             "target_role",
             "condition",
             "task_id",
@@ -1937,9 +1965,12 @@ public sealed class GuidanceRuntimeEditModeTests
             "user_virtual_forward");
 
         AssertPublicFieldNames<GuidanceResponse>(
+            "session_id",
+            "calibration_id",
             "request_id",
             "decision_id",
             "state_version",
+            "risk_snapshot_id",
             "target_role",
             "selected_target",
             "route_decision",
@@ -2027,9 +2058,12 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         return new GuidanceRequest
         {
+            session_id = context.session_id,
+            calibration_id = context.calibration_id,
             request_id = requestId,
             decision_id = context.decision_id,
             state_version = context.state_version,
+            risk_snapshot_id = context.risk_snapshot_id,
             target_role = context.target_role,
             current_exhibit = context.current_exhibit,
             semantic_next_target = context.semantic_next_target,
@@ -2041,9 +2075,12 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         return new GuidanceResponse
         {
+            session_id = request.session_id,
+            calibration_id = request.calibration_id,
             request_id = request.request_id,
             decision_id = request.decision_id,
             state_version = request.state_version,
+            risk_snapshot_id = request.risk_snapshot_id,
             target_role = request.target_role,
             selected_target = selectedTarget,
             movement_instruction = "move_forward_slowly",

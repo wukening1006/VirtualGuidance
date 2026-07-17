@@ -205,6 +205,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 ? null
                 : selectedTarget.TargetId);
         var context = taskController.BuildRequestContext(selectedTarget.TargetId);
+        context.calibration_id = riskState != null ? riskState.calibration_id : string.Empty;
+        context.risk_snapshot_id = riskState != null ? riskState.risk_snapshot_id : string.Empty;
         context.decision_id = Guid.NewGuid().ToString("N");
         context.state_version = taskController.RuntimeState.stateVersion;
         context.target_role = GuidanceTypeUtility.TargetRoleToProtocol(selectedTarget.TargetRole);

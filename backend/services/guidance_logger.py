@@ -37,9 +37,12 @@ class GuidanceLogger:
         # 同一行同时记录 proposed guidance 和 verifier 结果，分析时无需重放状态即可比较 baseline 和 ours_full。
         record = GuidanceLogRecord(
             timestamp=timestamp,
+            session_id=request.session_id,
+            calibration_id=request.calibration_id,
             request_id=request.request_id,
             decision_id=request.decision_id,
             state_version=request.state_version,
+            risk_snapshot_id=request.risk_snapshot_id,
             target_role=request.target_role,
             policy_version=policy.policy_version,
             raw_guidance=draft.model_dump(mode="json"),

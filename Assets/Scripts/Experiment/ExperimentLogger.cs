@@ -141,6 +141,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         Append(builder, "timestamp", DateTime.UtcNow.ToString("o"), false);
         Append(builder, "event_type", eventType);
         Append(builder, "session_id", session.sessionId);
+        Append(
+            builder,
+            "calibration_id",
+            FirstNonEmpty(request?.calibration_id, response?.calibration_id, riskState?.calibration_id));
         // 事件携带的数据最接近发生时状态，缺失时才回退到条件和会话快照。
         var condition = FirstNonEmpty(request?.condition, spec?.condition, session.condition);
         Append(builder, "participant_id", FirstNonEmpty(request?.participant_id, spec?.participantId, session.participantId));
@@ -154,6 +158,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         Append(builder, "run_state", runState.ToString().ToLowerInvariant());
         Append(builder, "request_id", FirstNonEmpty(request?.request_id, response?.request_id));
         Append(builder, "decision_id", FirstNonEmpty(request?.decision_id, response?.decision_id));
+        Append(
+            builder,
+            "risk_snapshot_id",
+            FirstNonEmpty(request?.risk_snapshot_id, response?.risk_snapshot_id, riskState?.risk_snapshot_id));
         Append(builder, "target_role", FirstNonEmpty(request?.target_role, response?.target_role));
         var stateVersion = request != null
             ? request.state_version

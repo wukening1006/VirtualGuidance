@@ -6,12 +6,18 @@ using System;
 /// </summary>
 public sealed class GuidanceRequestSnapshot
 {
+    /// <summary>请求所属实验会话 ID。</summary>
+    public string sessionId { get; private set; }
+    /// <summary>请求使用的 Physical Space Calibration ID。</summary>
+    public string calibrationId { get; private set; }
     /// <summary>请求的唯一 ID。</summary>
     public string requestId { get; private set; }
     /// <summary>请求所属规划决策的唯一 ID。</summary>
     public string decisionId { get; private set; }
     /// <summary>请求发出时的任务状态版本。</summary>
     public int stateVersion { get; private set; }
+    /// <summary>请求决策使用的风险快照 ID。</summary>
+    public string riskSnapshotId { get; private set; }
     /// <summary>请求中的当前展品 ID。</summary>
     public string currentExhibitId { get; private set; }
     /// <summary>请求中的语义下一目标 ID。</summary>
@@ -32,9 +38,12 @@ public sealed class GuidanceRequestSnapshot
     {
         return new GuidanceRequestSnapshot
         {
+            sessionId = request != null ? request.session_id : string.Empty,
+            calibrationId = request != null ? request.calibration_id : string.Empty,
             requestId = request != null ? request.request_id : string.Empty,
             decisionId = request != null ? request.decision_id : string.Empty,
             stateVersion = request != null ? request.state_version : runtimeState != null ? runtimeState.stateVersion : 0,
+            riskSnapshotId = request != null ? request.risk_snapshot_id : string.Empty,
             currentExhibitId = request != null ? request.current_exhibit : string.Empty,
             semanticNextTargetId = request != null ? request.semantic_next_target : string.Empty,
             physicalSpaceId = request != null ? request.physical_space_id : string.Empty,
@@ -49,9 +58,12 @@ public sealed class GuidanceRequestSnapshot
     public bool MatchesResponse(GuidanceResponse response)
     {
         return response != null &&
+               string.Equals(sessionId, response.session_id, StringComparison.Ordinal) &&
+               string.Equals(calibrationId, response.calibration_id, StringComparison.Ordinal) &&
                string.Equals(requestId, response.request_id, StringComparison.Ordinal) &&
                string.Equals(decisionId, response.decision_id, StringComparison.Ordinal) &&
-               stateVersion == response.state_version;
+               stateVersion == response.state_version &&
+               string.Equals(riskSnapshotId, response.risk_snapshot_id, StringComparison.Ordinal);
     }
 
     /// <summary>

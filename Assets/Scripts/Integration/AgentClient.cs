@@ -40,6 +40,12 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [Tooltip("用户虚拟/物理位姿来源；未配置时自动查找。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
+    [Tooltip("提供请求对应的 risk_snapshot_id。")]
+    [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [Tooltip("提供请求对应的 calibration_id。")]
+    [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
+    [Tooltip("提供当前 session_id。")]
+    [SerializeField] private ExperimentLogger experimentLogger;
 
     [Header("默认请求上下文")]
     [Tooltip("没有外部任务编排传入上下文时使用的默认 guidance 请求参数。")]
@@ -111,10 +117,19 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     /// <summary>
     /// 注入依赖和默认上下文，供 bootstrap 或后续 ExperimentDashboard 统一配置。
     /// </summary>
-    public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker, GuidanceRequestContext context = null)
+    public void Configure(
+        PhysicalSpaceManager spaceManager,
+        UserPoseTracker poseTracker,
+        GuidanceRequestContext context = null,
+        PhysicalRiskEvaluator evaluator = null,
+        PhysicalSpaceCalibration calibration = null,
+        ExperimentLogger logger = null)
     {
         if (spaceManager != null) physicalSpaceManager = spaceManager;
         if (poseTracker != null) userPoseTracker = poseTracker;
+        if (evaluator != null) riskEvaluator = evaluator;
+        if (calibration != null) physicalSpaceCalibration = calibration;
+        if (logger != null) experimentLogger = logger;
         if (context != null)
         {
             defaultContext = context;
@@ -212,12 +227,30 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         var physicalForward = userPoseTracker.PhysicalForwardXZ;
         var virtualPosition = userPoseTracker.UserVirtualPosition;
         var virtualForward = userPoseTracker.UserVirtualForward;
+        var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
+        if (riskState == null && riskEvaluator != null)
+        {
+            riskState = riskEvaluator.EvaluateNow();
+        }
 
         return new GuidanceRequest
         {
+            session_id = EmptyFallback(
+                context.session_id,
+                experimentLogger != null && experimentLogger.Session != null
+                    ? experimentLogger.Session.sessionId
+                    : string.Empty),
+            calibration_id = EmptyFallback(
+                context.calibration_id,
+                physicalSpaceCalibration != null
+                    ? physicalSpaceCalibration.CalibrationId
+                    : riskState != null ? riskState.calibration_id : string.Empty),
             request_id = Guid.NewGuid().ToString("N"),
             decision_id = EmptyFallback(context.decision_id, Guid.NewGuid().ToString("N")),
             state_version = context.state_version,
+            risk_snapshot_id = EmptyFallback(
+                context.risk_snapshot_id,
+                riskState != null ? riskState.risk_snapshot_id : Guid.NewGuid().ToString("N")),
             target_role = EmptyFallback(context.target_role, "route_subgoal"),
             condition = EmptyFallback(context.condition, "ours_full"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
@@ -351,6 +384,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         {
             userPoseTracker = FindObjectOfType<UserPoseTracker>();
         }
+
+        if (riskEvaluator == null) riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
+        if (physicalSpaceCalibration == null) physicalSpaceCalibration = FindObjectOfType<PhysicalSpaceCalibration>();
+        if (experimentLogger == null) experimentLogger = FindObjectOfType<ExperimentLogger>();
     }
 
     private static string EmptyFallback(string value, string fallback)

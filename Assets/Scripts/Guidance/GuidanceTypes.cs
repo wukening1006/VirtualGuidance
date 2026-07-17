@@ -7,6 +7,12 @@ using UnityEngine;
 [Serializable]
 public sealed class GuidanceRequest
 {
+    /// <summary>本次实验会话 ID。</summary>
+    public string session_id;
+
+    /// <summary>请求使用的 Physical Space Calibration ID。</summary>
+    public string calibration_id;
+
     /// <summary>单次 HTTP 请求的唯一 ID；重试必须生成新值。</summary>
     public string request_id;
 
@@ -15,6 +21,9 @@ public sealed class GuidanceRequest
 
     /// <summary>请求生成时的任务状态版本。</summary>
     public int state_version;
+
+    /// <summary>请求决策使用的 deterministic risk 快照 ID。</summary>
+    public string risk_snapshot_id;
 
     /// <summary>当前 Guidance Target 的协议角色。</summary>
     public string target_role = "route_subgoal";
@@ -98,6 +107,12 @@ public sealed class VerifierResult
 [Serializable]
 public sealed class GuidanceResponse
 {
+    /// <summary>对应 GuidanceRequest 的会话 ID。</summary>
+    public string session_id;
+
+    /// <summary>对应 GuidanceRequest 的校准 ID。</summary>
+    public string calibration_id;
+
     /// <summary>对应 GuidanceRequest 的请求 ID。</summary>
     public string request_id;
 
@@ -106,6 +121,9 @@ public sealed class GuidanceResponse
 
     /// <summary>对应 GuidanceRequest 的任务状态版本。</summary>
     public int state_version;
+
+    /// <summary>对应 GuidanceRequest 的风险快照 ID。</summary>
+    public string risk_snapshot_id;
 
     /// <summary>后端确认的 Guidance Target 协议角色。</summary>
     public string target_role;
@@ -162,11 +180,20 @@ public sealed class GuidanceResponse
 [Serializable]
 public sealed class GuidanceRequestContext
 {
+    /// <summary>当前实验会话 ID；为空时 AgentClient 从 ExperimentLogger 获取。</summary>
+    public string session_id;
+
+    /// <summary>当前 Physical Space Calibration ID。</summary>
+    public string calibration_id;
+
     /// <summary>协调器分配的决策 ID；为空时 AgentClient 会生成独立决策 ID。</summary>
     public string decision_id;
 
     /// <summary>请求对应的任务状态版本。</summary>
     public int state_version;
+
+    /// <summary>当前规划决策使用的 Physical Risk 快照 ID。</summary>
+    public string risk_snapshot_id;
 
     /// <summary>协调器选择的 Guidance Target 协议角色。</summary>
     public string target_role = "route_subgoal";

@@ -14,6 +14,8 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [Tooltip("提供校准后的 Physical Room Pose；XR Raw Tracking Pose 不得直接写入此追踪器。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
+    [Tooltip("提供风险快照关联的 calibration_id。")]
+    [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
 
     [Header("风险阈值")]
     [Tooltip("风险状态刷新间隔，单位：秒；避免每帧重复执行几何求交。")]
@@ -79,7 +81,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     /// </summary>
     /// <param name="spaceManager">提供当前 physical space 配置的管理器。</param>
     /// <param name="poseTracker">提供用户 physical pose 的追踪器。</param>
-    public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker)
+    public void Configure(
+        PhysicalSpaceManager spaceManager,
+        UserPoseTracker poseTracker,
+        PhysicalSpaceCalibration calibration = null)
     {
         var nextSpaceManager = spaceManager != null ? spaceManager : physicalSpaceManager;
         var nextPoseTracker = poseTracker != null ? poseTracker : userPoseTracker;
@@ -90,6 +95,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
 
         physicalSpaceManager = nextSpaceManager;
         userPoseTracker = nextPoseTracker;
+        if (calibration != null) physicalSpaceCalibration = calibration;
 
         if (isActiveAndEnabled && physicalSpaceManager != null)
         {
@@ -113,6 +119,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         }
 
         currentRiskState = Evaluate(physicalSpaceManager.CurrentSpace, userPoseTracker.PhysicalPositionXZ, userPoseTracker.PhysicalForwardXZ);
+        currentRiskState.risk_snapshot_id = Guid.NewGuid().ToString("N");
+        currentRiskState.calibration_id = physicalSpaceCalibration != null
+            ? physicalSpaceCalibration.CalibrationId
+            : string.Empty;
         RiskStateChanged?.Invoke(currentRiskState);
         return currentRiskState;
     }

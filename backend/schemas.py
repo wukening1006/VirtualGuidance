@@ -129,9 +129,12 @@ class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     # 字段名对应 Unity/backend 接口契约；除非同步更新 Unity 反序列化和分析脚本，否则不要改名。
+    session_id: str
+    calibration_id: str
     request_id: str
     decision_id: str
     state_version: int = Field(ge=0)
+    risk_snapshot_id: str
     target_role: NavigationTargetRole
     condition: Condition
     task_id: TaskId
@@ -168,9 +171,12 @@ class VerifierResult(BaseModel):
 
 
 class GuidanceResponse(BaseModel):
+    session_id: str
+    calibration_id: str
     request_id: str
     decision_id: str
     state_version: int
+    risk_snapshot_id: str
     target_role: NavigationTargetRole
     selected_target: str
     route_decision: str
@@ -224,9 +230,12 @@ class GuidanceLogRecord(BaseModel):
     """每个 condition 通用的稳定 JSONL 日志行，供实验分析使用。"""
 
     timestamp: str
+    session_id: str
+    calibration_id: str
     request_id: str
     decision_id: str
     state_version: int
+    risk_snapshot_id: str
     target_role: str
     policy_version: str
     raw_guidance: dict[str, Any]
@@ -280,9 +289,12 @@ def response_from_draft(
     """在不改动 Unity guidance 字段名的前提下附加 verifier 结果。"""
 
     return GuidanceResponse(
+        session_id=request.session_id,
+        calibration_id=request.calibration_id,
         request_id=request.request_id,
         decision_id=request.decision_id,
         state_version=request.state_version,
+        risk_snapshot_id=request.risk_snapshot_id,
         target_role=request.target_role,
         selected_target=draft.selected_target,
         route_decision=draft.route_decision,
