@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -335,7 +336,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void RotationGainController_FollowsTurnLifecycleAndSafetyStops()
+    public void RotationGainController_FollowsCompleteLifecycleAndEmitsRequiredEvents()
     {
         var root = new GameObject("RotationGainLifecycleTest");
         var poseSource = new GameObject("RotationGainPoseSource");
@@ -349,43 +350,131 @@ public sealed class GuidanceRuntimeEditModeTests
             detector.Configure(pose);
             var gain = root.AddComponent<RotationGainController>();
             gain.Configure(pose, detector);
+            gain.ConfigureLimits(0.15f, 8f, 30f, 0.75f);
+            var states = new List<RotationGainController.GainState>();
+            var events = new List<RotationGainEventType>();
+            gain.StateChanged += states.Add;
+            gain.LifecycleEventOccurred += info => events.Add(info.EventType);
             gain.SetGainEnabled(true);
 
             gain.BeginPendingTurn(1);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
+            Assert.That(states, Is.EqualTo(new[]
+            {
+                RotationGainController.GainState.Prepared,
+                RotationGainController.GainState.WaitingForUserTurn
+            }));
+            Assert.That(events, Is.EqualTo(new[] { RotationGainEventType.TurnRequested }));
 
             gain.ProcessTurnSample(false, 0f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
 
             gain.ProcessTurnSample(true, 10f);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Applying));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.GainActive));
             Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(10f).Within(0.001f));
             Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(1.5f).Within(0.001f));
             Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
             Assert.That(poseSource.transform.eulerAngles.y, Is.Zero.Within(0.001f));
+            Assert.That(events, Is.EqualTo(new[]
+            {
+                RotationGainEventType.TurnRequested,
+                RotationGainEventType.UserTurnStarted,
+                RotationGainEventType.GainStarted
+            }));
 
-            gain.ProcessTurnSample(false, 0f);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
-
-            gain.BeginPendingTurn(1);
-            gain.ProcessTurnSample(true, -5f);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
-
-            gain.BeginPendingTurn(1);
-            gain.ProcessTurnSample(true, 30f);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Completed));
+            gain.ProcessTurnSample(false, 0f, 0.2f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.GainActive));
+            gain.ProcessTurnSample(true, 20f, 0.1f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Reevaluating));
             Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(30f).Within(0.001f));
             Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(4.5f).Within(0.001f));
+            Assert.That(events, Is.EqualTo(new[]
+            {
+                RotationGainEventType.TurnRequested,
+                RotationGainEventType.UserTurnStarted,
+                RotationGainEventType.GainStarted,
+                RotationGainEventType.UserTurnCompleted,
+                RotationGainEventType.GainCompleted
+            }));
+
+            gain.CompleteReevaluation(true);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
+            Assert.That(states, Does.Contain(RotationGainController.GainState.GainCompleted));
+            Assert.That(states, Does.Contain(RotationGainController.GainState.Reevaluating));
 
             gain.SetGainEnabled(false);
             Assert.That(gain.GainEnabled, Is.False);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
         }
         finally
         {
             Object.DestroyImmediate(root);
             Object.DestroyImmediate(poseSource);
             Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
+    public void RotationGainController_AbortsForReverseStopTimeoutAndGainLimit()
+    {
+        var root = new GameObject("RotationGainAbortRulesTest");
+        var rotationRoot = new GameObject("RotationGainAbortRoot");
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(rotationRoot.transform), Is.True);
+            gain.ConfigureLimits(0.15f, 8f, 30f, 0.5f);
+            gain.SetGainEnabled(true);
+
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, -5f, 0.1f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("reverse_turn"));
+
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, 5f, 0.1f);
+            gain.ProcessTurnSample(false, 0f, 0.5f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("turn_stopped_timeout"));
+
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, 60f, 0.1f);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("gain_limit_exceeded"));
+            Assert.That(gain.AppliedExtraYawDegrees, Is.Zero.Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
+    public void RotationGainController_AbortsWhenTrackingBecomesInvalid()
+    {
+        var root = new GameObject("RotationGainTrackingLossTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            Assert.That(pose.ConfigureVirtualRotationRoot(root.transform), Is.True);
+            var detector = root.AddComponent<MotionDetector>();
+            detector.Configure(pose);
+            var gain = root.AddComponent<RotationGainController>();
+            gain.Configure(pose, detector, null, calibration);
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(1);
+
+            calibration.ReportTrackingLost();
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("tracking_invalid"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
         }
     }
 
@@ -417,7 +506,7 @@ public sealed class GuidanceRuntimeEditModeTests
             gain.BeginPendingTurn(1);
             gain.ProcessTurnSample(true, 10f);
 
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Applying));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.GainActive));
             Assert.That(cameraObject.transform.rotation, Is.EqualTo(Quaternion.identity));
             Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
         }
@@ -482,14 +571,14 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(rejectionRoot.activeSelf, Is.True);
             Assert.That(rejectionText.text, Does.Contain("All directions unsafe."));
             Assert.That(gain.IsActive, Is.False);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
 
             pauseReset.ResumeAfterReset();
 
             Assert.That(pauseReset.IsPaused, Is.False);
             Assert.That(rejectionRoot.activeSelf, Is.False);
             Assert.That(rejectionText.text, Is.Empty);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
         }
         finally
         {
@@ -504,6 +593,7 @@ public sealed class GuidanceRuntimeEditModeTests
         try
         {
             var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
             gain.SetGainEnabled(true);
             gain.BeginPendingTurn(-1);
             var pauseReset = root.AddComponent<PauseResetController>();
@@ -521,7 +611,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(pauseReset.IsPaused, Is.True);
             Assert.That(gain.IsActive, Is.False);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
         }
         finally
         {
@@ -716,6 +806,88 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.True);
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
             Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_GainReevaluationCompletesTurnCueAndReplans()
+    {
+        var root = new GameObject("TurnCueGainLifecycleTest");
+        root.SetActive(false);
+        try
+        {
+            var task = CreateRouteTask(root);
+            Assert.That(
+                task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.TurnCueAnchor)),
+                Is.True);
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
+            gain.SetGainEnabled(true);
+            var lifecycleEvents = new List<RotationGainEventType>();
+            gain.LifecycleEventOccurred += info => lifecycleEvents.Add(info.EventType);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, gain, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            gain.BeginPendingTurn(1);
+            Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.False);
+            Assert.That(requests.Contexts, Is.Empty);
+
+            gain.ProcessTurnSample(true, 30f, 0.1f);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
+            Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.True);
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(lifecycleEvents, Is.EqualTo(new[]
+            {
+                RotationGainEventType.TurnRequested,
+                RotationGainEventType.UserTurnStarted,
+                RotationGainEventType.GainStarted,
+                RotationGainEventType.UserTurnCompleted,
+                RotationGainEventType.GainCompleted
+            }));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_CancelActiveGuidanceCancelsPendingGain()
+    {
+        var root = new GameObject("GuidanceCancelsGainTest");
+        root.SetActive(false);
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(-1);
+            RotationGainEventInfo cancelledEvent = null;
+            gain.LifecycleEventOccurred += info =>
+            {
+                if (info.EventType == RotationGainEventType.GainCancelled)
+                {
+                    cancelledEvent = info;
+                }
+            };
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, null, null, null, null, null, null, null, gain, null);
+
+            coordinator.CancelActiveGuidance();
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Cancelled));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("guidance_cancelled"));
+            Assert.That(cancelledEvent, Is.Not.Null);
+            Assert.That(cancelledEvent.Reason, Is.EqualTo("guidance_cancelled"));
         }
         finally
         {

@@ -103,12 +103,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
         BindRequestCapture();
         BindArrival();
+        BindRotationGain();
     }
 
     private void OnDisable()
     {
         UnbindRequestCapture();
         UnbindArrival();
+        UnbindRotationGain();
     }
 
     /// <summary>
@@ -129,6 +131,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         UnbindRequestCapture();
         UnbindArrival();
+        UnbindRotationGain();
 
         if (client != null)
         {
@@ -148,6 +151,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         BindRequestCapture();
         BindArrival();
+        BindRotationGain();
     }
 
     /// <summary>
@@ -367,7 +371,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
-        rotationGainController?.StopGain();
+        rotationGainController?.CancelGain("guidance_cancelled");
         arrivalDetector?.WatchTarget(null);
         activeSnapshot = null;
         if (requestPhase != GuidanceRequestPhase.None &&
@@ -404,7 +408,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
-        rotationGainController?.StopGain();
+        rotationGainController?.CancelGain("guidance_completed");
         activeSnapshot = null;
     }
 
@@ -415,7 +419,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             : reason;
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
-        rotationGainController?.StopGain();
+        rotationGainController?.AbortGain("runtime_intervention");
         arrivalDetector?.WatchTarget(null);
         activeSnapshot = null;
         SetRequestPhase(GuidanceRequestPhase.Failed);
@@ -427,7 +431,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private void ExpireAndReplan(string reason)
     {
         guidanceExecutor?.Clear();
-        rotationGainController?.StopGain();
+        rotationGainController?.CancelGain("guidance_expired");
         activeSnapshot = null;
         SetRequestPhase(GuidanceRequestPhase.Expired);
         GuidanceExpired?.Invoke(reason);
@@ -475,6 +479,49 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (arrivalDetector != null)
         {
             arrivalDetector.TargetArrived -= HandleTargetArrived;
+        }
+    }
+
+    private void BindRotationGain()
+    {
+        if (rotationGainController != null)
+        {
+            // 完成物理转向后必须先重算风险，不能由 Guidance 展示直接推进 TurnCue。
+            rotationGainController.ReevaluationRequested -= HandleGainReevaluationRequested;
+            rotationGainController.ReevaluationRequested += HandleGainReevaluationRequested;
+        }
+    }
+
+    private void UnbindRotationGain()
+    {
+        if (rotationGainController != null)
+        {
+            rotationGainController.ReevaluationRequested -= HandleGainReevaluationRequested;
+        }
+    }
+
+    private void HandleGainReevaluationRequested()
+    {
+        var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+        var resetRequired = riskState != null && riskState.reset_required;
+        var criticalRisk = riskState != null &&
+                           (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase));
+        if (resetRequired || criticalRisk)
+        {
+            var reason = resetRequired ? "reset_required" : "risk_critical";
+            rotationGainController?.CompleteReevaluation(false, reason);
+            CancelActiveGuidance();
+            pauseResetController?.PauseForReset("请停止移动并按安全提示完成重置。");
+            taskController?.PauseForReset();
+            return;
+        }
+
+        rotationGainController?.CompleteReevaluation(true);
+        if (CurrentGuidanceTarget != null &&
+            CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor)
+        {
+            HandleTurnCueCompleted();
         }
     }
 }

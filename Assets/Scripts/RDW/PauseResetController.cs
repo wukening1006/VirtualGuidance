@@ -27,7 +27,7 @@ public sealed class PauseResetController : MonoBehaviour
     public void PauseForReset(string reason)
     {
         IsPaused = true;
-        rotationGainController?.StopGain();
+        rotationGainController?.AbortGain("reset_required");
         guidanceExecutor?.Clear();
         rejectionPanel?.Show(string.IsNullOrWhiteSpace(reason) ? "Reset required." : reason);
     }

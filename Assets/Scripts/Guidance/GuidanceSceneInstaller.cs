@@ -310,7 +310,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
         guidanceExecutor?.Configure(narrationPlayer, gazeCueController, movementHintController, guideAvatarController, exhibitHighlightManager, rejectionPanel, guidanceDebugPanel);
         pauseResetController?.Configure(guidanceExecutor, rejectionPanel, rotationGainController);
         rdwController?.Configure(riskEvaluator, pauseResetController);
-        rotationGainController?.Configure(userPoseTracker, motionDetector);
+        rotationGainController?.Configure(userPoseTracker, motionDetector, riskEvaluator, physicalSpaceCalibration);
         guidanceCoordinator?.Configure(agentClient, guidanceExecutor, taskController, navigationTargetManager, semanticTargetSelector, arrivalDetector, riskEvaluator, localGuidanceValidator, pauseResetController, rotationGainController, rejectionPanel);
         experimentDashboard?.Configure(
             physicalSpaceManager, userPoseTracker, riskEvaluator, xrTrackingAdapter, taskController,
