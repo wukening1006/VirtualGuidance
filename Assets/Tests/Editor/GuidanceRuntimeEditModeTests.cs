@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using TMPro;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 public sealed class GuidanceRuntimeEditModeTests
 {
@@ -2019,6 +2021,143 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentLogger_MirrorsTraceIdsAndSeverityToUnityConsole()
+    {
+        var root = new GameObject("ExperimentLoggerUnityConsoleTest");
+        string logPath = null;
+        var messages = new List<string>();
+        var levels = new List<LogType>();
+        Application.LogCallback callback = (condition, _, type) =>
+        {
+            if (!condition.Contains("[VirtualGuidance]")) return;
+            messages.Add(condition);
+            levels.Add(type);
+        };
+        Application.logMessageReceived += callback;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-console-log"));
+            logPath = logger.LogPath;
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E3", "E5");
+            var risk = new PhysicalRiskState
+            {
+                calibration_id = "calibration-console",
+                risk_snapshot_id = "risk-console",
+                boundary_risk = "safe",
+                safe_directions = new[] { "forward" }
+            };
+            var request = new GuidanceRequest
+            {
+                calibration_id = risk.calibration_id,
+                request_id = "request-console",
+                decision_id = "decision-console",
+                state_version = runtime.stateVersion,
+                risk_snapshot_id = risk.risk_snapshot_id,
+                target_role = "route_subgoal",
+                condition = "ours_full",
+                task_id = runtime.taskId,
+                current_exhibit = runtime.currentExhibitId,
+                semantic_next_target = runtime.nextTargetId
+            };
+            var response = ResponseForRequest(request, "E3");
+
+            logger.LogRequest(request, risk);
+            logger.LogRuntimeIntervention(response, runtime, risk, "unsafe forward");
+            LogAssert.Expect(
+                LogType.Error,
+                new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\].*request_id=request-console.*decision_id=decision-console.*risk_snapshot_id=risk-console"));
+            logger.LogStatus("task_failed", runtime, risk, "backend unavailable");
+
+            var requestIndex = messages.FindIndex(message => message.Contains("[guidance_requested]"));
+            var interventionIndex = messages.FindIndex(message => message.Contains("[runtime_intervention]"));
+            var failureIndex = messages.FindIndex(message => message.Contains("[task_failed]"));
+            Assert.That(requestIndex, Is.GreaterThanOrEqualTo(0));
+            Assert.That(interventionIndex, Is.GreaterThanOrEqualTo(0));
+            Assert.That(failureIndex, Is.GreaterThanOrEqualTo(0));
+            Assert.That(messages[requestIndex], Does.Contain("session_id=" + logger.Session.sessionId));
+            Assert.That(messages[requestIndex], Does.Contain("calibration_id=calibration-console"));
+            Assert.That(messages[requestIndex], Does.Contain("request_id=request-console"));
+            Assert.That(messages[requestIndex], Does.Contain("decision_id=decision-console"));
+            Assert.That(messages[requestIndex], Does.Contain($"state_version={runtime.stateVersion}"));
+            Assert.That(messages[requestIndex], Does.Contain("risk_snapshot_id=risk-console"));
+            Assert.That(levels[requestIndex], Is.EqualTo(LogType.Log));
+            Assert.That(levels[interventionIndex], Is.EqualTo(LogType.Warning));
+            Assert.That(levels[failureIndex], Is.EqualTo(LogType.Error));
+        }
+        finally
+        {
+            Application.logMessageReceived -= callback;
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
+    public void ExperimentLogger_DeduplicatesConsoleRiskWithoutDroppingJsonlSnapshots()
+    {
+        var root = new GameObject("ExperimentLoggerRiskConsoleTest");
+        string logPath = null;
+        var riskConsoleCount = 0;
+        Application.LogCallback callback = (condition, _, _) =>
+        {
+            if (condition.Contains("[VirtualGuidance]") && condition.Contains("[risk_changed]"))
+            {
+                riskConsoleCount++;
+            }
+        };
+        Application.logMessageReceived += callback;
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-risk-console"));
+            logPath = logger.LogPath;
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E3", "E5");
+
+            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            {
+                risk_snapshot_id = "risk-1",
+                boundary_risk = "safe",
+                safe_directions = new[] { "forward" }
+            }, "first safe snapshot");
+            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            {
+                risk_snapshot_id = "risk-2",
+                boundary_risk = "safe",
+                safe_directions = new[] { "forward" }
+            }, "same semantic risk");
+            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            {
+                risk_snapshot_id = "risk-3",
+                boundary_risk = "critical",
+                reset_required = true,
+                unsafe_directions = new[] { "forward" }
+            }, "critical risk");
+
+            Assert.That(riskConsoleCount, Is.EqualTo(2));
+            var lines = File.ReadAllLines(logPath);
+            Assert.That(lines.Count(line => line.Contains("\"event_type\":\"risk_changed\"")), Is.EqualTo(3));
+            Assert.That(lines.Any(line => line.Contains("\"risk_snapshot_id\":\"risk-2\"")), Is.True);
+        }
+        finally
+        {
+            Application.logMessageReceived -= callback;
+            Object.DestroyImmediate(root);
+            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
+        }
+    }
+
+    [Test]
     public void ExperimentDashboard_ProducesRequiredTraceabilityEvents()
     {
         var root = new GameObject("ExperimentRequiredEventsTest");
@@ -2094,6 +2233,7 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
             InvokePrivate(dashboard, "HandleTaskCompleted", new GuidanceRuntimeState());
             logger.LogCalibrationInvalidated(request.calibration_id, "space changed");
+            LogAssert.Expect(LogType.Error, new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\].*backend unavailable"));
             InvokePrivate(dashboard, "EnterError", "backend unavailable");
 
             var lines = File.ReadAllLines(logPath);

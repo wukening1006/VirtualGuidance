@@ -513,6 +513,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleBackendOnlineChanged(bool online)
     {
+        experimentLogger?.LogStatus(
+            online ? "backend_online" : "backend_unavailable",
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            online ? "backend online" : "backend unavailable");
         if (!online && IsSessionActiveState())
         {
             EnterError("backend unavailable");
