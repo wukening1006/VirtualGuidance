@@ -5,10 +5,11 @@ using UnityEngine;
 /// </summary>
 public sealed class UserPoseTracker : MonoBehaviour
 {
-    // 允许 Inspector 绑定真实 XR Origin；缺省时会在场景中按规范名称兜底查找。
     [Header("虚拟用户引用")]
-    [Tooltip("用户在虚拟展厅中的根节点；未配置时会尝试查找 XR_Origin_or_UserStart。")]
+    [Tooltip("提供用户虚拟位置和朝向的 Transform；XR 模式下通常为 HMD/Camera。")]
     [SerializeField] private Transform virtualUserRoot;
+    [Tooltip("接收 Rotation Gain 的 XR Origin、Locomotion Root 或 Virtual Root；不得绑定 HMD/Camera。")]
+    [SerializeField] private Transform virtualRotationRoot;
 
     // 第一阶段使用模拟 physical pose 作为任务运行输入，后续可替换为真实头显 tracking 数据。
     [Header("模拟 Physical 位姿")]
@@ -27,7 +28,14 @@ public sealed class UserPoseTracker : MonoBehaviour
     /// </summary>
     public Vector3 UserVirtualForward => virtualUserRoot != null ? virtualUserRoot.forward : Vector3.forward;
 
-    public Transform VirtualUserRoot => virtualUserRoot;
+    /// <summary>提供用户当前虚拟位置和朝向的 Transform。</summary>
+    public Transform VirtualPoseSource => virtualUserRoot;
+
+    /// <summary>接收额外虚拟 yaw 的根节点；HMD/Camera 不会被接受。</summary>
+    public Transform VirtualRotationRoot => IsValidRotationRoot(virtualRotationRoot) ? virtualRotationRoot : null;
+
+    /// <summary>兼容既有调用的虚拟位姿引用；新代码应使用 VirtualPoseSource。</summary>
+    public Transform VirtualUserRoot => VirtualPoseSource;
 
     /// <summary>
     /// 获取用户在 physical tracking space 的 XZ 平面坐标。
@@ -41,13 +49,15 @@ public sealed class UserPoseTracker : MonoBehaviour
 
     private void Awake()
     {
-        if (virtualUserRoot == null)
+        var userStart = GameObject.Find("XR_Origin_or_UserStart");
+        if (virtualUserRoot == null && userStart != null)
         {
-            var userStart = GameObject.Find("XR_Origin_or_UserStart");
-            if (userStart != null)
-            {
-                virtualUserRoot = userStart.transform;
-            }
+            virtualUserRoot = userStart.transform;
+        }
+
+        if (!IsValidRotationRoot(virtualRotationRoot) && userStart != null && IsValidRotationRoot(userStart.transform))
+        {
+            virtualRotationRoot = userStart.transform;
         }
     }
 
@@ -57,7 +67,36 @@ public sealed class UserPoseTracker : MonoBehaviour
     /// <param name="root">代表用户虚拟位置和朝向的 Transform。</param>
     public void ConfigureVirtualUserRoot(Transform root)
     {
-        virtualUserRoot = root;
+        ConfigureVirtualPoseSource(root);
+        if (IsValidRotationRoot(root))
+        {
+            virtualRotationRoot = root;
+        }
+    }
+
+    /// <summary>
+    /// 设置用户虚拟位姿来源；该引用可为 HMD/Camera，但不会自动成为 Rotation Gain 目标。
+    /// </summary>
+    /// <param name="source">提供用户虚拟位置和朝向的 Transform。</param>
+    public void ConfigureVirtualPoseSource(Transform source)
+    {
+        virtualUserRoot = source;
+    }
+
+    /// <summary>
+    /// 设置接收 Rotation Gain 的虚拟根节点；Camera/HMD 引用会被拒绝并保持原配置。
+    /// </summary>
+    /// <param name="root">XR Origin、Locomotion Root 或 Virtual Root。</param>
+    /// <returns>引用满足 Gain 作用对象契约时返回 true。</returns>
+    public bool ConfigureVirtualRotationRoot(Transform root)
+    {
+        if (!IsValidRotationRoot(root))
+        {
+            return false;
+        }
+
+        virtualRotationRoot = root;
+        return true;
     }
 
     /// <summary>
@@ -92,5 +131,10 @@ public sealed class UserPoseTracker : MonoBehaviour
         var radians = yawDegrees * Mathf.Deg2Rad;
         var forward = new Vector2(Mathf.Sin(radians), Mathf.Cos(radians));
         return forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+    }
+
+    private static bool IsValidRotationRoot(Transform root)
+    {
+        return root != null && root.GetComponent<Camera>() == null;
     }
 }

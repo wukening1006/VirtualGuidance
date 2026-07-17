@@ -80,7 +80,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
     /// </summary>
     /// <param name="localPosition">相对 XR Origin 的局部位置，单位：米。</param>
     /// <param name="localRotation">相对 XR Origin 的局部旋转。</param>
-    /// <param name="virtualHead">可选虚拟头部；提供时同步作为虚拟用户根节点。</param>
+    /// <param name="virtualHead">可选虚拟头部；只作为 Virtual Pose Source，不会成为 Rotation Gain 目标。</param>
     public void ApplyTrackedPose(Vector3 localPosition, Quaternion localRotation, Transform virtualHead = null)
     {
         if (userPoseTracker == null)
@@ -99,7 +99,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
         if (virtualHead != null)
         {
             headsetTransform = virtualHead;
-            userPoseTracker.ConfigureVirtualUserRoot(virtualHead);
+            userPoseTracker.ConfigureVirtualPoseSource(virtualHead);
         }
 
         IsHeadsetTrackingActive = true;

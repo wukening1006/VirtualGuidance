@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Serialization;
 
 /// <summary>
 /// 在用户主动执行指定方向转头时施加受限旋转增益，输入来自 MotionDetector。
@@ -21,7 +22,9 @@ public sealed class RotationGainController : MonoBehaviour
 
     [Header("Safety")]
     [SerializeField] private bool gainEnabled;
-    [SerializeField] private Transform virtualUserRoot;
+    [Tooltip("接收额外虚拟 yaw 的 XR Origin、Locomotion Root 或 Virtual Root；不得绑定 Camera/HMD。")]
+    [FormerlySerializedAs("virtualUserRoot")]
+    [SerializeField] private Transform virtualRotationRoot;
     [SerializeField] private MotionDetector motionDetector;
 
     [Header("Gain Limits")]
@@ -44,6 +47,8 @@ public sealed class RotationGainController : MonoBehaviour
     public float AccumulatedPhysicalYawDegrees => accumulatedPhysicalYaw;
     /// <summary>本次增益已施加到虚拟用户根节点的额外 yaw，单位：度。</summary>
     public float AppliedExtraYawDegrees => appliedExtraYaw;
+    /// <summary>当前通过作用对象校验的 Rotation Gain 根节点。</summary>
+    public Transform RotationRoot => IsValidRotationRoot(virtualRotationRoot) ? virtualRotationRoot : null;
 
     private void Awake()
     {
@@ -71,6 +76,12 @@ public sealed class RotationGainController : MonoBehaviour
             return;
         }
 
+        if (!IsValidRotationRoot(virtualRotationRoot))
+        {
+            StopGain();
+            return;
+        }
+
         if (!isTurning)
         {
             if (state == GainState.Applying)
@@ -95,9 +106,9 @@ public sealed class RotationGainController : MonoBehaviour
 
         accumulatedPhysicalYaw += Mathf.Abs(signedYawDeltaDegrees);
         var extraYaw = Mathf.Min(Mathf.Abs(signedYawDeltaDegrees) * gainMultiplier, maxExtraYawDegrees - appliedExtraYaw);
-        if (extraYaw > 0f && virtualUserRoot != null)
+        if (extraYaw > 0f)
         {
-            virtualUserRoot.Rotate(Vector3.up, extraYaw * expectedDirectionSign, Space.World);
+            virtualRotationRoot.Rotate(Vector3.up, extraYaw * expectedDirectionSign, Space.World);
             appliedExtraYaw += extraYaw;
         }
 
@@ -107,19 +118,35 @@ public sealed class RotationGainController : MonoBehaviour
         }
     }
 
-    /// <summary>注入物理转头检测器，并绑定接收额外 yaw 的虚拟用户根节点。</summary>
+    /// <summary>注入物理转头检测器，并绑定接收额外 yaw 的虚拟旋转根节点。</summary>
     public void Configure(UserPoseTracker poseTracker, MotionDetector detector)
     {
         if (detector != null) motionDetector = detector;
-        if (poseTracker != null && poseTracker.VirtualUserRoot != null)
+        if (poseTracker != null && poseTracker.VirtualRotationRoot != null)
         {
-            virtualUserRoot = poseTracker.VirtualUserRoot;
+            virtualRotationRoot = poseTracker.VirtualRotationRoot;
         }
-        else if (virtualUserRoot == null)
+        else if (!IsValidRotationRoot(virtualRotationRoot))
         {
             var root = GameObject.Find("XR_Origin_or_UserStart");
-            virtualUserRoot = root != null ? root.transform : null;
+            virtualRotationRoot = root != null && IsValidRotationRoot(root.transform) ? root.transform : null;
         }
+    }
+
+    /// <summary>
+    /// 显式设置 Rotation Gain 根节点；Camera/HMD 引用会被拒绝且不会覆盖有效配置。
+    /// </summary>
+    /// <param name="root">XR Origin、Locomotion Root 或 Virtual Root。</param>
+    /// <returns>引用满足 Gain 作用对象契约时返回 true。</returns>
+    public bool ConfigureRotationRoot(Transform root)
+    {
+        if (!IsValidRotationRoot(root))
+        {
+            return false;
+        }
+
+        virtualRotationRoot = root;
+        return true;
     }
 
     /// <summary>启用或禁用旋转增益；禁用会立即清除当前待执行或正在执行的增益。</summary>
@@ -156,7 +183,9 @@ public sealed class RotationGainController : MonoBehaviour
         expectedDirectionSign = directionSign < 0 ? -1 : 1;
         accumulatedPhysicalYaw = 0f;
         appliedExtraYaw = 0f;
-        state = gainEnabled ? GainState.WaitingForUserTurn : GainState.Idle;
+        state = gainEnabled && IsValidRotationRoot(virtualRotationRoot)
+            ? GainState.WaitingForUserTurn
+            : GainState.Idle;
     }
 
     /// <summary>停止当前旋转增益并清除累计角度，不回滚已经施加的虚拟 yaw。</summary>
@@ -174,10 +203,15 @@ public sealed class RotationGainController : MonoBehaviour
             motionDetector = FindObjectOfType<MotionDetector>();
         }
 
-        if (virtualUserRoot == null)
+        if (!IsValidRotationRoot(virtualRotationRoot))
         {
             var root = GameObject.Find("XR_Origin_or_UserStart");
-            virtualUserRoot = root != null ? root.transform : null;
+            virtualRotationRoot = root != null && IsValidRotationRoot(root.transform) ? root.transform : null;
         }
+    }
+
+    private static bool IsValidRotationRoot(Transform root)
+    {
+        return root != null && root.GetComponent<Camera>() == null;
     }
 }

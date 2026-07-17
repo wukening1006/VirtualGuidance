@@ -338,11 +338,13 @@ public sealed class GuidanceRuntimeEditModeTests
     public void RotationGainController_FollowsTurnLifecycleAndSafetyStops()
     {
         var root = new GameObject("RotationGainLifecycleTest");
-        var user = new GameObject("RotationGainVirtualUser");
+        var poseSource = new GameObject("RotationGainPoseSource");
+        var rotationRoot = new GameObject("RotationGainVirtualRoot");
         try
         {
             var pose = root.AddComponent<UserPoseTracker>();
-            pose.ConfigureVirtualUserRoot(user.transform);
+            pose.ConfigureVirtualPoseSource(poseSource.transform);
+            Assert.That(pose.ConfigureVirtualRotationRoot(rotationRoot.transform), Is.True);
             var detector = root.AddComponent<MotionDetector>();
             detector.Configure(pose);
             var gain = root.AddComponent<RotationGainController>();
@@ -359,6 +361,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Applying));
             Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(10f).Within(0.001f));
             Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(1.5f).Within(0.001f));
+            Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
+            Assert.That(poseSource.transform.eulerAngles.y, Is.Zero.Within(0.001f));
 
             gain.ProcessTurnSample(false, 0f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Idle));
@@ -380,7 +384,48 @@ public sealed class GuidanceRuntimeEditModeTests
         finally
         {
             Object.DestroyImmediate(root);
-            Object.DestroyImmediate(user);
+            Object.DestroyImmediate(poseSource);
+            Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
+    public void RotationGainController_RejectsCameraAsRotationRoot()
+    {
+        var root = new GameObject("RotationGainCameraContractTest");
+        var cameraObject = new GameObject("TrackedHeadCamera");
+        var rotationRoot = new GameObject("SafeVirtualRotationRoot");
+        try
+        {
+            cameraObject.AddComponent<Camera>();
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualPoseSource(cameraObject.transform);
+            Assert.That(pose.ConfigureVirtualRotationRoot(rotationRoot.transform), Is.True);
+
+            Assert.That(pose.ConfigureVirtualRotationRoot(cameraObject.transform), Is.False);
+            Assert.That(pose.VirtualPoseSource, Is.EqualTo(cameraObject.transform));
+            Assert.That(pose.VirtualRotationRoot, Is.EqualTo(rotationRoot.transform));
+
+            var detector = root.AddComponent<MotionDetector>();
+            detector.Configure(pose);
+            var gain = root.AddComponent<RotationGainController>();
+            gain.Configure(pose, detector);
+            Assert.That(gain.ConfigureRotationRoot(cameraObject.transform), Is.False);
+            Assert.That(gain.RotationRoot, Is.EqualTo(rotationRoot.transform));
+
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(1);
+            gain.ProcessTurnSample(true, 10f);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Applying));
+            Assert.That(cameraObject.transform.rotation, Is.EqualTo(Quaternion.identity));
+            Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(cameraObject);
+            Object.DestroyImmediate(rotationRoot);
         }
     }
 
@@ -408,6 +453,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var executor = root.AddComponent<GuidanceExecutor>();
             executor.Configure(narration, gaze, movement, null, null, rejection, null);
             var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
             gain.SetGainEnabled(true);
             gain.BeginPendingTurn(1);
             var pauseReset = root.AddComponent<PauseResetController>();
