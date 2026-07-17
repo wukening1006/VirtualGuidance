@@ -545,8 +545,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
             gain.SetGainEnabled(true);
             gain.BeginPendingTurn(1);
+            var pose = root.AddComponent<UserPoseTracker>();
             var pauseReset = root.AddComponent<PauseResetController>();
-            pauseReset.Configure(executor, rejection, gain);
+            pauseReset.Configure(executor, rejection, gain, pose);
 
             executor.Apply(new GuidanceResponse
             {
@@ -569,13 +570,16 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(movementText.text, Is.Empty);
             Assert.That(gazeText.text, Is.Empty);
             Assert.That(rejectionRoot.activeSelf, Is.True);
-            Assert.That(rejectionText.text, Does.Contain("All directions unsafe."));
+            Assert.That(rejectionText.text, Does.Contain("安全"));
             Assert.That(gain.IsActive, Is.False);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
 
-            pauseReset.ResumeAfterReset();
+            pauseReset.ProcessPhysicalForward(Vector2.up);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Completed));
+            Assert.That(pauseReset.ResumeAfterReset(), Is.True);
 
             Assert.That(pauseReset.IsPaused, Is.False);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(rejectionRoot.activeSelf, Is.False);
             Assert.That(rejectionText.text, Is.Empty);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
@@ -660,6 +664,53 @@ public sealed class GuidanceRuntimeEditModeTests
         {
             Object.DestroyImmediate(root);
             Object.DestroyImmediate(virtualHead);
+        }
+    }
+
+    [Test]
+    public void PauseResetController_SelectsLargestClearanceAndCompletesAtSafeHeading()
+    {
+        var root = new GameObject("TurnToSafeDirectionResetTest");
+        try
+        {
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.SetSimulatedPhysicalPose(Vector2.zero, 0f);
+            var pauseReset = root.AddComponent<PauseResetController>();
+            pauseReset.Configure(null, null, null, pose);
+            ResetEventInfo started = null;
+            ResetEventInfo completed = null;
+            pauseReset.ResetStarted += info => started = info;
+            pauseReset.ResetCompleted += info => completed = info;
+
+            pauseReset.PauseForReset("critical risk", new PhysicalRiskState
+            {
+                clearance_forward = 0.2f,
+                clearance_left = 1.4f,
+                clearance_right = 0.6f,
+                boundary_risk = "critical",
+                reset_required = true
+            });
+
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(pauseReset.SafeDirection, Is.EqualTo("left"));
+            Assert.That(pauseReset.SafePhysicalForward, Is.EqualTo(Vector2.left));
+            Assert.That(started, Is.Not.Null);
+            pauseReset.ProcessPhysicalForward(Vector2.up);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+
+            pauseReset.ProcessPhysicalForward(Vector2.left);
+
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Completed));
+            Assert.That(pauseReset.IsPaused, Is.True);
+            Assert.That(completed, Is.Not.Null);
+            Assert.That(completed.SafeDirection, Is.EqualTo("left"));
+            Assert.That(pauseReset.ResumeAfterReset(), Is.True);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(pauseReset.IsPaused, Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
         }
     }
 

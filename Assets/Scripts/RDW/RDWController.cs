@@ -59,7 +59,9 @@ public sealed class RDWController : MonoBehaviour
             return;
         }
 
-        pauseResetController?.PauseForReset("All physical directions are unsafe; pause and reset before continuing.");
+        pauseResetController?.PauseForReset(
+            "All physical directions are unsafe; pause and reset before continuing.",
+            state);
     }
 
     private void ResolveReferences()
