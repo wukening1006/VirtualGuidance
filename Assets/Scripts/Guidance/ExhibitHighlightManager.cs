@@ -61,7 +61,7 @@ public sealed class ExhibitHighlightManager : MonoBehaviour
 
         if (!exhibitsById.TryGetValue(selectedTarget, out var exhibit) || exhibit == null)
         {
-            Debug.LogWarning($"ExhibitHighlightManager cannot find selected_target: {selectedTarget}", this);
+            Debug.LogWarning($"[ExhibitHighlightManager] 未找到目标展品 | selected_target={selectedTarget}", this);
             return;
         }
 

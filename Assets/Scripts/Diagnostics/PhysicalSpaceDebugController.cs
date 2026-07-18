@@ -85,7 +85,7 @@ public sealed class PhysicalSpaceDebugController : MonoBehaviour
         ResolveReferences();
         if (physicalSpaceManager == null)
         {
-            Debug.LogWarning("PhysicalSpaceDebugController cannot find PhysicalSpaceManager.", this);
+            Debug.LogWarning("[PhysicalSpaceDebugController] 未找到 PhysicalSpaceManager。", this);
             return;
         }
 

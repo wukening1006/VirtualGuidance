@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 [Serializable]
 /// <summary>
@@ -31,12 +32,28 @@ public sealed class ExperimentSession
     public bool isActive;
 
     [NonSerialized] private DateTime? pauseStartedAtUtc;
+    [NonSerialized] private long startedTimestamp;
 
     /// <summary>会话是否已生成可用于日志关联的 ID。</summary>
     public bool IsActive => isActive && !string.IsNullOrWhiteSpace(sessionId);
 
+    /// <summary>从 Session 开始到当前时刻的单调时间，单位：毫秒。</summary>
+    public long ElapsedMilliseconds
+    {
+        get
+        {
+            if (startedTimestamp <= 0)
+            {
+                return 0;
+            }
+
+            var elapsedTicks = Stopwatch.GetTimestamp() - startedTimestamp;
+            return Math.Max(0L, elapsedTicks * 1000L / Stopwatch.Frequency);
+        }
+    }
+
     /// <summary>
-    /// 从当前实验条件创建会话快照，并以 UTC 秒级时间生成 sessionId。
+    /// 从当前实验条件创建会话快照，并以 UTC 毫秒和随机后缀生成唯一 sessionId。
     /// </summary>
     /// <returns>可供日志模块使用的活动会话。</returns>
     public static ExperimentSession Start(ExperimentConditionSpec spec)
@@ -44,12 +61,13 @@ public sealed class ExperimentSession
         var timestamp = DateTime.UtcNow;
         return new ExperimentSession
         {
-            sessionId = $"{Safe(spec.participantId)}_{Safe(spec.condition)}_{Safe(spec.physicalSpaceId)}_{Safe(spec.taskId)}_{timestamp:yyyyMMdd_HHmmss}",
+            sessionId = $"{Safe(spec.participantId)}_{Safe(spec.condition)}_{Safe(spec.physicalSpaceId)}_{Safe(spec.taskId)}_{timestamp:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid().ToString("N").Substring(0, 8)}",
             participantId = spec.participantId,
             condition = spec.condition,
             taskId = spec.taskId,
             physicalSpaceId = spec.physicalSpaceId,
             startedAtUtc = timestamp.ToString("o"),
+            startedTimestamp = Stopwatch.GetTimestamp(),
             isActive = true
         };
     }

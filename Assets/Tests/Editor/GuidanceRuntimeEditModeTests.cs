@@ -1756,13 +1756,132 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentSession_GeneratesUniqueIdsAndMonotonicElapsedTime()
+    {
+        var spec = ExperimentConditionMatrix.Build(5, 1, 1, "P-unique");
+        var first = ExperimentSession.Start(spec);
+        var elapsedBefore = first.ElapsedMilliseconds;
+        System.Threading.Thread.Sleep(5);
+        var elapsedAfter = first.ElapsedMilliseconds;
+        var second = ExperimentSession.Start(spec);
+
+        Assert.That(first.sessionId, Is.Not.EqualTo(second.sessionId));
+        Assert.That(elapsedAfter, Is.GreaterThanOrEqualTo(elapsedBefore));
+    }
+
+    [Test]
+    public void ExperimentLogger_WritesMetaAndTelemetryFilesWithoutSchemaVersion()
+    {
+        var root = new GameObject("ExperimentLoggerSchemaTest");
+        string logPath = null;
+        ExperimentLogger logger = null;
+        try
+        {
+            logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-schema"));
+            logPath = logger.LogPath;
+            logger.LogRiskSnapshot(new PhysicalRiskState
+            {
+                risk_snapshot_id = "risk-schema",
+                calibration_id = "calibration-schema",
+                physical_space = "narrow_room",
+                user_physical_position = new Vector2(1.2f, 2.4f),
+                user_physical_forward = Vector2.up,
+                clearance_forward = 0.7f,
+                clearance_left = 1f,
+                clearance_right = 1.3f,
+                boundary_risk = "high",
+                reset_risk = "high",
+                unsafe_directions = new[] { "forward" },
+                safe_directions = new[] { "right" }
+            }, null);
+            logger.Flush();
+
+            var eventJson = ReadAllLinesShared(logger.LogPath)[0];
+            var telemetryJson = ReadAllLinesShared(logger.TelemetryLogPath)[0];
+            var eventProbe = JsonUtility.FromJson<LogEnvelopeProbe>(eventJson);
+            var telemetryProbe = JsonUtility.FromJson<LogEnvelopeProbe>(telemetryJson);
+            Assert.That(eventJson, Does.Not.Contain("\"schema_version\""));
+            Assert.That(eventProbe.record_type, Is.EqualTo("event"));
+            Assert.That(eventProbe.event_name, Is.EqualTo("session.started"));
+            Assert.That(eventProbe.category, Is.EqualTo("Session"));
+            Assert.That(eventProbe.session_id, Is.EqualTo(logger.Session.sessionId));
+            Assert.That(eventProbe.elapsed_ms, Is.GreaterThanOrEqualTo(0));
+            Assert.That(telemetryJson, Does.Not.Contain("\"schema_version\""));
+            Assert.That(telemetryProbe.record_type, Is.EqualTo("telemetry"));
+            Assert.That(telemetryProbe.event_name, Is.EqualTo("safety.risk_snapshot"));
+            Assert.That(File.Exists(logger.SessionMetaPath), Is.True);
+            var meta = File.ReadAllText(logger.SessionMetaPath);
+            Assert.That(meta, Does.Not.Contain("\"schema_version\""));
+            Assert.That(meta, Does.Contain("\"position_unit\": \"meter\""));
+            Assert.That(meta, Does.Contain("\"telemetry_sampling_hz\": 5.0"));
+        }
+        finally
+        {
+            CloseLoggerAndDeleteSession(logger, logPath);
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentLogger_EscapesJsonControlCharacters()
+    {
+        var root = new GameObject("ExperimentLoggerEscapeTest");
+        string logPath = null;
+        ExperimentLogger logger = null;
+        try
+        {
+            logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            SetPrivateField(logger, "mirrorToUnityConsole", false);
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-escape"));
+            logPath = logger.LogPath;
+            var message = "quote=\" slash=\\ tab=\t control=\u0001 newline=\n";
+            logger.LogStatus("task_failed", null, null, message);
+
+            var lines = ReadAllEventLines(logger);
+            var probe = JsonUtility.FromJson<LogEnvelopeProbe>(lines.Last());
+            Assert.That(probe.message, Is.EqualTo(message));
+            Assert.That(lines.Last(), Does.Contain("\\t"));
+            Assert.That(lines.Last(), Does.Contain("\\u0001"));
+        }
+        finally
+        {
+            CloseLoggerAndDeleteSession(logger, logPath);
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentLogger_InvalidPathDoesNotBreakSession()
+    {
+        var root = new GameObject("ExperimentLoggerInvalidPathTest");
+        try
+        {
+            var logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "\0");
+            LogAssert.Expect(LogType.Error, new Regex(@"\[VirtualGuidance\]\[ERROR\]\[storage_write_failed\]\[存储\].*日志写入失败.*LOG_WRITE_001"));
+
+            Assert.DoesNotThrow(() => logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-invalid-path")));
+            Assert.That(logger.Session.IsActive, Is.True);
+            Assert.That(logger.LogPath, Is.Empty);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void ExperimentLogger_WritesSessionEndedBeforeClosingSession()
     {
         var root = new GameObject("ExperimentLoggerEndSessionTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-log"));
             logPath = logger.LogPath;
@@ -1771,7 +1890,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(logger.Session.IsActive, Is.False);
             Assert.That(File.Exists(logPath), Is.True);
-            var lines = File.ReadAllLines(logPath);
+            var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(2));
             Assert.That(lines[0], Does.Contain("\"event_type\":\"session_started\""));
             Assert.That(lines[1], Does.Contain("\"event_type\":\"session_ended\""));
@@ -1779,11 +1898,8 @@ public sealed class GuidanceRuntimeEditModeTests
         }
         finally
         {
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -1792,9 +1908,10 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var root = new GameObject("ExperimentLoggerRuntimeInterventionTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-runtime-log"));
             logPath = logger.LogPath;
@@ -1814,25 +1931,24 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.LogRuntimeIntervention(response, runtime, null, "unsafe forward");
             logger.LogGuidanceExecuted(response, runtime, null);
 
-            var lines = File.ReadAllLines(logPath);
+            var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(4));
             Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_received\""));
             Assert.That(lines[1], Does.Contain("\"raw_guidance\":"));
             Assert.That(lines[1], Does.Contain("\"runtime_validation_result\":\"pending\""));
             Assert.That(lines[2], Does.Contain("\"event_type\":\"runtime_intervention\""));
             Assert.That(lines[2], Does.Contain("\"runtime_intervention\":true"));
-            Assert.That(lines[2], Does.Contain("\"executed_guidance\":\"\""));
+            Assert.That(lines[2], Does.Not.Contain("\"executed_guidance\":"));
             Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_executed\""));
             Assert.That(lines[3], Does.Contain("\"runtime_intervention\":false"));
             Assert.That(lines[3], Does.Not.Contain("\"executed_guidance\":\"\""));
+            Assert.That(lines.Count(line => line.Contains("\"raw_guidance\":")), Is.EqualTo(1));
+            Assert.That(lines.Count(line => line.Contains("\"executed_guidance\":")), Is.EqualTo(1));
         }
         finally
         {
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -1841,9 +1957,10 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var root = new GameObject("ExperimentLoggerTraceContextTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-trace-log"));
             logPath = logger.LogPath;
@@ -1878,7 +1995,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 risk_snapshot_id = "risk-runtime"
             }, "gain started");
 
-            var lines = File.ReadAllLines(logPath);
+            var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(5));
             Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_requested\""));
             Assert.That(lines[2], Does.Contain("\"event_type\":\"guidance_received\""));
@@ -1893,11 +2010,8 @@ public sealed class GuidanceRuntimeEditModeTests
         }
         finally
         {
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -1906,18 +2020,24 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var root = new GameObject("ExperimentLoggerCalibrationQueueTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.LogCalibrationStarted();
             logger.LogCalibrationCompleted("calibration-before-session");
 
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-calibration-log"));
             logPath = logger.LogPath;
-            logger.LogStatus("risk_changed", null, null, "risk refreshed");
+            logger.LogRiskSnapshot(new PhysicalRiskState
+            {
+                calibration_id = "calibration-before-session",
+                risk_snapshot_id = "risk-after-calibration",
+                boundary_risk = "high"
+            }, null);
 
-            var lines = File.ReadAllLines(logPath);
+            var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(4));
             Assert.That(lines[1], Does.Contain("\"event_type\":\"calibration_started\""));
             Assert.That(lines[2], Does.Contain("\"event_type\":\"calibration_completed\""));
@@ -1926,11 +2046,8 @@ public sealed class GuidanceRuntimeEditModeTests
         }
         finally
         {
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -1939,6 +2056,7 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var root = new GameObject("ExperimentLoggerUnityConsoleTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         var messages = new List<string>();
         var levels = new List<LogType>();
         Application.LogCallback callback = (condition, _, type) =>
@@ -1950,7 +2068,7 @@ public sealed class GuidanceRuntimeEditModeTests
         Application.logMessageReceived += callback;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-console-log"));
             logPath = logger.LogPath;
@@ -1982,7 +2100,7 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.LogRuntimeIntervention(response, runtime, risk, "unsafe forward");
             LogAssert.Expect(
                 LogType.Error,
-                new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\].*request_id=request-console.*decision_id=decision-console.*risk_snapshot_id=risk-console"));
+                new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\]\[任务\].*任务执行失败.*request_id=request-console.*decision_id=decision-console.*risk_snapshot_id=risk-console"));
             logger.LogStatus("task_failed", runtime, risk, "backend unavailable");
 
             var requestIndex = messages.FindIndex(message => message.Contains("[guidance_requested]"));
@@ -1991,12 +2109,19 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(requestIndex, Is.GreaterThanOrEqualTo(0));
             Assert.That(interventionIndex, Is.GreaterThanOrEqualTo(0));
             Assert.That(failureIndex, Is.GreaterThanOrEqualTo(0));
+            Assert.That(messages[requestIndex], Does.Contain("[引导] 已发送引导请求"));
+            Assert.That(messages[requestIndex], Does.Contain("event_name=guidance.requested"));
             Assert.That(messages[requestIndex], Does.Contain("session_id=" + logger.Session.sessionId));
             Assert.That(messages[requestIndex], Does.Contain("calibration_id=calibration-console"));
             Assert.That(messages[requestIndex], Does.Contain("request_id=request-console"));
             Assert.That(messages[requestIndex], Does.Contain("decision_id=decision-console"));
             Assert.That(messages[requestIndex], Does.Contain($"state_version={runtime.stateVersion}"));
             Assert.That(messages[requestIndex], Does.Contain("risk_snapshot_id=risk-console"));
+            Assert.That(messages[requestIndex], Does.Not.Contain("detail=guidance requested"));
+            Assert.That(messages[interventionIndex], Does.Contain("[安全] 安全系统已介入"));
+            Assert.That(messages[interventionIndex], Does.Contain("detail=unsafe forward"));
+            Assert.That(messages[failureIndex], Does.Contain("[任务] 任务执行失败"));
+            Assert.That(messages[failureIndex], Does.Contain("detail=backend unavailable"));
             Assert.That(levels[requestIndex], Is.EqualTo(LogType.Log));
             Assert.That(levels[interventionIndex], Is.EqualTo(LogType.Warning));
             Assert.That(levels[failureIndex], Is.EqualTo(LogType.Error));
@@ -2004,19 +2129,17 @@ public sealed class GuidanceRuntimeEditModeTests
         finally
         {
             Application.logMessageReceived -= callback;
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
     [Test]
-    public void ExperimentLogger_DeduplicatesConsoleRiskWithoutDroppingJsonlSnapshots()
+    public void ExperimentLogger_RoutesRiskSnapshotsToTelemetryAndDeduplicatesEvents()
     {
         var root = new GameObject("ExperimentLoggerRiskConsoleTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         var riskConsoleCount = 0;
         Application.LogCallback callback = (condition, _, _) =>
         {
@@ -2028,46 +2151,46 @@ public sealed class GuidanceRuntimeEditModeTests
         Application.logMessageReceived += callback;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-risk-console"));
             logPath = logger.LogPath;
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", "E1", "E3", "E5");
 
-            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            logger.LogRiskSnapshot(new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-1",
                 boundary_risk = "safe",
                 safe_directions = new[] { "forward" }
-            }, "first safe snapshot");
-            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            }, runtime);
+            logger.LogRiskSnapshot(new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-2",
                 boundary_risk = "safe",
                 safe_directions = new[] { "forward" }
-            }, "same semantic risk");
-            logger.LogStatus("risk_changed", runtime, new PhysicalRiskState
+            }, runtime);
+            logger.LogRiskSnapshot(new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-3",
                 boundary_risk = "critical",
                 reset_required = true,
                 unsafe_directions = new[] { "forward" }
-            }, "critical risk");
+            }, runtime);
 
             Assert.That(riskConsoleCount, Is.EqualTo(2));
-            var lines = File.ReadAllLines(logPath);
-            Assert.That(lines.Count(line => line.Contains("\"event_type\":\"risk_changed\"")), Is.EqualTo(3));
-            Assert.That(lines.Any(line => line.Contains("\"risk_snapshot_id\":\"risk-2\"")), Is.True);
+            var lines = ReadAllEventLines(logger);
+            Assert.That(lines.Count(line => line.Contains("\"event_type\":\"risk_changed\"")), Is.EqualTo(2));
+            Assert.That(lines.Any(line => line.Contains("\"risk_snapshot_id\":\"risk-2\"")), Is.False);
+            var telemetryLines = ReadAllLinesShared(logger.TelemetryLogPath);
+            Assert.That(telemetryLines.Length, Is.EqualTo(3));
+            Assert.That(telemetryLines.Any(line => line.Contains("\"risk_snapshot_id\":\"risk-2\"")), Is.True);
         }
         finally
         {
             Application.logMessageReceived -= callback;
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -2076,9 +2199,10 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var root = new GameObject("ExperimentRequiredEventsTest");
         string logPath = null;
+        ExperimentLogger logger = null;
         try
         {
-            var logger = root.AddComponent<ExperimentLogger>();
+            logger = root.AddComponent<ExperimentLogger>();
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-required-events"));
             logPath = logger.LogPath;
@@ -2147,10 +2271,10 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
             InvokePrivate(dashboard, "HandleTaskCompleted", new GuidanceRuntimeState());
             logger.LogCalibrationInvalidated(request.calibration_id, "space changed");
-            LogAssert.Expect(LogType.Error, new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\].*backend unavailable"));
+            LogAssert.Expect(LogType.Error, new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\]\[任务\].*任务执行失败.*detail=backend unavailable"));
             InvokePrivate(dashboard, "EnterError", "backend unavailable");
 
-            var lines = File.ReadAllLines(logPath);
+            var lines = ReadAllEventLines(logger);
             foreach (var requiredEventType in new[]
             {
                 "calibration_started",
@@ -2191,11 +2315,8 @@ public sealed class GuidanceRuntimeEditModeTests
         }
         finally
         {
+            CloseLoggerAndDeleteSession(logger, logPath);
             Object.DestroyImmediate(root);
-            if (!string.IsNullOrWhiteSpace(logPath) && File.Exists(logPath))
-            {
-                File.Delete(logPath);
-            }
         }
     }
 
@@ -2372,6 +2493,73 @@ public sealed class GuidanceRuntimeEditModeTests
             movement_instruction = "move_forward_slowly",
             verifier = new VerifierResult { approved = true, reason = "ok" }
         };
+    }
+
+    private static string[] ReadAllEventLines(ExperimentLogger logger)
+    {
+        logger.Flush();
+        Assert.That(logger.LogPath, Is.Not.Empty);
+        Assert.That(File.Exists(logger.LogPath), Is.True);
+        return ReadAllLinesShared(logger.LogPath);
+    }
+
+    private static string[] ReadAllLinesShared(string path)
+    {
+        var lines = new List<string>();
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var reader = new StreamReader(stream))
+        {
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                lines.Add(line);
+            }
+        }
+
+        return lines.ToArray();
+    }
+
+    private static void CloseLoggerAndDeleteSession(ExperimentLogger logger, string logPath)
+    {
+        if (logger != null)
+        {
+            logger.EndSession("test_cleanup");
+        }
+
+        if (string.IsNullOrWhiteSpace(logPath))
+        {
+            return;
+        }
+
+        var folder = Path.GetDirectoryName(logPath);
+        if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
+        {
+            try
+            {
+                Directory.Delete(folder, true);
+            }
+            catch (IOException exception)
+            {
+                Assert.Fail("DeleteLogSession failed: " + exception);
+            }
+        }
+    }
+
+    [System.Serializable]
+    private sealed class LogEnvelopeProbe
+    {
+        /// <summary>相对 Session 开始的毫秒时间。</summary>
+        public long elapsed_ms;
+        /// <summary>event 或 telemetry。</summary>
+        public string record_type;
+        /// <summary>固定日志分类。</summary>
+        public string category;
+        /// <summary>稳定的 domain.action 事件名。</summary>
+        public string event_name;
+        /// <summary>供人阅读的消息。</summary>
+        public string message;
+        /// <summary>当前实验 Session ID。</summary>
+        public string session_id;
     }
 
     private sealed class RecordingGuidanceRequestClient : IGuidanceRequestClient

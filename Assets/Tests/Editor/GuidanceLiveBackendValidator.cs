@@ -310,7 +310,8 @@ public static class GuidanceLiveBackendValidator
             return;
         }
         riskEvaluator.EvaluateNow();
-        var pausedLog = File.ReadAllText(experimentLogger.LogPath);
+        experimentLogger.Flush();
+        var pausedLog = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.LogPath));
         if (!pausedLog.Contains("\"event_type\":\"risk_state_changed\"") || !pausedLog.Contains("\"run_state\":\"paused\""))
         {
             Fail("Risk evaluation did not continue logging with run_state=paused.");
@@ -472,8 +473,8 @@ public static class GuidanceLiveBackendValidator
             return;
         }
 
-        var guidanceLines = File.ReadAllLines(guidanceSessionLogPath);
-        var routeLines = File.ReadAllLines(path);
+        var guidanceLines = ReadAllLinesShared(guidanceSessionLogPath);
+        var routeLines = ReadAllLinesShared(path);
         var guidanceComplete = Contains(guidanceLines, "\"event_type\":\"guidance_requested\"") &&
                                Contains(guidanceLines, "\"event_type\":\"guidance_received\"") &&
                                Contains(guidanceLines, "\"participant_id\":\"CODEX_VALIDATION\"") &&
@@ -609,6 +610,22 @@ public static class GuidanceLiveBackendValidator
         }
 
         return false;
+    }
+
+    private static string[] ReadAllLinesShared(string path)
+    {
+        var lines = new List<string>();
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var reader = new StreamReader(stream))
+        {
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                lines.Add(line);
+            }
+        }
+
+        return lines.ToArray();
     }
 
     private static void Record(string name, bool passed, string details)

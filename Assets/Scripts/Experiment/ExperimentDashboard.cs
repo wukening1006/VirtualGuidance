@@ -183,6 +183,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
         return true;
     }
 
+    /// <summary>研究员按钮入口：触发一次物理空间校准，忽略返回值。</summary>
+    public void RequestCalibration()
+    {
+        CalibratePhysicalSpace();
+    }
+
     public void NextCondition() => SetConditionIndex(conditionIndex + 1);
     public void NextTask() => SetTaskIndex(taskIndex + 1);
     public void NextPhysicalSpace() => SetPhysicalSpaceIndex(physicalSpaceIndex + 1);
@@ -479,7 +485,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleRiskStateChanged(PhysicalRiskState state)
     {
-        experimentLogger?.LogStatus("risk_changed", taskController?.RuntimeState, state, "risk state changed");
+        experimentLogger?.LogRiskSnapshot(state, taskController?.RuntimeState);
         if ((runState == ExperimentRunState.Running || runState == ExperimentRunState.Paused || runState == ExperimentRunState.Completing) && IsCritical(state))
         {
             EnterSafetyHold("critical physical risk");

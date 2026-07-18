@@ -54,7 +54,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
         {
             if (!SetPhysicalSpace(defaultSpaceId))
             {
-                Debug.LogWarning($"Default physical space could not be loaded: {defaultSpaceId}", this);
+                Debug.LogWarning($"[PhysicalSpaceManager] 默认物理空间加载失败 | physical_space_id={defaultSpaceId}", this);
             }
         }
     }
@@ -72,14 +72,14 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
             var path = Path.Combine(Application.dataPath, configFolderRelativeToAssets, fileName);
             if (!File.Exists(path))
             {
-                Debug.LogWarning($"Physical space config not found: {path}", this);
+                Debug.LogWarning($"[PhysicalSpaceManager] 未找到物理空间配置文件 | path={path}", this);
                 continue;
             }
 
             var json = File.ReadAllText(path);
             if (!PhysicalSpaceConfigParser.TryParse(json, out var config, out var error))
             {
-                Debug.LogWarning($"Failed to parse physical space config '{path}': {error}", this);
+                Debug.LogWarning($"[PhysicalSpaceManager] 物理空间配置解析失败 | path={path} detail={error}", this);
                 continue;
             }
 
@@ -88,7 +88,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
 
         if (spacesById.Count == 0)
         {
-            Debug.LogWarning("No physical space configs loaded.", this);
+            Debug.LogWarning("[PhysicalSpaceManager] 未加载任何物理空间配置。", this);
         }
     }
 
@@ -111,7 +111,7 @@ public sealed class PhysicalSpaceManager : MonoBehaviour
 
         if (!spacesById.TryGetValue(id, out var nextSpace))
         {
-            Debug.LogWarning($"Unknown physical space id: {id}", this);
+            Debug.LogWarning($"[PhysicalSpaceManager] 未知的物理空间 ID | physical_space_id={id}", this);
             return false;
         }
 

@@ -429,7 +429,7 @@ public sealed class GuidanceSceneInstaller : MonoBehaviour
     {
         if (target == null)
         {
-            Debug.LogWarning($"GuidanceSceneInstaller missing reference: {label}", this);
+            Debug.LogWarning($"[GuidanceSceneInstaller] 场景依赖未配置 | reference={label}", this);
         }
     }
 
