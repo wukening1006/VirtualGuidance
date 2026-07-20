@@ -19,6 +19,7 @@ public static class GuidanceLiveBackendValidator
     private static double notBefore;
     private static AgentClient agentClient;
     private static PhysicalSpaceManager physicalSpaceManager;
+    private static PhysicalSpaceCalibration physicalSpaceCalibration;
     private static UserPoseTracker userPoseTracker;
     private static PhysicalRiskEvaluator riskEvaluator;
     private static XRTrackingAdapter xrTrackingAdapter;
@@ -26,8 +27,10 @@ public static class GuidanceLiveBackendValidator
     private static GuidanceTaskController taskController;
     private static NavigationTargetManager navigationTargets;
     private static ArrivalDetector arrivalDetector;
+    private static PauseResetController pauseResetController;
     private static ExperimentLogger experimentLogger;
     private static GameObject validationUser;
+    private static GuidanceRequest latestRequest;
     private static GuidanceResponse liveResponse;
     private static string requestFailure;
     private static string arrivedTarget;
@@ -169,6 +172,7 @@ public static class GuidanceLiveBackendValidator
 
         agentClient = UnityEngine.Object.FindObjectOfType<AgentClient>();
         physicalSpaceManager = UnityEngine.Object.FindObjectOfType<PhysicalSpaceManager>();
+        physicalSpaceCalibration = UnityEngine.Object.FindObjectOfType<PhysicalSpaceCalibration>();
         userPoseTracker = UnityEngine.Object.FindObjectOfType<UserPoseTracker>();
         riskEvaluator = UnityEngine.Object.FindObjectOfType<PhysicalRiskEvaluator>();
         xrTrackingAdapter = UnityEngine.Object.FindObjectOfType<XRTrackingAdapter>();
@@ -176,11 +180,12 @@ public static class GuidanceLiveBackendValidator
         taskController = UnityEngine.Object.FindObjectOfType<GuidanceTaskController>();
         navigationTargets = UnityEngine.Object.FindObjectOfType<NavigationTargetManager>();
         arrivalDetector = UnityEngine.Object.FindObjectOfType<ArrivalDetector>();
+        pauseResetController = UnityEngine.Object.FindObjectOfType<PauseResetController>();
         experimentLogger = UnityEngine.Object.FindObjectOfType<ExperimentLogger>();
 
-        if (agentClient == null || physicalSpaceManager == null || userPoseTracker == null ||
+        if (agentClient == null || physicalSpaceManager == null || physicalSpaceCalibration == null || userPoseTracker == null ||
             riskEvaluator == null || xrTrackingAdapter == null || experimentDashboard == null || taskController == null || navigationTargets == null ||
-            arrivalDetector == null || experimentLogger == null)
+            arrivalDetector == null || pauseResetController == null || experimentLogger == null)
         {
             return;
         }
@@ -198,6 +203,8 @@ public static class GuidanceLiveBackendValidator
         agentClient.GuidanceReceived.AddListener(HandleGuidanceReceived);
         agentClient.GuidanceRequestFailed.RemoveListener(HandleRequestFailed);
         agentClient.GuidanceRequestFailed.AddListener(HandleRequestFailed);
+        agentClient.GuidanceRequestBuilt -= HandleGuidanceRequestBuilt;
+        agentClient.GuidanceRequestBuilt += HandleGuidanceRequestBuilt;
         arrivalDetector.TargetArrived -= HandleTargetArrived;
         arrivalDetector.TargetArrived += HandleTargetArrived;
 
@@ -217,11 +224,18 @@ public static class GuidanceLiveBackendValidator
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
         xrTrackingAdapter.SetHeadsetTrackingEnabled(false);
         userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
-        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
 
         if (!physicalSpaceManager.SetPhysicalSpace("narrow_room"))
         {
             Fail("Could not select narrow_room for live backend validation.");
+            return;
+        }
+
+        physicalSpaceCalibration.SetCalibrationPoint(new Vector2(1.0f, 2.5f), 0f);
+        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
+        if (!physicalSpaceCalibration.CalibrateCurrentPose())
+        {
+            Fail("Could not establish physical calibration for live backend validation.");
             return;
         }
 
@@ -243,6 +257,11 @@ public static class GuidanceLiveBackendValidator
         liveResponse = null;
         stage = ValidationStage.WaitingForApprovedResponse;
         deadline = EditorApplication.timeSinceStartup + 12d;
+        if (!experimentDashboard.CanStartSession(out var missingConditions))
+        {
+            Fail($"Dashboard Start gate is not ready: {missingConditions}.");
+            return;
+        }
         experimentDashboard.StartSession();
         if (experimentDashboard.RunState != ExperimentRunState.Running ||
             experimentLogger.Session == null || !experimentLogger.Session.IsActive ||
@@ -265,6 +284,11 @@ public static class GuidanceLiveBackendValidator
         stage = ValidationStage.VerifyingApprovedPresentation;
         notBefore = EditorApplication.timeSinceStartup + 0.1d;
         deadline = EditorApplication.timeSinceStartup + 3d;
+    }
+
+    private static void HandleGuidanceRequestBuilt(GuidanceRequest request)
+    {
+        latestRequest = CloneRequest(request);
     }
 
     private static void HandleRequestFailed(string message)
@@ -312,10 +336,14 @@ public static class GuidanceLiveBackendValidator
             Fail("Researcher pause did not freeze the task and show the semantic participant pause message.");
             return;
         }
-        riskEvaluator.EvaluateNow();
+        var pausedRisk = riskEvaluator.EvaluateNow();
         experimentLogger.Flush();
-        var pausedLog = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.LogPath));
-        if (!pausedLog.Contains("\"event_type\":\"risk_state_changed\"") || !pausedLog.Contains("\"run_state\":\"paused\""))
+        var pausedEvents = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.LogPath));
+        var pausedTelemetry = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.TelemetryLogPath));
+        if (pausedRisk == null || string.IsNullOrWhiteSpace(pausedRisk.risk_snapshot_id) ||
+            !pausedEvents.Contains("\"event_type\":\"session_paused\"") ||
+            !pausedEvents.Contains("\"run_state\":\"paused\"") ||
+            !pausedTelemetry.Contains($"\"risk_snapshot_id\":\"{pausedRisk.risk_snapshot_id}\""))
         {
             Fail("Risk evaluation did not continue logging with run_state=paused.");
             return;
@@ -345,38 +373,58 @@ public static class GuidanceLiveBackendValidator
         }
         userPoseTracker.SetSimulatedPhysicalPose(new Vector2(1.0f, 2.5f), 0f);
         riskEvaluator.EvaluateNow();
-        experimentDashboard.ResumeSession();
-        agentClient.CancelPendingRequest();
-        if (experimentDashboard.RunState != ExperimentRunState.Running)
+        pauseResetController.ProcessPhysicalForward(pauseResetController.SafePhysicalForward);
+        if (experimentDashboard.RunState == ExperimentRunState.SafetyHold &&
+            pauseResetController.State == ResetLifecycleState.Completed)
         {
-            Fail("SafetyHold did not resume after risk returned to a safe state.");
+            experimentDashboard.ResumeSession();
+        }
+        agentClient.CancelPendingRequest();
+        if (experimentDashboard.RunState != ExperimentRunState.Running ||
+            pauseResetController.State != ResetLifecycleState.Inactive)
+        {
+            Fail($"SafetyHold did not resume after risk returned to a safe state: " +
+                 $"run_state={experimentDashboard.RunState}, reset_state={pauseResetController.State}.");
             return;
         }
         Record("safety_hold_resume_gate", true, "Critical risk entered SafetyHold, blocked unsafe resume, and resumed only after risk recovery.");
 
-        var rejected = CopyResponse(liveResponse);
+        latestRequest = null;
+        agentClient.RetryLastRequest();
+        agentClient.CancelPendingRequest();
+        if (latestRequest == null)
+        {
+            Fail("No active guidance request identity exists for verifier rejection validation.");
+            return;
+        }
+
+        var rejected = CopyResponse(liveResponse, latestRequest);
         rejected.verifier = new VerifierResult
         {
             approved = false,
             reason = RejectionReason
         };
-        agentClient.GuidanceReceived.Invoke(rejected);
         stage = ValidationStage.VerifyingRejectedPresentation;
-        notBefore = EditorApplication.timeSinceStartup + 0.1d;
+        notBefore = EditorApplication.timeSinceStartup;
         deadline = EditorApplication.timeSinceStartup + 3d;
+        agentClient.GuidanceReceived.Invoke(rejected);
+        VerifyRejectedPresentation();
     }
 
     private static void VerifyRejectedPresentation()
     {
         var narrationText = FindText("GuidanceTextPanel_Text");
         var movementText = FindText("MovementHintPanel_Text");
-        var rejectionText = FindText("RejectionPanel_Text") ?? FindText("ResearcherDebugPanel_Text");
         var safetyText = FindText("SafetyText");
+        experimentLogger?.Flush();
+        var rejectionLog = experimentLogger != null && !string.IsNullOrWhiteSpace(experimentLogger.LogPath)
+            ? string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.LogPath))
+            : string.Empty;
         var rejectedCleanly = narrationText != null && string.IsNullOrEmpty(narrationText.text) &&
                               movementText != null && string.IsNullOrEmpty(movementText.text) &&
-                              rejectionText != null && rejectionText.text.Contains(RejectionReason) &&
-                              safetyText != null && safetyText.text == "系统暂时无法继续，请保持原地" &&
-                              !safetyText.text.Contains(RejectionReason);
+                              safetyText != null && safetyText.text == "请停止移动，等待安全引导" &&
+                              rejectionLog.Contains("\"event_type\":\"runtime_intervention\"") &&
+                              rejectionLog.Contains(RejectionReason);
         if (!rejectedCleanly)
         {
             Fail("Verifier-rejected response did not clear guidance and expose its rejection reason.");
@@ -408,16 +456,23 @@ public static class GuidanceLiveBackendValidator
         }
 
         arrivedTarget = string.Empty;
-        arrivalDetector.WatchTarget(targetId);
+        var reservation = taskController != null ? taskController.RuntimeState.ActiveReservation : null;
+        if (reservation == null || !string.Equals(reservation.TargetId, targetId, StringComparison.Ordinal))
+        {
+            Fail($"No active reservation exists for scene target {targetId}.");
+            return;
+        }
+
+        arrivalDetector.WatchReservation(reservation);
         validationUser.transform.position = TargetPosition(target);
         stage = nextStage;
         notBefore = EditorApplication.timeSinceStartup + 0.05d;
         deadline = EditorApplication.timeSinceStartup + 3d;
     }
 
-    private static void HandleTargetArrived(string targetId)
+    private static void HandleTargetArrived(TargetReservation reservation)
     {
-        arrivedTarget = targetId;
+        arrivedTarget = reservation != null ? reservation.TargetId : string.Empty;
     }
 
     private static void VerifyArrival(string expectedCurrent, string expectedNext, bool expectCompleted)
@@ -536,6 +591,7 @@ public static class GuidanceLiveBackendValidator
         {
             agentClient.GuidanceReceived.RemoveListener(HandleGuidanceReceived);
             agentClient.GuidanceRequestFailed.RemoveListener(HandleRequestFailed);
+            agentClient.GuidanceRequestBuilt -= HandleGuidanceRequestBuilt;
         }
 
         if (arrivalDetector != null)
@@ -568,11 +624,18 @@ public static class GuidanceLiveBackendValidator
         File.WriteAllText(reportPath, JsonUtility.ToJson(report, true));
     }
 
-    private static GuidanceResponse CopyResponse(GuidanceResponse source)
+    private static GuidanceResponse CopyResponse(GuidanceResponse source, GuidanceRequest request)
     {
         return new GuidanceResponse
         {
-            selected_target = source.selected_target,
+            session_id = request.session_id,
+            calibration_id = request.calibration_id,
+            request_id = request.request_id,
+            decision_id = request.decision_id,
+            state_version = request.state_version,
+            risk_snapshot_id = request.risk_snapshot_id,
+            target_role = request.target_role,
+            selected_target = request.semantic_next_target,
             route_decision = source.route_decision,
             narration = source.narration,
             gaze_cue = source.gaze_cue,
@@ -581,6 +644,31 @@ public static class GuidanceLiveBackendValidator
             movement_instruction = source.movement_instruction,
             physical_intent = source.physical_intent,
             verifier = source.verifier
+        };
+    }
+
+    private static GuidanceRequest CloneRequest(GuidanceRequest source)
+    {
+        return new GuidanceRequest
+        {
+            session_id = source.session_id,
+            calibration_id = source.calibration_id,
+            request_id = source.request_id,
+            decision_id = source.decision_id,
+            state_version = source.state_version,
+            risk_snapshot_id = source.risk_snapshot_id,
+            target_role = source.target_role,
+            condition = source.condition,
+            task_id = source.task_id,
+            physical_space_id = source.physical_space_id,
+            current_exhibit = source.current_exhibit,
+            user_physical_position = source.user_physical_position,
+            user_physical_forward = source.user_physical_forward,
+            participant_id = source.participant_id,
+            user_task = source.user_task,
+            semantic_next_target = source.semantic_next_target,
+            user_virtual_position = source.user_virtual_position,
+            user_virtual_forward = source.user_virtual_forward
         };
     }
 
@@ -650,6 +738,7 @@ public static class GuidanceLiveBackendValidator
         notBefore = 0d;
         agentClient = null;
         physicalSpaceManager = null;
+        physicalSpaceCalibration = null;
         userPoseTracker = null;
         riskEvaluator = null;
         xrTrackingAdapter = null;
@@ -657,8 +746,10 @@ public static class GuidanceLiveBackendValidator
         taskController = null;
         navigationTargets = null;
         arrivalDetector = null;
+        pauseResetController = null;
         experimentLogger = null;
         validationUser = null;
+        latestRequest = null;
         liveResponse = null;
         requestFailure = string.Empty;
         arrivedTarget = string.Empty;

@@ -139,6 +139,35 @@ public sealed class GuidanceTaskController : MonoBehaviour
         return accepted;
     }
 
+    /// <summary>使用明确决策 ID 创建新的目标预留。</summary>
+    public bool TryReserveGuidanceTarget(GuidanceTarget target, string decisionId)
+    {
+        var previousVersion = runtimeState.stateVersion;
+        var accepted = runtimeState.TryReserveGuidanceTarget(target, decisionId);
+        if (accepted && runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return accepted;
+    }
+
+    /// <summary>确认当前目标预留进入 Guidance 执行。</summary>
+    public bool CommitReservation(TargetReservation reservation)
+    {
+        return runtimeState.CommitReservation(reservation);
+    }
+
+    /// <summary>放弃当前目标预留并发布新的任务版本。</summary>
+    public bool AbandonReservation()
+    {
+        var abandoned = runtimeState.AbandonReservation();
+        if (abandoned)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return abandoned;
+    }
+
     /// <summary>完成 NavigableDetour，但不推进原 RouteSubgoal。</summary>
     public bool HandleDetourArrived(string detourId)
     {

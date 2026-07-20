@@ -11,13 +11,13 @@ public sealed class ArrivalDetector : MonoBehaviour
     [SerializeField] private NavigationTargetManager navigationTargets;
     [SerializeField] private float arrivalDistanceMeters = 0.75f;
 
-    private string watchedTargetId;
+    private TargetReservation watchedReservation;
 
     /// <summary>
     /// 用户首次进入当前目标到达半径时触发一次；参数为到达的展品 ID。
     /// WatchTarget 再次设置目标后，后续到达可再次触发。
     /// </summary>
-    public event Action<string> TargetArrived;
+    public event Action<TargetReservation> TargetArrived;
 
     private void Awake()
     {
@@ -26,12 +26,12 @@ public sealed class ArrivalDetector : MonoBehaviour
 
     private void Update()
     {
-        if (string.IsNullOrWhiteSpace(watchedTargetId) || userPoseTracker == null || navigationTargets == null)
+        if (watchedReservation == null || userPoseTracker == null || navigationTargets == null)
         {
             return;
         }
 
-        if (!navigationTargets.TryGetTarget(watchedTargetId, out var target) || target == null)
+        if (!navigationTargets.TryGetTarget(watchedReservation.TargetId, out var target) || target == null)
         {
             return;
         }
@@ -41,9 +41,9 @@ public sealed class ArrivalDetector : MonoBehaviour
         var distance = Vector3.Distance(userPoseTracker.UserVirtualPosition, anchor.position);
         if (distance <= Mathf.Max(0.05f, arrivalDistanceMeters))
         {
-            var arrived = watchedTargetId;
+            var arrived = watchedReservation;
             // 触发前清空监测目标，避免用户停留在半径内时每帧重复推进任务。
-            watchedTargetId = string.Empty;
+            watchedReservation = null;
             TargetArrived?.Invoke(arrived);
         }
     }
@@ -56,11 +56,11 @@ public sealed class ArrivalDetector : MonoBehaviour
     }
 
     /// <summary>
-    /// 开始监测指定展品；空 ID 会取消当前监测，新的 ID 会覆盖旧目标。
+    /// 开始监测指定目标预留；null 会取消当前监测，新的 token 会覆盖旧预留。
     /// </summary>
-    public void WatchTarget(string targetId)
+    public void WatchReservation(TargetReservation reservation)
     {
-        watchedTargetId = targetId;
+        watchedReservation = reservation;
     }
 
     private void ResolveReferences()

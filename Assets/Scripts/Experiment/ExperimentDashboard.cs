@@ -341,7 +341,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         TransitionTo(ExperimentRunState.Running, "Session resumed");
         participantUiController?.ShowGuidance();
-        arrivalDetector?.WatchTarget(taskController != null ? taskController.RuntimeState.nextTargetId : null);
+        arrivalDetector?.WatchReservation(taskController != null ? taskController.RuntimeState.ActiveReservation : null);
         if (!requestedDuringResetRecovery)
             guidanceCoordinator?.RequestNextGuidance();
     }
@@ -469,7 +469,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         guidanceCoordinator?.CancelActiveGuidance();
         agentClient?.CancelPendingRequest();
-        arrivalDetector?.WatchTarget(null);
+        arrivalDetector?.WatchReservation(null);
         rotationGainController?.StopGain();
         guidanceExecutor?.Clear();
     }
@@ -486,7 +486,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (runState == ExperimentRunState.Running && state != null && state.IsCompleted)
         {
-            arrivalDetector?.WatchTarget(null);
+            arrivalDetector?.WatchReservation(null);
             rotationGainController?.StopGain();
             guidanceExecutor?.Clear();
             TransitionTo(ExperimentRunState.Completing, "Task completed");

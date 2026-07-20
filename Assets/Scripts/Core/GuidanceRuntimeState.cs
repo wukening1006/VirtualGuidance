@@ -35,6 +35,10 @@ public sealed class GuidanceRuntimeState
     public int maxConsecutiveDetours = 2;
     /// <summary>最近一次 Guidance Target 决策对应的状态版本。</summary>
     public int decisionStateVersion;
+    /// <summary>当前任务中已创建的 Target Reservation 代际。</summary>
+    public int guidanceGeneration;
+
+    [NonSerialized] private TargetReservation activeReservation;
 
     /// <summary>当前任务是否已经到达完成阶段。</summary>
     public bool IsCompleted => phase == GuidanceRuntimePhase.Completed;
@@ -45,6 +49,8 @@ public sealed class GuidanceRuntimeState
     public GuidanceTarget CurrentGuidanceTarget => string.IsNullOrWhiteSpace(guidanceTargetId)
         ? null
         : new GuidanceTarget(guidanceTargetId, guidanceTargetRole);
+    /// <summary>当前有效的 Guidance Target Reservation。</summary>
+    public TargetReservation ActiveReservation => activeReservation;
 
     /// <summary>清空运行任务并回到 Idle；仅在状态实际变化时递增版本。</summary>
     public void Reset()
@@ -54,6 +60,7 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
+        AbandonActiveReservationWithoutVersion();
         phase = GuidanceRuntimePhase.Idle;
         stateVersion++;
     }
@@ -79,6 +86,8 @@ public sealed class GuidanceRuntimeState
         consecutiveDetourCount = 0;
         maxConsecutiveDetours = Math.Max(0, detourLimit);
         decisionStateVersion = 0;
+        guidanceGeneration = 0;
+        activeReservation = null;
         phase = GuidanceRuntimePhase.Navigating;
         stateVersion++;
     }
@@ -88,6 +97,7 @@ public sealed class GuidanceRuntimeState
     /// </summary>
     public void AdvanceTo(string arrivedTargetId, string followingTargetId)
     {
+        CompleteActiveReservation();
         currentExhibitId = EmptyFallback(arrivedTargetId, currentExhibitId);
         nextTargetId = followingTargetId;
         ClearRedirectionHistory();
@@ -105,6 +115,7 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
+        AbandonActiveReservationWithoutVersion();
         phase = GuidanceRuntimePhase.PausedForReset;
         stateVersion++;
     }
@@ -115,7 +126,14 @@ public sealed class GuidanceRuntimeState
     /// <returns>目标可用于当前决策时返回 true。</returns>
     public bool TrySetGuidanceTarget(GuidanceTarget target)
     {
-        if (target == null || string.IsNullOrWhiteSpace(target.TargetId) || !IsNavigating)
+        return TryReserveGuidanceTarget(target, $"local-{guidanceGeneration + 1}");
+    }
+
+    /// <summary>使用决策 ID 创建新的 Guidance Target Reservation。</summary>
+    public bool TryReserveGuidanceTarget(GuidanceTarget target, string decisionId)
+    {
+        if (target == null || string.IsNullOrWhiteSpace(target.TargetId) ||
+            string.IsNullOrWhiteSpace(decisionId) || !IsNavigating)
         {
             return false;
         }
@@ -141,8 +159,10 @@ public sealed class GuidanceRuntimeState
             return false;
         }
 
-        if (string.Equals(guidanceTargetId, target.TargetId, StringComparison.Ordinal) &&
-            guidanceTargetRole == target.TargetRole)
+        if (activeReservation != null &&
+            string.Equals(guidanceTargetId, target.TargetId, StringComparison.Ordinal) &&
+            guidanceTargetRole == target.TargetRole &&
+            string.Equals(activeReservation.DecisionId, decisionId, StringComparison.Ordinal))
         {
             return true;
         }
@@ -151,6 +171,49 @@ public sealed class GuidanceRuntimeState
         guidanceTargetRole = target.TargetRole;
         stateVersion++;
         decisionStateVersion = stateVersion;
+        guidanceGeneration++;
+        activeReservation = new TargetReservation(
+            target.TargetId,
+            target.TargetRole,
+            decisionId,
+            stateVersion,
+            guidanceGeneration);
+        return true;
+    }
+
+    /// <summary>确认 Backend 响应对应的目标预留可以进入执行。</summary>
+    public bool CommitReservation(TargetReservation reservation)
+    {
+        if (!MatchesActiveReservation(reservation) || activeReservation.Phase != TargetReservationPhase.Reserved)
+        {
+            return false;
+        }
+
+        activeReservation.Commit();
+        return true;
+    }
+
+    /// <summary>检查 token 是否仍是当前活动目标预留。</summary>
+    public bool MatchesActiveReservation(TargetReservation reservation)
+    {
+        return activeReservation != null && activeReservation.Matches(reservation) &&
+               activeReservation.Phase != TargetReservationPhase.Abandoned &&
+               activeReservation.Phase != TargetReservationPhase.Completed;
+    }
+
+    /// <summary>放弃当前目标预留，使旧 Arrival 立即失效。</summary>
+    public bool AbandonReservation()
+    {
+        if (activeReservation == null)
+        {
+            return false;
+        }
+
+        activeReservation.Abandon();
+        activeReservation = null;
+        guidanceTargetId = string.Empty;
+        activeDetourId = string.Empty;
+        stateVersion++;
         return true;
     }
 
@@ -165,6 +228,7 @@ public sealed class GuidanceRuntimeState
             return false;
         }
 
+        CompleteActiveReservation();
         currentExhibitId = detourId;
         visitedDetourIds = AppendUnique(visitedDetourIds, detourId);
         activeDetourId = string.Empty;
@@ -184,6 +248,7 @@ public sealed class GuidanceRuntimeState
             return false;
         }
 
+        CompleteActiveReservation();
         completedTurnCueAnchorIds = AppendUnique(completedTurnCueAnchorIds, anchorId);
         guidanceTargetId = string.Empty;
         stateVersion++;
@@ -210,6 +275,7 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
+        AbandonActiveReservationWithoutVersion();
         phase = GuidanceRuntimePhase.PausedByResearcher;
         stateVersion++;
     }
@@ -236,6 +302,7 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
+        AbandonActiveReservationWithoutVersion();
         phase = GuidanceRuntimePhase.Ended;
         stateVersion++;
     }
@@ -243,6 +310,20 @@ public sealed class GuidanceRuntimeState
     private static string EmptyFallback(string value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value;
+    }
+
+    private void CompleteActiveReservation()
+    {
+        activeReservation?.Complete();
+        activeReservation = null;
+    }
+
+    private void AbandonActiveReservationWithoutVersion()
+    {
+        activeReservation?.Abandon();
+        activeReservation = null;
+        guidanceTargetId = string.Empty;
+        activeDetourId = string.Empty;
     }
 
     private void ClearRedirectionHistory()

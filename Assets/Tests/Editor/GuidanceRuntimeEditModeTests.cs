@@ -1128,6 +1128,85 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceCoordinator_StaleResponseDoesNotCancelNewActiveRequest()
+    {
+        var root = new GameObject("GuidanceStaleResponseTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            coordinator.RequestNextGuidance();
+            var firstRequest = RequestForContext(requests.Contexts[0], "request-old");
+            InvokePrivate(coordinator, "HandleRequestBuilt", firstRequest);
+            coordinator.HandleTargetArrived("E3");
+            var secondRequest = RequestForContext(requests.Contexts[1], "request-current");
+            InvokePrivate(coordinator, "HandleRequestBuilt", secondRequest);
+
+            coordinator.HandleGuidanceResponse(ResponseForRequest(firstRequest, "E3"));
+
+            Assert.That(coordinator.ActiveRequestId, Is.EqualTo("request-current"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(2));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_OldReservationCannotAdvanceNewGeneration()
+    {
+        var root = new GameObject("GuidanceReservationGenerationTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E3", "E5" }
+            });
+            task.StartTask();
+            Assert.That(task.TryReserveGuidanceTarget(
+                new GuidanceTarget("E3", NavigationTargetRole.RouteSubgoal), "decision-old"), Is.True);
+            var oldReservation = task.RuntimeState.ActiveReservation;
+            Assert.That(task.AbandonReservation(), Is.True);
+            Assert.That(task.TryReserveGuidanceTarget(
+                new GuidanceTarget("E3", NavigationTargetRole.RouteSubgoal), "decision-current"), Is.True);
+            var currentReservation = task.RuntimeState.ActiveReservation;
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+
+            coordinator.HandleTargetArrived(oldReservation);
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
+            Assert.That(task.RuntimeState.ActiveReservation, Is.SameAs(currentReservation));
+
+            coordinator.HandleTargetArrived(currentReservation);
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void AgentClient_BuildRequestCreatesUniqueRequestIdentityAndPreservesDecisionState()
     {
         var root = new GameObject("AgentClientRequestIdentityTest");
@@ -1679,15 +1758,19 @@ public sealed class GuidanceRuntimeEditModeTests
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
             coordinator.Configure(null, executor, task, null, null, null, null, null, null, null, rejection);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-verifier-rejected");
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
             RuntimeInterventionInfo intervention = null;
             coordinator.RuntimeIntervention += value => intervention = value;
 
-            coordinator.HandleGuidanceResponse(new GuidanceResponse
-            {
-                narration = "不应显示",
-                movement_instruction = "turn_left_slowly",
-                verifier = new VerifierResult { approved = false, reason = "verifier blocked" }
-            });
+            var response = ResponseForRequest(request, "E3");
+            response.narration = "不应显示";
+            response.movement_instruction = "turn_left_slowly";
+            response.verifier = new VerifierResult { approved = false, reason = "verifier blocked" };
+            coordinator.HandleGuidanceResponse(response);
 
             Assert.That(intervention, Is.Not.Null);
             Assert.That(intervention.Reason, Is.EqualTo("verifier blocked"));
