@@ -40,6 +40,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private string lastStatusMessage = "Initializing";
     private float nextReadinessRefreshTime;
     private bool runtimeInterventionActive;
+    private SceneReadinessReport sceneReadiness;
 
     public event Action<ExperimentRunState> SessionStateChanged;
     public event Action<float> CompletionCountdownChanged;
@@ -113,6 +114,15 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (status != null) statusText = status;
         experimentLogger?.SetRunState(runState);
         Subscribe();
+        RefreshReadinessState();
+    }
+
+    /// <summary>
+    /// 接收组合根的只读场景就绪结果，缺失关键引用时保持 Preparing。
+    /// </summary>
+    public void SetSceneReadiness(SceneReadinessReport readiness)
+    {
+        sceneReadiness = readiness;
         RefreshReadinessState();
     }
 
@@ -367,6 +377,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     public bool CanStartSession(out string missingConditions)
     {
+        if (sceneReadiness != null && !sceneReadiness.IsReady)
+        {
+            missingConditions = sceneReadiness.ErrorSummary;
+            return false;
+        }
+
         if (physicalSpaceManager == null || userPoseTracker == null || riskEvaluator == null ||
             physicalSpaceCalibration == null || xrTrackingAdapter == null ||
             taskController == null || guidanceCoordinator == null ||

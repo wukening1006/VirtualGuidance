@@ -10558,8 +10558,8 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1761135462}
-  - component: {fileID: 1761135464}
   - component: {fileID: 1761135463}
+  - component: {fileID: 1761135464}
   m_Layer: 0
   m_Name: GuidanceRoot
   m_TagString: Untagged
@@ -10614,51 +10614,46 @@ MonoBehaviour:
   m_GameObject: {fileID: 1761135461}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: dc542dd46ce04a2e8ff330f6db012afb, type: 3}
+  m_Script: {fileID: 11500000, guid: a32da9ef5d69401e81b83dd228082386, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  installOnAwake: 1
-  createMissingCoreComponents: 1
-  createDebugUiIfMissing: 0
-  createRequestButton: 0
-  routeResponsesThroughCoordinator: 1
-  validateSceneOnInstall: 1
-  physicalSpaceManager: {fileID: 0}
-  userPoseTracker: {fileID: 0}
-  physicalSpaceCalibration: {fileID: 0}
-  riskEvaluator: {fileID: 0}
-  motionDetector: {fileID: 0}
-  xrTrackingAdapter: {fileID: 0}
-  agentClient: {fileID: 0}
-  guidanceCoordinator: {fileID: 0}
-  taskController: {fileID: 0}
-  navigationTargetManager: {fileID: 0}
-  semanticTargetSelector: {fileID: 0}
-  arrivalDetector: {fileID: 0}
-  localGuidanceValidator: {fileID: 0}
-  pauseResetController: {fileID: 0}
-  rdwController: {fileID: 0}
-  rotationGainController: {fileID: 0}
-  guidanceExecutor: {fileID: 0}
-  experimentDashboard: {fileID: 0}
-  experimentLogger: {fileID: 0}
-  narrationPlayer: {fileID: 0}
-  movementHintController: {fileID: 0}
-  gazeCueController: {fileID: 0}
-  guideAvatarController: {fileID: 0}
-  exhibitHighlightManager: {fileID: 0}
-  rejectionPanel: {fileID: 0}
-  guidanceDebugPanel: {fileID: 0}
+  physicalSpaceManager: {fileID: 2100100001}
+  userPoseTracker: {fileID: 2100100002}
+  physicalSpaceCalibration: {fileID: 1896314442}
+  riskEvaluator: {fileID: 2100100012}
+  motionDetector: {fileID: 2100100006}
+  xrTrackingAdapter: {fileID: 2100100005}
+  agentClient: {fileID: 1189476495}
+  guidanceCoordinator: {fileID: 1761135463}
+  taskController: {fileID: 19950179}
+  navigationTargetManager: {fileID: 19950178}
+  semanticTargetSelector: {fileID: 19950177}
+  arrivalDetector: {fileID: 19950176}
+  localGuidanceValidator: {fileID: 1039273995}
+  pauseResetController: {fileID: 1039273992}
+  rdwController: {fileID: 1039273994}
+  rotationGainController: {fileID: 1039273993}
+  guidanceExecutor: {fileID: 1780042341}
+  experimentDashboard: {fileID: 891366376}
+  experimentLogger: {fileID: 891366375}
+  narrationPlayer: {fileID: 1780042340}
+  movementHintController: {fileID: 1780042339}
+  gazeCueController: {fileID: 1780042338}
+  exhibitHighlightManager: {fileID: 1780042336}
+  rejectionPanel: {fileID: 1780042335}
+  guidanceDebugPanel: {fileID: 1780042334}
   participantUiController: {fileID: 1094502200}
-  boundaryVisualizer: {fileID: 0}
-  avatarRoot: {fileID: 0}
-  pointingArm: {fileID: 0}
+  boundaryVisualizer: {fileID: 2100100003}
+  guideAvatarController: {fileID: 1780042337}
+  avatarRoot: {fileID: 1668959135}
+  pointingArm: {fileID: 1834799934}
   narrationText: {fileID: 1971076563}
   movementHintText: {fileID: 591438180}
   gazeCueText: {fileID: 795234305}
   rejectionText: {fileID: 0}
   rejectionPanelRoot: {fileID: 0}
   debugText: {fileID: 0}
+  researcherStatusText: {fileID: 1967346973}
 --- !u!1001 &1773565873
 PrefabInstance:
   m_ObjectHideFlags: 0

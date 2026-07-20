@@ -161,8 +161,11 @@ public static class GuidanceLiveBackendValidator
 
     private static void PrepareSceneAndRequestGuidance()
     {
-        var installer = UnityEngine.Object.FindObjectOfType<GuidanceSceneInstaller>();
-        installer?.Install();
+        var bootstrapper = UnityEngine.Object.FindObjectOfType<SystemBootstrapper>();
+        if (bootstrapper == null || !bootstrapper.Initialize())
+        {
+            return;
+        }
 
         agentClient = UnityEngine.Object.FindObjectOfType<AgentClient>();
         physicalSpaceManager = UnityEngine.Object.FindObjectOfType<PhysicalSpaceManager>();
@@ -182,7 +185,7 @@ public static class GuidanceLiveBackendValidator
             return;
         }
 
-        Record("scene_contract", true, "Installer resolved AgentClient, RDW, task, navigation, arrival, and experiment logging components.");
+        Record("scene_contract", true, "Bootstrapper resolved AgentClient, RDW, task, navigation, arrival, and experiment logging components.");
 
         if (experimentLogger.Session != null || taskController.RuntimeState.phase != GuidanceRuntimePhase.Idle)
         {
