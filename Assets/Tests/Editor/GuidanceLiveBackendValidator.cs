@@ -355,7 +355,7 @@ public static class GuidanceLiveBackendValidator
         var pausedEvents = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.LogPath));
         var pausedTelemetry = string.Join(Environment.NewLine, ReadAllLinesShared(experimentLogger.TelemetryLogPath));
         if (pausedRisk == null || string.IsNullOrWhiteSpace(pausedRisk.risk_snapshot_id) ||
-            !pausedEvents.Contains("\"event_type\":\"session_paused\"") ||
+            !pausedEvents.Contains("\"event_name\":\"session.paused\"") ||
             !pausedEvents.Contains("\"run_state\":\"paused\"") ||
             !pausedTelemetry.Contains($"\"risk_snapshot_id\":\"{pausedRisk.risk_snapshot_id}\""))
         {
@@ -434,7 +434,7 @@ public static class GuidanceLiveBackendValidator
         var rejectedCleanly = narrationText != null && string.IsNullOrEmpty(narrationText.text) &&
                               movementText != null && string.IsNullOrEmpty(movementText.text) &&
                               safetyText != null && safetyText.text == "请停止移动，等待安全引导" &&
-                              rejectionLog.Contains("\"event_type\":\"runtime_intervention\"") &&
+                              rejectionLog.Contains("\"event_name\":\"safety.runtime_intervention\"") &&
                               rejectionLog.Contains(RejectionReason);
         if (!rejectedCleanly)
         {
@@ -549,14 +549,14 @@ public static class GuidanceLiveBackendValidator
 
         var guidanceLines = ReadAllLinesShared(guidanceSessionLogPath);
         var routeLines = ReadAllLinesShared(path);
-        var guidanceComplete = Contains(guidanceLines, "\"event_type\":\"guidance_requested\"") &&
-                               Contains(guidanceLines, "\"event_type\":\"guidance_received\"") &&
+        var guidanceComplete = Contains(guidanceLines, "\"event_name\":\"guidance.requested\"") &&
+                               Contains(guidanceLines, "\"event_name\":\"guidance.received\"") &&
                                Contains(guidanceLines, "\"participant_id\":\"CODEX_VALIDATION\"") &&
-                               Contains(guidanceLines, "\"event_type\":\"session_ended\"");
-        var routeComplete = Contains(routeLines, "\"event_type\":\"guidance_requested\"") &&
-                            Contains(routeLines, "\"event_type\":\"task_state_changed\"") &&
+                               Contains(guidanceLines, "\"event_name\":\"session.ended\"");
+        var routeComplete = Contains(routeLines, "\"event_name\":\"guidance.requested\"") &&
+                            Contains(routeLines, "\"event_name\":\"task.state_changed\"") &&
                             Contains(routeLines, "\"participant_id\":\"CODEX_VALIDATION_ROUTE\"") &&
-                            Contains(routeLines, "\"event_type\":\"session_ended\"") &&
+                            Contains(routeLines, "\"event_name\":\"session.ended\"") &&
                             Contains(routeLines, "\"message\":\"completed_auto\"");
         if (!guidanceComplete || !routeComplete)
         {

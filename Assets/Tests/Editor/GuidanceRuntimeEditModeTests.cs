@@ -2957,7 +2957,7 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-schema"));
             logPath = logger.LogPath;
-            logger.LogRiskSnapshot(new PhysicalRiskState
+            logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-schema",
                 calibration_id = "calibration-schema",
@@ -2971,22 +2971,31 @@ public sealed class GuidanceRuntimeEditModeTests
                 reset_risk = "high",
                 unsafe_directions = new[] { "forward" },
                 safe_directions = new[] { "right" }
-            }, null);
+            }, null, true, true, new Vector3(1f, 1.65f, 2f), Vector3.forward);
             logger.Flush();
 
             var eventJson = ReadAllLinesShared(logger.LogPath)[0];
             var telemetryJson = ReadAllLinesShared(logger.TelemetryLogPath)[0];
-            var eventProbe = JsonUtility.FromJson<LogEnvelopeProbe>(eventJson);
-            var telemetryProbe = JsonUtility.FromJson<LogEnvelopeProbe>(telemetryJson);
+            var eventProbe = JObject.Parse(eventJson);
+            var telemetryProbe = JObject.Parse(telemetryJson);
             Assert.That(eventJson, Does.Not.Contain("\"schema_version\""));
-            Assert.That(eventProbe.record_type, Is.EqualTo("event"));
-            Assert.That(eventProbe.event_name, Is.EqualTo("session.started"));
-            Assert.That(eventProbe.category, Is.EqualTo("Session"));
-            Assert.That(eventProbe.session_id, Is.EqualTo(logger.Session.sessionId));
-            Assert.That(eventProbe.elapsed_ms, Is.GreaterThanOrEqualTo(0));
+            Assert.That((string)eventProbe["record_type"], Is.EqualTo("event"));
+            Assert.That((string)eventProbe["event_name"], Is.EqualTo("session.started"));
+            Assert.That((string)eventProbe["category"], Is.EqualTo("Session"));
+            Assert.That((string)eventProbe["session_id"], Is.EqualTo(logger.Session.sessionId));
+            Assert.That((long)eventProbe["elapsed_ms"], Is.GreaterThanOrEqualTo(0));
+            Assert.That(eventProbe["trace"], Is.TypeOf<JObject>());
+            Assert.That(eventProbe["data"], Is.TypeOf<JObject>());
+            Assert.That(eventProbe.Property("event_type"), Is.Null);
+            Assert.That(eventProbe.Property("request_id"), Is.Null);
             Assert.That(telemetryJson, Does.Not.Contain("\"schema_version\""));
-            Assert.That(telemetryProbe.record_type, Is.EqualTo("telemetry"));
-            Assert.That(telemetryProbe.event_name, Is.EqualTo("safety.risk_snapshot"));
+            Assert.That((string)telemetryProbe["record_type"], Is.EqualTo("telemetry"));
+            Assert.That((string)telemetryProbe["sample_name"], Is.EqualTo("risk.snapshot"));
+            Assert.That(telemetryProbe.Property("event_name"), Is.Null);
+            Assert.That(telemetryProbe.Property("event_type"), Is.Null);
+            Assert.That((bool)telemetryProbe["data"]["tracking_valid"], Is.True);
+            Assert.That((bool)telemetryProbe["data"]["calibration_valid"], Is.True);
+            Assert.That((float)telemetryProbe["data"]["virtual_position_m"]["y"], Is.EqualTo(1.65f));
             Assert.That(File.Exists(logger.SessionMetaPath), Is.True);
             var meta = File.ReadAllText(logger.SessionMetaPath);
             Assert.That(meta, Does.Not.Contain("\"schema_version\""));
@@ -3014,7 +3023,7 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-escape"));
             logPath = logger.LogPath;
             var message = "quote=\" slash=\\ tab=\t control=\u0001 newline=\n";
-            logger.LogStatus("task_failed", null, null, message);
+            logger.LogStatus("task_failed", LogTraceContext.Empty, null, null, message);
 
             var lines = ReadAllEventLines(logger);
             var probe = JsonUtility.FromJson<LogEnvelopeProbe>(lines.Last());
@@ -3062,14 +3071,15 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-log"));
             logPath = logger.LogPath;
 
-            logger.EndSession("completed_auto");
+            logger.EndSession("completed_auto", LogTraceContext.Empty);
 
             Assert.That(logger.Session.IsActive, Is.False);
             Assert.That(File.Exists(logPath), Is.True);
             var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(2));
-            Assert.That(lines[0], Does.Contain("\"event_type\":\"session_started\""));
-            Assert.That(lines[1], Does.Contain("\"event_type\":\"session_ended\""));
+            Assert.That(lines[0], Does.Contain("\"event_name\":\"session.started\""));
+            Assert.That(lines[1], Does.Contain("\"event_name\":\"session.ended\""));
+            Assert.That(lines.All(line => !line.Contains("\"event_type\"")), Is.True);
             Assert.That(lines[1], Does.Contain("\"message\":\"completed_auto\""));
         }
         finally
@@ -3103,23 +3113,33 @@ public sealed class GuidanceRuntimeEditModeTests
                 verifier = new VerifierResult { approved = true, reason = "baseline pass-through" }
             };
 
-            logger.LogResponse(response, null);
-            logger.LogRuntimeIntervention(response, runtime, null, "unsafe forward");
-            logger.LogGuidanceExecuted(response, runtime, null);
+            var trace = logger.LogResponse(response, null);
+            logger.LogRuntimeIntervention(
+                trace,
+                response,
+                runtime,
+                null,
+                "unsafe forward",
+                RuntimeGuidanceSafetyDecision.HardStop,
+                true);
+            logger.LogGuidanceExecuted(trace, response, runtime, null);
 
             var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(4));
-            Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_received\""));
-            Assert.That(lines[1], Does.Contain("\"raw_guidance\":"));
-            Assert.That(lines[1], Does.Contain("\"runtime_validation_result\":\"pending\""));
-            Assert.That(lines[2], Does.Contain("\"event_type\":\"runtime_intervention\""));
-            Assert.That(lines[2], Does.Contain("\"runtime_intervention\":true"));
-            Assert.That(lines[2], Does.Not.Contain("\"executed_guidance\":"));
-            Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_executed\""));
-            Assert.That(lines[3], Does.Contain("\"runtime_intervention\":false"));
-            Assert.That(lines[3], Does.Not.Contain("\"executed_guidance\":\"\""));
-            Assert.That(lines.Count(line => line.Contains("\"raw_guidance\":")), Is.EqualTo(1));
-            Assert.That(lines.Count(line => line.Contains("\"executed_guidance\":")), Is.EqualTo(1));
+            var received = JObject.Parse(lines[1]);
+            var intervention = JObject.Parse(lines[2]);
+            var executedRecord = JObject.Parse(lines[3]);
+            Assert.That((string)received["event_name"], Is.EqualTo("guidance.received"));
+            Assert.That(received["data"]["raw_guidance"], Is.TypeOf<JObject>());
+            Assert.That((string)received["data"]["runtime_validation_result"], Is.EqualTo("pending"));
+            Assert.That((string)intervention["event_name"], Is.EqualTo("safety.runtime_intervention"));
+            Assert.That((bool)intervention["data"]["runtime_intervention"], Is.True);
+            Assert.That((string)intervention["data"]["intervention_type"], Is.EqualTo("hard_stop"));
+            Assert.That(intervention["data"]["executed_guidance"], Is.Null);
+            Assert.That((string)executedRecord["event_name"], Is.EqualTo("guidance.executed"));
+            Assert.That((bool)executedRecord["data"]["runtime_intervention"], Is.False);
+            Assert.That(executedRecord["data"]["executed_guidance"], Is.TypeOf<JObject>());
+            Assert.That(lines.All(line => !line.Contains("\"event_type\"")), Is.True);
         }
         finally
         {
@@ -3157,15 +3177,15 @@ public sealed class GuidanceRuntimeEditModeTests
             };
             var response = ResponseForRequest(request, "E3");
 
-            logger.LogRequest(request, new PhysicalRiskState
+            var trace = logger.LogRequest(request, new PhysicalRiskState
             {
                 calibration_id = "calibration-trace",
                 risk_snapshot_id = "risk-request"
             });
-            logger.LogResponse(response, null);
-            logger.LogGuidanceVerified(runtime, null);
+            trace = logger.LogResponse(response, null);
+            logger.LogGuidanceVerified(trace, runtime, null);
             runtime.AdvanceTo("E3", "E5");
-            logger.LogStatus("gain_started", runtime, new PhysicalRiskState
+            logger.LogStatus("gain_started", trace, runtime, new PhysicalRiskState
             {
                 calibration_id = "calibration-trace",
                 risk_snapshot_id = "risk-runtime"
@@ -3173,16 +3193,17 @@ public sealed class GuidanceRuntimeEditModeTests
 
             var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(5));
-            Assert.That(lines[1], Does.Contain("\"event_type\":\"guidance_requested\""));
-            Assert.That(lines[2], Does.Contain("\"event_type\":\"guidance_received\""));
-            Assert.That(lines[3], Does.Contain("\"event_type\":\"guidance_verified\""));
-            Assert.That(lines[4], Does.Contain("\"event_type\":\"gain_started\""));
-            Assert.That(lines[4], Does.Contain("\"calibration_id\":\"calibration-trace\""));
-            Assert.That(lines[4], Does.Contain("\"request_id\":\"request-trace\""));
-            Assert.That(lines[4], Does.Contain("\"decision_id\":\"decision-trace\""));
-            Assert.That(lines[4], Does.Contain("\"risk_snapshot_id\":\"risk-runtime\""));
-            Assert.That(lines[4], Does.Contain($"\"state_version\":{runtime.stateVersion}"));
-            Assert.That(lines[4], Does.Not.Contain("\"raw_guidance\":\"\""));
+            Assert.That(lines[1], Does.Contain("\"event_name\":\"guidance.requested\""));
+            Assert.That(lines[2], Does.Contain("\"event_name\":\"guidance.received\""));
+            Assert.That(lines[3], Does.Contain("\"event_name\":\"guidance.verified\""));
+            Assert.That(lines[4], Does.Contain("\"event_name\":\"rdw.gain_started\""));
+            var gainRecord = JObject.Parse(lines[4]);
+            Assert.That((string)gainRecord["trace"]["calibration_id"], Is.EqualTo("calibration-trace"));
+            Assert.That((string)gainRecord["trace"]["request_id"], Is.EqualTo("request-trace"));
+            Assert.That((string)gainRecord["trace"]["decision_id"], Is.EqualTo("decision-trace"));
+            Assert.That((string)gainRecord["trace"]["risk_snapshot_id"], Is.EqualTo("risk-runtime"));
+            Assert.That((int)gainRecord["trace"]["state_version"], Is.EqualTo(request.state_version));
+            Assert.That(gainRecord["data"]["raw_guidance"], Is.Null);
         }
         finally
         {
@@ -3206,19 +3227,19 @@ public sealed class GuidanceRuntimeEditModeTests
 
             logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-calibration-log"));
             logPath = logger.LogPath;
-            logger.LogRiskSnapshot(new PhysicalRiskState
+            logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState
             {
                 calibration_id = "calibration-before-session",
                 risk_snapshot_id = "risk-after-calibration",
                 boundary_risk = "high"
-            }, null);
+            }, null, true, true, Vector3.zero, Vector3.forward);
 
             var lines = ReadAllEventLines(logger);
             Assert.That(lines.Length, Is.EqualTo(4));
-            Assert.That(lines[1], Does.Contain("\"event_type\":\"calibration_started\""));
-            Assert.That(lines[2], Does.Contain("\"event_type\":\"calibration_completed\""));
-            Assert.That(lines[2], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
-            Assert.That(lines[3], Does.Contain("\"calibration_id\":\"calibration-before-session\""));
+            Assert.That(lines[1], Does.Contain("\"event_name\":\"tracking.calibration_started\""));
+            Assert.That(lines[2], Does.Contain("\"event_name\":\"tracking.calibration_completed\""));
+            Assert.That((string)JObject.Parse(lines[2])["trace"]["calibration_id"], Is.EqualTo("calibration-before-session"));
+            Assert.That((string)JObject.Parse(lines[3])["trace"]["calibration_id"], Is.EqualTo("calibration-before-session"));
         }
         finally
         {
@@ -3272,12 +3293,19 @@ public sealed class GuidanceRuntimeEditModeTests
             };
             var response = ResponseForRequest(request, "E3");
 
-            logger.LogRequest(request, risk);
-            logger.LogRuntimeIntervention(response, runtime, risk, "unsafe forward");
+            var trace = logger.LogRequest(request, risk);
+            logger.LogRuntimeIntervention(
+                trace,
+                response,
+                runtime,
+                risk,
+                "unsafe forward",
+                RuntimeGuidanceSafetyDecision.HardStop,
+                false);
             LogAssert.Expect(
                 LogType.Error,
                 new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\]\[任务\].*任务执行失败.*request_id=request-console.*decision_id=decision-console.*risk_snapshot_id=risk-console"));
-            logger.LogStatus("task_failed", runtime, risk, "backend unavailable");
+            logger.LogStatus("task_failed", trace, runtime, risk, "backend unavailable");
 
             var requestIndex = messages.FindIndex(message => message.Contains("[guidance_requested]"));
             var interventionIndex = messages.FindIndex(message => message.Contains("[runtime_intervention]"));
@@ -3334,29 +3362,29 @@ public sealed class GuidanceRuntimeEditModeTests
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", "E1", "E3", "E5");
 
-            logger.LogRiskSnapshot(new PhysicalRiskState
+            logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-1",
                 boundary_risk = "safe",
                 safe_directions = new[] { "forward" }
-            }, runtime);
-            logger.LogRiskSnapshot(new PhysicalRiskState
+            }, runtime, true, false, Vector3.zero, Vector3.forward);
+            logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-2",
                 boundary_risk = "safe",
                 safe_directions = new[] { "forward" }
-            }, runtime);
-            logger.LogRiskSnapshot(new PhysicalRiskState
+            }, runtime, true, false, Vector3.zero, Vector3.forward);
+            logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState
             {
                 risk_snapshot_id = "risk-3",
                 boundary_risk = "critical",
                 reset_required = true,
                 unsafe_directions = new[] { "forward" }
-            }, runtime);
+            }, runtime, true, false, Vector3.zero, Vector3.forward);
 
             Assert.That(riskConsoleCount, Is.EqualTo(2));
             var lines = ReadAllEventLines(logger);
-            Assert.That(lines.Count(line => line.Contains("\"event_type\":\"risk_changed\"")), Is.EqualTo(2));
+            Assert.That(lines.Count(line => line.Contains("\"event_name\":\"safety.risk_changed\"")), Is.EqualTo(2));
             Assert.That(lines.Any(line => line.Contains("\"risk_snapshot_id\":\"risk-2\"")), Is.False);
             var telemetryLines = ReadAllLinesShared(logger.TelemetryLogPath);
             Assert.That(telemetryLines.Length, Is.EqualTo(3));
@@ -3406,10 +3434,11 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.LogCalibrationStarted();
             logger.LogCalibrationCompleted(request.calibration_id);
             logger.LogRequest(request, risk);
-            logger.LogResponse(response, risk);
+            var trace = logger.LogResponse(response, risk);
 
             var dashboard = root.AddComponent<ExperimentDashboard>();
             SetPrivateField(dashboard, "experimentLogger", logger);
+            SetPrivateField(dashboard, "activeGuidanceTrace", trace);
             InvokePrivate(dashboard, "HandleRequestPhaseChanged", GuidanceRequestPhase.Verified);
             InvokePrivate(dashboard, "HandleRequestPhaseChanged", GuidanceRequestPhase.Cancelled);
             InvokePrivate(dashboard, "HandleGuidanceRejected", "protocol rejected");
@@ -3417,6 +3446,8 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "HandleGuidanceExecuted", response);
             InvokePrivate(dashboard, "HandleRuntimeIntervention", new RuntimeInterventionInfo(response, "unsafe forward"));
             InvokePrivate(dashboard, "HandleRiskStateChanged", risk);
+            logger.LogStatus("tracking_lost", trace, null, risk, "tracking lost");
+            logger.LogStatus("tracking_recovered", trace, null, risk, "tracking recovered");
 
             foreach (var gainEventType in new[]
                      {
@@ -3440,54 +3471,62 @@ public sealed class GuidanceRuntimeEditModeTests
             }
 
             var detour = new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour);
+            SetPrivateField(dashboard, "activeGuidanceTrace", trace);
             InvokePrivate(dashboard, "HandleGuidanceTargetSelected", detour);
             InvokePrivate(dashboard, "HandleTargetReached", detour);
             InvokePrivate(dashboard, "HandleDetourCompleted", detour);
             InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("left", Vector2.left, "critical risk"));
             InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetStateChanged", ResetLifecycleState.Cancelled);
             InvokePrivate(dashboard, "HandleTaskCompleted", new GuidanceRuntimeState());
             logger.LogCalibrationInvalidated(request.calibration_id, "space changed");
             LogAssert.Expect(LogType.Error, new Regex(@"\[VirtualGuidance\]\[ERROR\]\[task_failed\]\[任务\].*任务执行失败.*detail=backend unavailable"));
             InvokePrivate(dashboard, "EnterError", "backend unavailable");
 
             var lines = ReadAllEventLines(logger);
-            foreach (var requiredEventType in new[]
+            foreach (var requiredEventName in new[]
             {
-                "calibration_started",
-                "calibration_completed",
-                "calibration_invalidated",
-                "guidance_requested",
-                "guidance_received",
-                "guidance_verified",
-                "guidance_rejected",
-                "guidance_expired",
-                "guidance_cancelled",
-                "guidance_executed",
-                "risk_changed",
-                "runtime_intervention",
-                "turn_requested",
-                "user_turn_started",
-                "gain_started",
-                "gain_completed",
-                "gain_cancelled",
-                "target_reached",
-                "detour_selected",
-                "detour_completed",
-                "reset_started",
-                "reset_completed",
-                "task_completed",
-                "task_failed"
+                "tracking.calibration_started",
+                "tracking.calibration_completed",
+                "tracking.calibration_invalidated",
+                "tracking.lost",
+                "tracking.recovered",
+                "guidance.requested",
+                "guidance.received",
+                "guidance.verified",
+                "guidance.rejected",
+                "guidance.expired",
+                "guidance.cancelled",
+                "guidance.executed",
+                "safety.risk_changed",
+                "safety.runtime_intervention",
+                "rdw.turn_requested",
+                "rdw.user_turn_started",
+                "rdw.gain_started",
+                "rdw.gain_completed",
+                "rdw.gain_aborted",
+                "task.target_reserved",
+                "task.target_completed",
+                "task.detour_selected",
+                "task.detour_completed",
+                "safety.reset_started",
+                "safety.reset_completed",
+                "safety.reset_cancelled",
+                "task.completed",
+                "task.failed"
             })
             {
                 Assert.That(
-                    lines.Any(line => line.Contains($"\"event_type\":\"{requiredEventType}\"")),
+                    lines.Any(line => line.Contains($"\"event_name\":\"{requiredEventName}\"")),
                     Is.True,
-                    requiredEventType);
+                    requiredEventName);
             }
-            var targetLine = lines.Single(line => line.Contains("\"event_type\":\"target_reached\""));
-            Assert.That(targetLine, Does.Contain("\"selected_target\":\"E2\""));
-            Assert.That(targetLine, Does.Contain("\"target_role\":\"navigable_detour\""));
-            Assert.That(targetLine, Does.Contain("\"request_id\":\"request-required-events\""));
+            var targetRecord = JObject.Parse(
+                lines.Single(line => line.Contains("\"event_name\":\"task.target_completed\"")));
+            Assert.That((string)targetRecord["data"]["selected_target"], Is.EqualTo("E2"));
+            Assert.That((string)targetRecord["data"]["target_role"], Is.EqualTo("navigable_detour"));
+            Assert.That((string)targetRecord["trace"]["request_id"], Is.EqualTo("request-required-events"));
+            Assert.That(lines.All(line => !line.Contains("\"event_type\"")), Is.True);
         }
         finally
         {
@@ -3728,7 +3767,7 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         if (logger != null)
         {
-            logger.EndSession("test_cleanup");
+            logger.EndSession("test_cleanup", LogTraceContext.Empty);
         }
 
         if (string.IsNullOrWhiteSpace(logPath))

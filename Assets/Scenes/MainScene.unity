@@ -7877,7 +7877,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1281588211}
-  - component: {fileID: 1281588212}
   m_Layer: 9
   m_Name: PhysicalSpaceDebug
   m_TagString: Untagged
@@ -7900,20 +7899,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 508227087}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1281588212
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1281588210}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 574e8545de694fca8e98660bb86cfde3, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  physicalSpaceManager: {fileID: 0}
-  riskEvaluator: {fileID: 0}
 --- !u!1 &1326087650
 GameObject:
   m_ObjectHideFlags: 0
