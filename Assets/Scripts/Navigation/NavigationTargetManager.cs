@@ -94,6 +94,35 @@ public sealed class NavigationTargetManager : MonoBehaviour
     public bool TryGetTargetDirection(string targetId, out string direction)
     {
         direction = string.Empty;
+        if (!TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees))
+        {
+            return false;
+        }
+
+        var absoluteAngle = Mathf.Abs(relativeYawDegrees);
+        if (absoluteAngle <= forwardHalfAngleDegrees)
+        {
+            direction = "forward";
+        }
+        else if (absoluteAngle >= behindThresholdDegrees)
+        {
+            direction = "behind";
+        }
+        else
+        {
+            direction = relativeYawDegrees < 0f ? "left" : "right";
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 尝试计算目标相对用户当前 Virtual Forward 的有符号水平偏航，单位：度。
+    /// </summary>
+    /// <returns>目标、用户位姿与水平目标向量均有效时返回 true。</returns>
+    public bool TryGetTargetRelativeYawDegrees(string targetId, out float relativeYawDegrees)
+    {
+        relativeYawDegrees = 0f;
         if (!TryGetTarget(targetId, out var target) || target == null)
         {
             return false;
@@ -114,8 +143,8 @@ public sealed class NavigationTargetManager : MonoBehaviour
             return false;
         }
 
-        direction = ClassifyRelativeDirection(userPosition, userForward, anchor.position);
-        return !string.IsNullOrWhiteSpace(direction);
+        relativeYawDegrees = Vector3.SignedAngle(userForward.normalized, toTarget.normalized, Vector3.up);
+        return true;
     }
 
     /// <summary>

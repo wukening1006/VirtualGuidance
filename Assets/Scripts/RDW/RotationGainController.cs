@@ -34,6 +34,8 @@ public sealed class RotationGainEventInfo
     public int DirectionSign { get; }
     /// <summary>取消、中止或状态说明。</summary>
     public string Reason { get; }
+    /// <summary>本次 Gain 所属 Guidance 决策 ID。</summary>
+    public string DecisionId { get; }
     /// <summary>事件发生时累计的同方向物理转角，单位：度。</summary>
     public float PhysicalYawDegrees { get; }
     /// <summary>事件发生时已施加的额外虚拟 yaw，单位：度。</summary>
@@ -46,7 +48,8 @@ public sealed class RotationGainEventInfo
         int directionSign,
         string reason,
         float physicalYawDegrees,
-        float extraYawDegrees)
+        float extraYawDegrees,
+        string decisionId = "")
     {
         EventType = eventType;
         State = state;
@@ -54,6 +57,7 @@ public sealed class RotationGainEventInfo
         Reason = reason ?? string.Empty;
         PhysicalYawDegrees = physicalYawDegrees;
         ExtraYawDegrees = extraYawDegrees;
+        DecisionId = decisionId ?? string.Empty;
     }
 }
 
@@ -115,6 +119,8 @@ public sealed class RotationGainController : MonoBehaviour
     private float appliedExtraYaw;
     private float stationaryDurationSeconds;
     private string lastTerminationReason = string.Empty;
+    private string activeDecisionId = string.Empty;
+    private float currentTargetPhysicalYawDegrees = 30f;
 
     /// <summary>Gain 状态发生变化时触发。</summary>
     public event Action<GainState> StateChanged;
@@ -222,7 +228,7 @@ public sealed class RotationGainController : MonoBehaviour
         stationaryDurationSeconds = 0f;
         if (Mathf.Sign(signedYawDeltaDegrees) != expectedDirectionSign)
         {
-            AbortGain("reverse_turn");
+            // TurnCueCompletionTracker 统一按累计反向角度判定，Gain 不对单帧反向抢先终止。
             return;
         }
 
@@ -248,7 +254,7 @@ public sealed class RotationGainController : MonoBehaviour
             appliedExtraYaw += requestedExtraYaw;
         }
 
-        if (accumulatedPhysicalYaw >= Mathf.Max(YawEpsilon, targetPhysicalYawDegrees))
+        if (accumulatedPhysicalYaw >= Mathf.Max(YawEpsilon, currentTargetPhysicalYawDegrees))
         {
             CompleteUserTurn();
         }
@@ -327,15 +333,18 @@ public sealed class RotationGainController : MonoBehaviour
     /// <summary>
     /// 将后端左右转 movement_instruction 转换为待执行 Gain；展示 Guidance 本身不会启动 Gain。
     /// </summary>
-    public void QueueFromMovementInstruction(string movementInstruction)
+    public void QueueFromMovementInstruction(
+        string movementInstruction,
+        string decisionId = "",
+        float requiredPhysicalYawDegrees = -1f)
     {
         if (movementInstruction == "turn_left_slowly")
         {
-            BeginPendingTurn(1);
+            BeginPendingTurn(1, requiredPhysicalYawDegrees, decisionId);
         }
         else if (movementInstruction == "turn_right_slowly")
         {
-            BeginPendingTurn(-1);
+            BeginPendingTurn(-1, requiredPhysicalYawDegrees, decisionId);
         }
     }
 
@@ -343,9 +352,14 @@ public sealed class RotationGainController : MonoBehaviour
     /// 准备指定方向的真实转头，并依次进入 Prepared 与 WaitingForUserTurn。
     /// </summary>
     /// <param name="directionSign">方向符号；负值表示右转，零或正值表示左转。</param>
-    public void BeginPendingTurn(int directionSign)
+    /// <param name="requiredPhysicalYawDegrees">本次完成所需物理转角，单位：度；负值使用 Inspector 默认值。</param>
+    /// <param name="decisionId">本次 Gain 所属 Guidance 决策 ID。</param>
+    public void BeginPendingTurn(
+        int directionSign,
+        float requiredPhysicalYawDegrees = -1f,
+        string decisionId = "")
     {
-        ResetMetrics(directionSign);
+        ResetMetrics(directionSign, requiredPhysicalYawDegrees, decisionId);
         if (!gainEnabled)
         {
             TransitionTo(GainState.Inactive);
@@ -496,9 +510,13 @@ public sealed class RotationGainController : MonoBehaviour
         if (physicalSpaceCalibration != null) physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
     }
 
-    private void ResetMetrics(int directionSign)
+    private void ResetMetrics(int directionSign, float requiredPhysicalYawDegrees, string decisionId)
     {
         expectedDirectionSign = directionSign < 0 ? -1 : 1;
+        activeDecisionId = decisionId ?? string.Empty;
+        currentTargetPhysicalYawDegrees = requiredPhysicalYawDegrees >= 0f
+            ? Mathf.Max(YawEpsilon, requiredPhysicalYawDegrees)
+            : Mathf.Max(YawEpsilon, targetPhysicalYawDegrees);
         accumulatedPhysicalYaw = 0f;
         appliedExtraYaw = 0f;
         stationaryDurationSeconds = 0f;
@@ -528,7 +546,8 @@ public sealed class RotationGainController : MonoBehaviour
             expectedDirectionSign,
             reason,
             accumulatedPhysicalYaw,
-            appliedExtraYaw));
+            appliedExtraYaw,
+            activeDecisionId));
     }
 
     private static bool IsValidRotationRoot(Transform root)

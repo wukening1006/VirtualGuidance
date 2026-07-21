@@ -70,7 +70,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private LocalGuidanceValidator localValidator;
     [SerializeField] private PauseResetController pauseResetController;
     [SerializeField] private RotationGainController rotationGainController;
+    [SerializeField] private MotionDetector motionDetector;
     [SerializeField] private RejectionPanel rejectionPanel;
+
+    [Header("TurnCue 物理完成")]
+    [Tooltip("目标相对偏航不超过该角度时不创建 TurnCue，单位：度。")]
+    [SerializeField] private float turnCueNoCueToleranceDegrees = 12f;
+    [Tooltip("累计反向转动达到该角度时中止 TurnCue，单位：度。")]
+    [SerializeField] private float turnCueReverseAbortDegrees = 5f;
+    [Tooltip("进入目标朝向后需要保持稳定的时间，单位：秒。")]
+    [SerializeField] private float turnCueStableCompletionSeconds = 0.25f;
+    [Tooltip("等待 TurnCue 完成的最长时间，单位：秒。")]
+    [SerializeField] private float turnCueTimeoutSeconds = 8f;
 
     private GuidanceRequestSnapshot activeSnapshot;
     private GuidanceResponse activeResponse;
@@ -82,6 +93,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private string lastRuntimeRiskSnapshotId = string.Empty;
     private bool runtimeReplanPending;
     private GuidanceTarget pendingRuntimeSafetyTarget;
+    private readonly TurnCueCompletionTracker turnCueCompletionTracker = new TurnCueCompletionTracker();
+    private bool handlingGainTermination;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -128,6 +141,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindArrival();
         BindRotationGain();
         BindRuntimeSafety();
+        BindMotionDetector();
+        ConfigureTurnCueTracker();
     }
 
     private void OnDisable()
@@ -136,6 +151,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindArrival();
         UnbindRotationGain();
         UnbindRuntimeSafety();
+        UnbindMotionDetector();
     }
 
     /// <summary>
@@ -152,12 +168,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         LocalGuidanceValidator validator,
         PauseResetController resetController,
         RotationGainController gainController,
-        RejectionPanel rejection)
+        RejectionPanel rejection,
+        MotionDetector turnDetector = null)
     {
         UnbindRequestCapture();
         UnbindArrival();
         UnbindRotationGain();
         UnbindRuntimeSafety();
+        UnbindMotionDetector();
 
         if (client != null)
         {
@@ -173,12 +191,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (validator != null) localValidator = validator;
         if (resetController != null) pauseResetController = resetController;
         if (gainController != null) rotationGainController = gainController;
+        if (turnDetector != null) motionDetector = turnDetector;
         if (rejection != null) rejectionPanel = rejection;
 
         BindRequestCapture();
         BindArrival();
         BindRotationGain();
         BindRuntimeSafety();
+        BindMotionDetector();
+        ConfigureTurnCueTracker();
     }
 
     /// <summary>
@@ -328,11 +349,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             arrivalDetector?.WatchReservation(activeReservation);
         }
 
-        rotationGainController?.QueueFromMovementInstruction(response != null ? response.movement_instruction : string.Empty);
         activeResponse = response;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Executing);
         GuidanceExecuted?.Invoke(response);
+        if (CurrentGuidanceTarget != null &&
+            CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor)
+        {
+            BeginTurnCueTracking(response);
+        }
+        else
+        {
+            turnCueCompletionTracker.Cancel();
+            rotationGainController?.QueueFromMovementInstruction(
+                response.movement_instruction,
+                activeSnapshot != null ? activeSnapshot.decisionId : string.Empty);
+        }
     }
 
     private void HandleRequestBuilt(GuidanceRequest request)
@@ -444,6 +476,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         taskController?.AbandonReservation();
         activeSnapshot = null;
         activeResponse = null;
+        turnCueCompletionTracker.Cancel();
         pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         if (requestPhase == GuidanceRequestPhase.Requested ||
@@ -508,6 +541,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         rotationGainController?.CancelGain("guidance_completed");
         activeSnapshot = null;
         activeResponse = null;
+        turnCueCompletionTracker.Cancel();
         pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
     }
@@ -524,6 +558,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         taskController?.AbandonReservation();
         activeSnapshot = null;
         activeResponse = null;
+        turnCueCompletionTracker.Cancel();
         pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
@@ -542,6 +577,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         taskController?.AbandonReservation();
         activeSnapshot = null;
         activeResponse = null;
+        turnCueCompletionTracker.Cancel();
         pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Expired);
@@ -624,7 +660,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
-    private void TriggerSoftReroute(GuidanceTarget safeCandidate)
+    private void TriggerSoftReroute(
+        GuidanceTarget safeCandidate,
+        string reason = "Active planned direction remained unsafe for two consecutive risk samples.")
     {
         if (runtimeReplanPending || safeCandidate == null)
         {
@@ -642,11 +680,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             taskController?.AbandonReservation();
             activeSnapshot = null;
             activeResponse = null;
+            turnCueCompletionTracker.Cancel();
             ResetRuntimeSafetySampling();
             SetRequestPhase(GuidanceRequestPhase.Cancelled);
             RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
                 interruptedResponse,
-                "Active planned direction remained unsafe for two consecutive risk samples.",
+                reason,
                 RuntimeGuidanceSafetyDecision.SoftReroute));
             pendingRuntimeSafetyTarget = safeCandidate;
             Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
@@ -772,6 +811,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         taskController?.AbandonReservation();
         activeSnapshot = null;
         activeResponse = null;
+        turnCueCompletionTracker.Cancel();
         pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
@@ -795,6 +835,150 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
+    private void ConfigureTurnCueTracker()
+    {
+        turnCueCompletionTracker.Configure(
+            turnCueNoCueToleranceDegrees,
+            turnCueReverseAbortDegrees,
+            turnCueStableCompletionSeconds,
+            turnCueTimeoutSeconds);
+    }
+
+    private void BindMotionDetector()
+    {
+        if (motionDetector == null || !isActiveAndEnabled)
+        {
+            return;
+        }
+
+        motionDetector.TurnSampled -= HandleTurnSampled;
+        motionDetector.TurnSampled += HandleTurnSampled;
+    }
+
+    private void UnbindMotionDetector()
+    {
+        if (motionDetector != null)
+        {
+            motionDetector.TurnSampled -= HandleTurnSampled;
+        }
+    }
+
+    private void BeginTurnCueTracking(GuidanceResponse response)
+    {
+        if (response == null || navigationTargets == null ||
+            !navigationTargets.TryGetTargetRelativeYawDegrees(response.selected_target, out var relativeYawDegrees))
+        {
+            TriggerRuntimeIntervention(response, "TurnCue target relative yaw is unavailable.");
+            return;
+        }
+
+        var directionSign = response.movement_instruction == "turn_left_slowly" ||
+                            response.movement_instruction == "look_left"
+            ? 1
+            : -1;
+        var result = turnCueCompletionTracker.Begin(directionSign, Mathf.Abs(relativeYawDegrees));
+        if (result == TurnCueTrackingResult.Completed)
+        {
+            CompleteTurnCueAfterRiskReevaluation();
+            return;
+        }
+
+        rotationGainController?.QueueFromMovementInstruction(
+            response.movement_instruction,
+            activeSnapshot != null ? activeSnapshot.decisionId : string.Empty,
+            turnCueCompletionTracker.RequiredTurnYawDegrees);
+    }
+
+    private void HandleTurnSampled(bool isTurning, float signedYawDeltaDegrees, float deltaTimeSeconds)
+    {
+        if (requestPhase != GuidanceRequestPhase.Executing || !turnCueCompletionTracker.IsTracking)
+        {
+            return;
+        }
+
+        var result = turnCueCompletionTracker.ProcessSample(
+            isTurning,
+            signedYawDeltaDegrees,
+            deltaTimeSeconds);
+        if (result == TurnCueTrackingResult.Completed)
+        {
+            if (rotationGainController == null || !rotationGainController.IsActive)
+            {
+                CompleteTurnCueAfterRiskReevaluation();
+            }
+        }
+        else if (result == TurnCueTrackingResult.Reversed)
+        {
+            HandleTurnCueSoftFailure("turn_cue_reverse");
+        }
+        else if (result == TurnCueTrackingResult.TimedOut)
+        {
+            HandleTurnCueSoftFailure("turn_cue_timeout");
+        }
+    }
+
+    private void HandleTurnCueSoftFailure(string reason)
+    {
+        if (requestPhase != GuidanceRequestPhase.Executing)
+        {
+            return;
+        }
+
+        handlingGainTermination = true;
+        rotationGainController?.AbortGain(reason);
+        handlingGainTermination = false;
+        turnCueCompletionTracker.Cancel();
+        TriggerSoftRerouteFromLatestRisk(reason);
+    }
+
+    private void TriggerSoftRerouteFromLatestRisk(string reason)
+    {
+        var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
+        if (riskState == null || riskEvaluator == null || !riskEvaluator.IsRiskIdentityCurrent(riskState))
+        {
+            TriggerRuntimeIntervention(activeResponse, $"{reason}: current risk snapshot is unavailable or stale.");
+            return;
+        }
+
+        var activeTargetId = activeResponse != null ? activeResponse.selected_target : string.Empty;
+        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeTargetId);
+        if (safeCandidate != null)
+        {
+            TriggerSoftReroute(safeCandidate, reason);
+            return;
+        }
+
+        TriggerRuntimeIntervention(activeResponse, $"{reason}: no eligible reroute candidate.");
+    }
+
+    private void CompleteTurnCueAfterRiskReevaluation()
+    {
+        if (requestPhase != GuidanceRequestPhase.Executing)
+        {
+            return;
+        }
+
+        var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+        var resetRequired = riskState != null && riskState.reset_required;
+        var criticalRisk = riskState != null &&
+                           (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase));
+        if (riskState == null ||
+            riskEvaluator == null ||
+            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
+            resetRequired ||
+            criticalRisk)
+        {
+            TriggerRuntimeIntervention(
+                activeResponse,
+                riskState == null ? "TurnCue reevaluation has no valid risk snapshot." : "TurnCue reevaluation is unsafe.",
+                resetRequired || criticalRisk);
+            return;
+        }
+
+        HandleTurnCueCompleted();
+    }
+
     private void BindRotationGain()
     {
         if (rotationGainController != null)
@@ -802,6 +986,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             // 完成物理转向后必须先重算风险，不能由 Guidance 展示直接推进 TurnCue。
             rotationGainController.ReevaluationRequested -= HandleGainReevaluationRequested;
             rotationGainController.ReevaluationRequested += HandleGainReevaluationRequested;
+            rotationGainController.LifecycleEventOccurred -= HandleRotationGainLifecycleEvent;
+            rotationGainController.LifecycleEventOccurred += HandleRotationGainLifecycleEvent;
         }
     }
 
@@ -810,31 +996,76 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (rotationGainController != null)
         {
             rotationGainController.ReevaluationRequested -= HandleGainReevaluationRequested;
+            rotationGainController.LifecycleEventOccurred -= HandleRotationGainLifecycleEvent;
+        }
+    }
+
+    private void HandleRotationGainLifecycleEvent(RotationGainEventInfo info)
+    {
+        if (handlingGainTermination || info == null ||
+            info.EventType != RotationGainEventType.GainCancelled ||
+            requestPhase != GuidanceRequestPhase.Executing)
+        {
+            return;
+        }
+
+        if (activeSnapshot == null ||
+            !string.Equals(info.DecisionId, activeSnapshot.decisionId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (info.Reason == "reverse_turn" ||
+            info.Reason == "turn_cue_reverse" ||
+            info.Reason == "turn_cue_timeout" ||
+            info.Reason == "turn_stopped_timeout" ||
+            info.Reason == "gain_limit_exceeded")
+        {
+            turnCueCompletionTracker.Cancel();
+            TriggerSoftRerouteFromLatestRisk(info.Reason);
+        }
+        else if (info.Reason == "tracking_invalid" ||
+                 info.Reason == "risk_critical" ||
+                 info.Reason == "reset_required" ||
+                 info.Reason == "rotation_root_invalid")
+        {
+            turnCueCompletionTracker.Cancel();
+            TriggerRuntimeIntervention(
+                activeResponse,
+                info.Reason,
+                info.Reason == "risk_critical" || info.Reason == "reset_required");
         }
     }
 
     private void HandleGainReevaluationRequested()
     {
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+        var riskUnavailable = riskState == null ||
+                              riskEvaluator == null ||
+                              !riskEvaluator.IsRiskIdentityCurrent(riskState);
         var resetRequired = riskState != null && riskState.reset_required;
         var criticalRisk = riskState != null &&
                            (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase));
-        if (resetRequired || criticalRisk)
+        if (riskUnavailable || resetRequired || criticalRisk)
         {
-            var reason = resetRequired ? "reset_required" : "risk_critical";
+            var reason = riskUnavailable
+                ? "risk_snapshot_unavailable"
+                : resetRequired ? "reset_required" : "risk_critical";
+            handlingGainTermination = true;
             rotationGainController?.CompleteReevaluation(false, reason);
-            CancelActiveGuidance();
-            pauseResetController?.PauseForReset("请停止移动并按安全提示完成重置。");
-            taskController?.PauseForReset();
+            handlingGainTermination = false;
+            turnCueCompletionTracker.Cancel();
+            TriggerRuntimeIntervention(activeResponse, reason, resetRequired || criticalRisk);
             return;
         }
 
         rotationGainController?.CompleteReevaluation(true);
         if (CurrentGuidanceTarget != null &&
-            CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor)
+            CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor &&
+            turnCueCompletionTracker.State == TurnCueTrackingState.Completed)
         {
-            HandleTurnCueCompleted();
+            CompleteTurnCueAfterRiskReevaluation();
         }
     }
 }

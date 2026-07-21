@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 /// <summary>
@@ -12,6 +13,9 @@ public sealed class MotionDetector : MonoBehaviour
 
     private bool hasPreviousForward;
     private Vector2 previousForward;
+
+    /// <summary>每次 Physical Forward 采样完成后触发，参数依次为转向状态、有符号 yaw delta 和采样时长。</summary>
+    public event Action<bool, float, float> TurnSampled;
 
     /// <summary>当前角速度是否处于转向状态，采用开始/停止双阈值判断。</summary>
     public bool IsTurning { get; private set; }
@@ -47,6 +51,7 @@ public sealed class MotionDetector : MonoBehaviour
         {
             previousForward = forward;
             hasPreviousForward = true;
+            TurnSampled?.Invoke(false, 0f, Mathf.Max(0f, deltaTimeSeconds));
             return;
         }
 
@@ -63,6 +68,8 @@ public sealed class MotionDetector : MonoBehaviour
         {
             IsTurning = false;
         }
+
+        TurnSampled?.Invoke(IsTurning, LastSignedYawDeltaDegrees, Mathf.Max(0f, deltaTimeSeconds));
     }
 
     /// <summary>

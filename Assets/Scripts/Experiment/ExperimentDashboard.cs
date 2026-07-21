@@ -319,7 +319,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (runState == ExperimentRunState.SafetyHold &&
             pauseResetController != null &&
-            pauseResetController.State != ResetLifecycleState.Inactive &&
+            pauseResetController.IsActive &&
             pauseResetController.State != ResetLifecycleState.Completed)
         {
             return;
@@ -338,6 +338,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void ResumeSessionWithRisk(PhysicalRiskState risk)
     {
+        var restoreResearcherPause = runState == ExperimentRunState.SafetyHold &&
+                                     stateBeforeSafetyHold == ExperimentRunState.Paused;
         if (!IsSafeForResume(risk))
         {
             EnterSafetyHold("physical risk is not safe for resume", false);
@@ -345,10 +347,25 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         if (pauseResetController != null &&
-            pauseResetController.State != ResetLifecycleState.Inactive &&
+            pauseResetController.State == ResetLifecycleState.Cancelled)
+        {
+            EnterSafetyHold("reset turn was interrupted and must restart");
+            return;
+        }
+
+        if (pauseResetController != null &&
+            pauseResetController.State == ResetLifecycleState.Completed &&
             !pauseResetController.ResumeAfterReset())
         {
-            EnterSafetyHold("reset turn has not completed");
+            EnterSafetyHold("reset turn has not completed", false);
+            return;
+        }
+        if (restoreResearcherPause)
+        {
+            runtimeInterventionActive = false;
+            stateBeforeSafetyHold = ExperimentRunState.Running;
+            TransitionTo(ExperimentRunState.Paused, "Researcher pause restored after reset");
+            participantUiController?.ShowResearcherPaused();
             return;
         }
         runtimeInterventionActive = false;
@@ -404,6 +421,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         StopCompletionCountdown();
         FreezeExperimentBehavior();
+        pauseResetController?.CancelReset("session_ended");
         experimentLogger?.Session?.EndPause();
         TransitionTo(ExperimentRunState.Ended, string.IsNullOrWhiteSpace(reason) ? "Session ended" : reason);
         taskController?.EndTask();
@@ -486,9 +504,16 @@ public sealed class ExperimentDashboard : MonoBehaviour
             experimentLogger?.Session?.BeginPause();
         }
 
+        rotationGainController?.AbortGain(startReset ? "reset_required" : "runtime_intervention");
         FreezeExperimentBehavior();
         TransitionTo(ExperimentRunState.SafetyHold, reason);
-        if (startReset && stateBeforeSafetyHold != ExperimentRunState.Completing)
+        if (!startReset)
+        {
+            pauseResetController?.CancelReset(reason);
+        }
+        if (startReset &&
+            stateBeforeSafetyHold != ExperimentRunState.Completing &&
+            stateBeforeSafetyHold != ExperimentRunState.Paused)
         {
             taskController?.PauseForReset();
         }
@@ -506,6 +531,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private void EnterError(string reason)
     {
         FreezeExperimentBehavior();
+        pauseResetController?.CancelReset("session_error");
         TransitionTo(ExperimentRunState.Error, reason);
         participantUiController?.ShowSystemUnavailable();
         experimentLogger?.LogStatus("task_failed", taskController?.RuntimeState, riskEvaluator?.CurrentRiskState, reason);

@@ -299,6 +299,166 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentDashboard_ResetRecoveryPreservesResearcherPause()
+    {
+        var root = new GameObject("ExperimentDashboardResearcherPauseResetTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+
+            var task = CreateRouteTask(root);
+            task.PauseForResearcher();
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
+            var reset = root.AddComponent<PauseResetController>();
+            reset.Configure(null, null, null, pose, risk);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "pauseResetController", reset);
+            SetPrivateField(dashboard, "riskEvaluator", risk);
+            SetPrivateField(dashboard, "physicalSpaceManager", space);
+            SetPrivateField(dashboard, "physicalSpaceCalibration", calibration);
+            SetPrivateField(dashboard, "xrTrackingAdapter", tracking);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Paused);
+            InvokePrivate(dashboard, "Subscribe");
+
+            InvokePrivate(dashboard, "EnterSafetyHold", "critical risk", true);
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
+            Assert.That(reset.IsActive, Is.True);
+
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Paused));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(reset.IsActive, Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_EndDuringResetLeavesNoActiveReset()
+    {
+        var root = new GameObject("ExperimentDashboardEndDuringResetTest");
+        root.SetActive(false);
+        try
+        {
+            var task = CreateRouteTask(root);
+            task.PauseForReset();
+            var reset = root.AddComponent<PauseResetController>();
+            reset.PauseForReset("critical risk");
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "pauseResetController", reset);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+
+            dashboard.EndSession("test_end_during_reset");
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Ended));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Ended));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+            Assert.That(reset.IsActive, Is.False);
+            Assert.That(reset.IsPaused, Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_TrackingLossPreemptsGainAndReset()
+    {
+        var root = new GameObject("ExperimentDashboardTrackingPreemptionTest");
+        root.SetActive(false);
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
+            gain.SetGainEnabled(true);
+            var reset = root.AddComponent<PauseResetController>();
+            reset.Configure(null, null, gain);
+            reset.PauseForReset("critical risk");
+            gain.BeginPendingTurn(1, 30f, "decision-tracking-loss");
+            Assert.That(gain.IsActive, Is.True);
+            Assert.That(reset.IsActive, Is.True);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "rotationGainController", gain);
+            SetPrivateField(dashboard, "pauseResetController", reset);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+
+            InvokePrivate(dashboard, "HandleTrackingStateChanged", false);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("tracking_invalid"));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+            Assert.That(reset.IsActive, Is.False);
+            Assert.That(reset.IsPaused, Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_InterruptedResetRestartsAfterSafeTrackingRecovery()
+    {
+        var root = new GameObject("ExperimentDashboardInterruptedResetRecoveryTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+            var task = CreateRouteTask(root);
+            task.PauseForReset();
+            var reset = root.AddComponent<PauseResetController>();
+            reset.Configure(null, null, null, pose, risk);
+            reset.PauseForReset("critical risk");
+            reset.CancelReset("tracking lost");
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "pauseResetController", reset);
+            SetPrivateField(dashboard, "riskEvaluator", risk);
+            SetPrivateField(dashboard, "physicalSpaceManager", space);
+            SetPrivateField(dashboard, "physicalSpaceCalibration", calibration);
+            SetPrivateField(dashboard, "xrTrackingAdapter", tracking);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
+
+            InvokePrivate(dashboard, "ResumeSessionWithRisk", risk.CurrentRiskState);
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(reset.IsActive, Is.True);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void GuidanceTaskController_AdvancesConfiguredRouteToCompleted()
     {
         var go = new GameObject("GuidanceTaskControllerTest");
@@ -470,6 +630,7 @@ public sealed class GuidanceRuntimeEditModeTests
             pose.ConfigureVirtualUserRoot(virtualUser.transform);
             CreateExhibit(root.transform, "ForwardTarget", Vector3.forward * 2f, "route_subgoal", null);
             CreateExhibit(root.transform, "BehindTarget", Vector3.back * 2f, "route_subgoal", null);
+            CreateExhibit(root.transform, "TurnCueTarget", Vector3.left * 2f, "turn_cue_anchor", null);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
@@ -554,6 +715,41 @@ public sealed class GuidanceRuntimeEditModeTests
                     out var behindReason),
                 Is.False);
             Assert.That(behindReason, Does.Contain("cannot calculate"));
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "TurnCueTarget",
+                        movement_instruction = "pause_and_wait"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var stationaryTurnCueReason),
+                Is.False);
+            Assert.That(stationaryTurnCueReason, Does.Contain("stationary movement"));
+
+            var noCueTarget = CreateExhibit(
+                root.transform,
+                "NoCueTarget",
+                new Vector3(-0.1f, 0f, 2f),
+                "turn_cue_anchor",
+                null);
+            targets.RebuildIndex();
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = noCueTarget.Id,
+                        movement_instruction = "look_forward"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var noCueReason),
+                Is.True,
+                noCueReason);
         }
         finally
         {
@@ -669,6 +865,129 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceCoordinator_GainAbortUsesDecisionIdentityAndSoftReroutesOnce()
+    {
+        var root = new GameObject("GuidanceGainAbortSoftRerouteTest");
+        root.SetActive(false);
+        try
+        {
+            var virtualUser = new GameObject("GainAbortVirtualUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            riskEvaluator.Configure(space, pose, calibration);
+
+            CreateExhibit(root.transform, "GainAbortE1", Vector3.back, "introduction", new[] { "GainAbortE2" });
+            CreateExhibit(root.transform, "GainAbortE2", Vector3.left * 2f, "left_related_anchor", null);
+            CreateExhibit(root.transform, "GainAbortE3", Vector3.forward * 2f, "route_subgoal", null);
+            CreateExhibit(root.transform, "GainAbortE5", Vector3.forward * 4f, "main_target", null);
+            root.SetActive(true);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var validator = root.AddComponent<LocalGuidanceValidator>();
+            validator.Configure(targets, riskEvaluator);
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "GainAbortE1",
+                finalTargetId = "GainAbortE5",
+                routeTargetIds = new[] { "GainAbortE1", "GainAbortE3", "GainAbortE5" }
+            });
+            task.StartTask();
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
+            gain.SetGainEnabled(true);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                targets,
+                selector,
+                null,
+                riskEvaluator,
+                validator,
+                null,
+                gain,
+                null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var softRerouteCount = 0;
+            coordinator.RuntimeIntervention += info =>
+            {
+                if (info.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+                {
+                    softRerouteCount++;
+                }
+            };
+            RotationGainEventInfo matchedAbort = null;
+            string expectedAbortDecisionId = null;
+            gain.LifecycleEventOccurred += info =>
+            {
+                if (info.EventType == RotationGainEventType.GainCancelled &&
+                    info.DecisionId == expectedAbortDecisionId)
+                {
+                    matchedAbort = info;
+                }
+            };
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-gain-abort");
+            request.physical_space_id = space.CurrentSpaceId;
+            expectedAbortDecisionId = request.decision_id;
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "GainAbortE3"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+
+            SetPrivateField(riskEvaluator, "currentRiskState", new PhysicalRiskState
+            {
+                risk_snapshot_id = "risk-gain-abort",
+                calibration_id = calibration.CalibrationId,
+                physical_space = space.CurrentSpaceId,
+                clearance_forward = 0.6f,
+                clearance_left = 2f,
+                clearance_right = 2f,
+                unsafe_directions = new[] { "forward" },
+                safe_directions = new[] { "left", "right" }
+            });
+
+            gain.BeginPendingTurn(1, 30f, "stale-decision");
+            gain.AbortGain("gain_limit_exceeded");
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(softRerouteCount, Is.Zero);
+
+            gain.BeginPendingTurn(1, 30f, request.decision_id);
+            gain.AbortGain("gain_limit_exceeded");
+
+            Assert.That(matchedAbort, Is.Not.Null);
+            Assert.That(matchedAbort.DecisionId, Is.EqualTo(request.decision_id));
+            Assert.That(matchedAbort.Reason, Is.EqualTo("gain_limit_exceeded"));
+            Assert.That(softRerouteCount, Is.EqualTo(1));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(2));
+            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("GainAbortE2"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void RotationGainController_DefaultsDisabledUntilExplicitlyEnabled()
     {
         var go = new GameObject("RotationGainControllerTest");
@@ -710,6 +1029,32 @@ public sealed class GuidanceRuntimeEditModeTests
         {
             Object.DestroyImmediate(go);
         }
+    }
+
+    [Test]
+    public void TurnCueCompletionTracker_HandlesNoCueStableReverseAndTimeout()
+    {
+        var tracker = new TurnCueCompletionTracker();
+        tracker.Configure(12f, 5f, 0.25f, 8f);
+
+        Assert.That(tracker.Begin(1, 10f), Is.EqualTo(TurnCueTrackingResult.Completed));
+        Assert.That(tracker.State, Is.EqualTo(TurnCueTrackingState.Completed));
+
+        tracker.Cancel();
+        Assert.That(tracker.Begin(1, 90f), Is.EqualTo(TurnCueTrackingResult.None));
+        Assert.That(tracker.ProcessSample(true, 78f, 0.1f), Is.EqualTo(TurnCueTrackingResult.None));
+        Assert.That(tracker.ProcessSample(false, 0f, 0.2f), Is.EqualTo(TurnCueTrackingResult.None));
+        Assert.That(tracker.ProcessSample(false, 0f, 0.05f), Is.EqualTo(TurnCueTrackingResult.Completed));
+
+        tracker.Cancel();
+        tracker.Begin(-1, 90f);
+        Assert.That(tracker.ProcessSample(true, 2f, 0.1f), Is.EqualTo(TurnCueTrackingResult.None));
+        Assert.That(tracker.ProcessSample(true, 3f, 0.1f), Is.EqualTo(TurnCueTrackingResult.Reversed));
+
+        tracker.Cancel();
+        tracker.Begin(1, 90f);
+        Assert.That(tracker.ProcessSample(false, 0f, 7.99f), Is.EqualTo(TurnCueTrackingResult.None));
+        Assert.That(tracker.ProcessSample(false, 0f, 0.01f), Is.EqualTo(TurnCueTrackingResult.TimedOut));
     }
 
     [Test]
@@ -792,7 +1137,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void RotationGainController_AbortsForReverseStopTimeoutAndGainLimit()
+    public void RotationGainController_AbortsForReverseStopTimeoutAndGainLimitWithDecisionId()
     {
         var root = new GameObject("RotationGainAbortRulesTest");
         var rotationRoot = new GameObject("RotationGainAbortRoot");
@@ -802,23 +1147,34 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gain.ConfigureRotationRoot(rotationRoot.transform), Is.True);
             gain.ConfigureLimits(0.15f, 8f, 30f, 0.5f);
             gain.SetGainEnabled(true);
+            var cancelledEvents = new List<RotationGainEventInfo>();
+            gain.LifecycleEventOccurred += info =>
+            {
+                if (info.EventType == RotationGainEventType.GainCancelled)
+                {
+                    cancelledEvents.Add(info);
+                }
+            };
 
-            gain.BeginPendingTurn(1);
-            gain.ProcessTurnSample(true, -5f, 0.1f);
+            gain.BeginPendingTurn(1, -1f, "decision-reverse");
+            gain.AbortGain("turn_cue_reverse");
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
-            Assert.That(gain.LastTerminationReason, Is.EqualTo("reverse_turn"));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("turn_cue_reverse"));
 
-            gain.BeginPendingTurn(1);
+            gain.BeginPendingTurn(1, -1f, "decision-timeout");
             gain.ProcessTurnSample(true, 5f, 0.1f);
             gain.ProcessTurnSample(false, 0f, 0.5f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("turn_stopped_timeout"));
 
-            gain.BeginPendingTurn(1);
+            gain.BeginPendingTurn(1, -1f, "decision-limit");
             gain.ProcessTurnSample(true, 60f, 0.1f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("gain_limit_exceeded"));
             Assert.That(gain.AppliedExtraYawDegrees, Is.Zero.Within(0.001f));
+            Assert.That(
+                cancelledEvents.Select(info => info.DecisionId),
+                Is.EqualTo(new[] { "decision-reverse", "decision-timeout", "decision-limit" }));
         }
         finally
         {
@@ -968,7 +1324,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void RDWController_CriticalRiskPausesAndCancelsGainImmediately()
+    public void ExperimentDashboard_CriticalRiskOwnsResetAndAbortsGainImmediately()
     {
         var root = new GameObject("RDWCriticalResetTest");
         try
@@ -979,10 +1335,21 @@ public sealed class GuidanceRuntimeEditModeTests
             gain.BeginPendingTurn(-1);
             var pauseReset = root.AddComponent<PauseResetController>();
             pauseReset.Configure(null, null, gain);
-            var rdw = root.AddComponent<RDWController>();
-            rdw.Configure(null, pauseReset);
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+            SetPrivateField(dashboard, "taskController", task);
+            SetPrivateField(dashboard, "pauseResetController", pauseReset);
+            SetPrivateField(dashboard, "rotationGainController", gain);
 
-            rdw.ApplyRiskState(new PhysicalRiskState
+            InvokePrivate(dashboard, "HandleRiskStateChanged", new PhysicalRiskState
             {
                 boundary_risk = "critical",
                 reset_risk = "critical",
@@ -991,6 +1358,9 @@ public sealed class GuidanceRuntimeEditModeTests
             });
 
             Assert.That(pauseReset.IsPaused, Is.True);
+            Assert.That(pauseReset.IsActive, Is.True);
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
             Assert.That(gain.IsActive, Is.False);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
         }
@@ -1405,46 +1775,139 @@ public sealed class GuidanceRuntimeEditModeTests
         }
     }
 
-    [Test]
-    public void GuidanceCoordinator_GainReevaluationCompletesTurnCueAndReplans()
+    [TestCase(true)]
+    [TestCase(false)]
+    public void GuidanceCoordinator_TurnCueCompletesWithGainEnabledOrDisabled(bool gainEnabled)
     {
-        var root = new GameObject("TurnCueGainLifecycleTest");
-        root.SetActive(false);
+        var root = new GameObject($"TurnCueLifecycleTest_{gainEnabled}");
         try
         {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            pose.ConfigureVirtualUserRoot(root.transform);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+            const string turnCueTargetId = "Stage5TurnCueTarget";
+            CreateExhibit(root.transform, turnCueTargetId, new Vector3(-1f, 0f, 1f), "turn_cue_anchor", null);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var validator = root.AddComponent<LocalGuidanceValidator>();
+            validator.Configure(targets, risk);
+            var motion = root.AddComponent<MotionDetector>();
+            motion.Configure(pose);
             var task = CreateRouteTask(root);
             Assert.That(
-                task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.TurnCueAnchor)),
+                task.TrySetGuidanceTarget(new GuidanceTarget(turnCueTargetId, NavigationTargetRole.TurnCueAnchor)),
                 Is.True);
             var gain = root.AddComponent<RotationGainController>();
             Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
-            gain.SetGainEnabled(true);
+            gain.Configure(pose, motion, risk, calibration);
+            gain.SetGainEnabled(gainEnabled);
             var lifecycleEvents = new List<RotationGainEventType>();
             gain.LifecycleEventOccurred += info => lifecycleEvents.Add(info.EventType);
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, gain, null);
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                targets,
+                null,
+                null,
+                risk,
+                validator,
+                null,
+                gain,
+                null,
+                motion);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
+            var reservation = task.RuntimeState.ActiveReservation;
+            var currentRisk = risk.CurrentRiskState;
+            var request = new GuidanceRequest
+            {
+                session_id = "session-turn-cue",
+                request_id = "request-turn-cue",
+                decision_id = reservation.DecisionId,
+                state_version = reservation.TaskStateVersion,
+                physical_space_id = space.CurrentSpaceId,
+                calibration_id = calibration.CalibrationId,
+                risk_snapshot_id = currentRisk.risk_snapshot_id,
+                target_role = "turn_cue_anchor",
+                current_exhibit = task.RuntimeState.currentExhibitId,
+                semantic_next_target = turnCueTargetId
+            };
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            var response = ResponseForRequest(request, turnCueTargetId);
+            response.movement_instruction = "turn_left_slowly";
 
-            gain.BeginPendingTurn(1);
-            Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.False);
-            Assert.That(requests.Contexts, Is.Empty);
+            coordinator.HandleGuidanceResponse(response);
 
-            gain.ProcessTurnSample(true, 30f, 0.1f);
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.False);
+            motion.Sample(Vector2.up, 0.1f);
+            gain.ProcessTurnSample(false, 0f, 0.1f);
+            var leftFortyFiveDegrees = new Vector2(-1f, 1f).normalized;
+            motion.Sample(leftFortyFiveDegrees, 0.1f);
+            gain.ProcessTurnSample(true, 45f, 0.1f);
+            Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.False);
+
+            motion.Sample(leftFortyFiveDegrees, 0.25f);
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
-            Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.True);
+            Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.True);
             Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
-            Assert.That(lifecycleEvents, Is.EqualTo(new[]
+            if (gainEnabled)
             {
-                RotationGainEventType.TurnRequested,
-                RotationGainEventType.UserTurnStarted,
-                RotationGainEventType.GainStarted,
-                RotationGainEventType.UserTurnCompleted,
-                RotationGainEventType.GainCompleted
-            }));
+                Assert.That(lifecycleEvents, Is.EqualTo(new[]
+                {
+                    RotationGainEventType.TurnRequested,
+                    RotationGainEventType.UserTurnStarted,
+                    RotationGainEventType.GainStarted,
+                    RotationGainEventType.UserTurnCompleted,
+                    RotationGainEventType.GainCompleted
+                }));
+            }
+            else
+            {
+                Assert.That(lifecycleEvents, Is.Empty);
+            }
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_GainReevaluationWithoutCurrentRiskHardStops()
+    {
+        var root = new GameObject("GainReevaluationFailClosedTest");
+        root.SetActive(false);
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
+            gain.SetGainEnabled(true);
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(null, null, null, null, null, null, null, null, null, gain, null);
+            SetPrivateField(coordinator, "requestPhase", GuidanceRequestPhase.Executing);
+            RuntimeInterventionInfo intervention = null;
+            coordinator.RuntimeIntervention += info => intervention = info;
+
+            gain.BeginPendingTurn(1, 30f, "decision-no-risk");
+            gain.ProcessTurnSample(true, 30f, 0.1f);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
+            Assert.That(gain.LastTerminationReason, Is.EqualTo("risk_snapshot_unavailable"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
+            Assert.That(intervention, Is.Not.Null);
+            Assert.That(intervention.Decision, Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+            Assert.That(intervention.StartReset, Is.False);
         }
         finally
         {

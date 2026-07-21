@@ -5542,7 +5542,6 @@ GameObject:
   m_Component:
   - component: {fileID: 1039273991}
   - component: {fileID: 1039273995}
-  - component: {fileID: 1039273994}
   - component: {fileID: 1039273993}
   - component: {fileID: 1039273992}
   m_Layer: 0
@@ -5606,21 +5605,6 @@ MonoBehaviour:
   maxExtraYawDegrees: 8
   targetPhysicalYawDegrees: 30
   turnStopTimeoutSeconds: 0.75
---- !u!114 &1039273994
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1039273990}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e4a7f23e4ec242b3bd70df47e97d8238, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  riskEvaluator: {fileID: 0}
-  pauseResetController: {fileID: 0}
-  pauseImmediatelyOnCriticalReset: 1
 --- !u!114 &1039273995
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -5634,6 +5618,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   navigationTargets: {fileID: 0}
+  riskEvaluator: {fileID: 0}
 --- !u!1 &1063178337
 GameObject:
   m_ObjectHideFlags: 0
@@ -10604,7 +10589,12 @@ MonoBehaviour:
   localValidator: {fileID: 0}
   pauseResetController: {fileID: 0}
   rotationGainController: {fileID: 0}
+  motionDetector: {fileID: 0}
   rejectionPanel: {fileID: 0}
+  turnCueNoCueToleranceDegrees: 12
+  turnCueReverseAbortDegrees: 5
+  turnCueStableCompletionSeconds: 0.25
+  turnCueTimeoutSeconds: 8
 --- !u!114 &1761135464
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -10631,7 +10621,6 @@ MonoBehaviour:
   arrivalDetector: {fileID: 19950176}
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
-  rdwController: {fileID: 1039273994}
   rotationGainController: {fileID: 1039273993}
   guidanceExecutor: {fileID: 1780042341}
   experimentDashboard: {fileID: 891366376}

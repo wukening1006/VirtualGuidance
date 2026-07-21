@@ -75,6 +75,10 @@ public sealed class PauseResetController : MonoBehaviour
 
     /// <summary>当前是否因 Reset 暂停导览。</summary>
     public bool IsPaused { get; private set; }
+    /// <summary>当前是否仍有待完成或待风险复验的 Reset。</summary>
+    public bool IsActive => state == ResetLifecycleState.Required ||
+                            state == ResetLifecycleState.TurningToSafeDirection ||
+                            state == ResetLifecycleState.Completed;
     /// <summary>当前 Reset 生命周期状态。</summary>
     public ResetLifecycleState State => state;
     /// <summary>本次 Reset 选择的 forward、left 或 right。</summary>

@@ -33,7 +33,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
 
     [Header("RDW 与安全")]
     [SerializeField] private PauseResetController pauseResetController;
-    [SerializeField] private RDWController rdwController;
     [SerializeField] private RotationGainController rotationGainController;
 
     [Header("实验与表现")]
@@ -127,7 +126,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
         AddIfMissing(missing, arrivalDetector, nameof(arrivalDetector));
         AddIfMissing(missing, localGuidanceValidator, nameof(localGuidanceValidator));
         AddIfMissing(missing, pauseResetController, nameof(pauseResetController));
-        AddIfMissing(missing, rdwController, nameof(rdwController));
         AddIfMissing(missing, rotationGainController, nameof(rotationGainController));
         AddIfMissing(missing, guidanceExecutor, nameof(guidanceExecutor));
         AddIfMissing(missing, experimentDashboard, nameof(experimentDashboard));
@@ -202,7 +200,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainController,
             userPoseTracker,
             riskEvaluator);
-        rdwController.Configure(riskEvaluator, pauseResetController);
         rotationGainController.Configure(userPoseTracker, motionDetector, riskEvaluator, physicalSpaceCalibration);
         guidanceCoordinator.Configure(
             agentClient,
@@ -215,7 +212,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
             localGuidanceValidator,
             pauseResetController,
             rotationGainController,
-            rejectionPanel);
+            rejectionPanel,
+            motionDetector);
         experimentDashboard.Configure(
             physicalSpaceManager,
             userPoseTracker,

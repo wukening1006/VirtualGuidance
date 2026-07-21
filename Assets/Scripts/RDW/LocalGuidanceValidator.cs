@@ -88,6 +88,16 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
+        var targetRole = runtimeState != null && runtimeState.CurrentGuidanceTarget != null
+            ? runtimeState.CurrentGuidanceTarget.TargetRole
+            : navigationTargets.GetSafetyTargetRole(response.selected_target);
+        if (targetRole == NavigationTargetRole.TurnCueAnchor &&
+            string.IsNullOrWhiteSpace(movementDirection))
+        {
+            reason = "Local RDW check rejected a stationary movement for TurnCue target.";
+            return false;
+        }
+
         if (!navigationTargets.TryGetTargetDirection(response.selected_target, out var targetDirection) ||
             !IsNaturalDirection(targetDirection))
         {
