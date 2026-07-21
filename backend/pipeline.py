@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from backend.agents.guide_mock import GuideMockAgent
-from backend.agents.rdw_affordance_agent import RDWAffordanceAgent, infer_semantic_target
+from backend.agents.rdw_affordance_agent import RDWAffordanceAgent
 from backend.agents.rdw_state_agent import RDWStateAgent
 from backend.agents.safety_verifier_agent import SafetyVerifierAgent
 from backend.schemas import GuidanceRequest, GuidanceResponse, response_from_draft
@@ -45,9 +45,17 @@ class GuidancePipeline:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        semantic_next_target = infer_semantic_target(request)
+        semantic_next_target = request.semantic_next_target
         affordance = self.affordance.build(request, risk_state)
         draft = self.guide.build(request, risk_state, affordance)
+        if draft.selected_target != semantic_next_target:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Deterministic guidance contract violation: "
+                    "selected_target must match semantic_next_target."
+                ),
+            )
         verifier = self.verifier.verify(request.condition, draft, risk_state)
         self.logger.write(request, risk_state, draft, verifier, semantic_next_target)
         return response_from_draft(request, draft, verifier)

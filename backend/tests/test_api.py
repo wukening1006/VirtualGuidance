@@ -3,9 +3,11 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
+from backend.schemas import GuidanceRequest, GuidanceResponse
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -29,6 +31,7 @@ def base_payload(condition: str) -> dict:
         "current_exhibit": "E1",
         "user_physical_position": [1.0, 4.3],
         "user_physical_forward": [0.0, 1.0],
+        "semantic_next_target": "E5",
     }
 
 
@@ -130,6 +133,7 @@ def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> No
     client = make_client(tmp_path)
     payload = base_payload("ours_full")
     payload["user_physical_position"] = [1.8, 4.3]
+    payload["semantic_next_target"] = "E3"
 
     response = client.post("/api/guidance", json=payload)
 
@@ -169,3 +173,98 @@ def test_b4_scripted_reset_logs_explicit_reset(tmp_path: Path) -> None:
     record = read_log_records(tmp_path)[0]
     assert record["explicit_reset_triggered"] is True
     assert record["movement_instruction"] == "reset_required"
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "B1_mllm_only",
+        "B2_raw_physical_data",
+        "B3_risk_labels",
+        "B4_scripted_reset",
+        "B5_ours_without_verifier",
+        "ours_full",
+    ],
+)
+def test_all_conditions_preserve_unity_selected_target(condition: str, tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    payload = base_payload(condition)
+    payload["physical_space_id"] = "wide_room"
+    payload["user_physical_position"] = [2.5, 2.5]
+    payload["semantic_next_target"] = "E5"
+
+    response = client.post("/api/guidance", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_target"] == payload["semantic_next_target"]
+    record = read_log_records(tmp_path)[0]
+    assert record["semantic_next_target"] == payload["semantic_next_target"]
+    assert record["raw_guidance"]["selected_target"] == payload["semantic_next_target"]
+    assert record["executed_guidance"] is None
+
+
+def test_request_schema_requires_unity_target_and_rejects_unknown_condition(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    missing_target = base_payload("ours_full")
+    missing_target.pop("semantic_next_target")
+
+    missing_response = client.post("/api/guidance", json=missing_target)
+    unknown_response = client.post(
+        "/api/guidance",
+        json={**base_payload("ours_full"), "condition": "unknown_condition"},
+    )
+
+    assert missing_response.status_code == 422
+    assert any(item["loc"][-1] == "semantic_next_target" for item in missing_response.json()["detail"])
+    assert unknown_response.status_code == 422
+    assert any(item["loc"][-1] == "condition" for item in unknown_response.json()["detail"])
+
+
+def test_pydantic_contract_matches_unity_dto_fields() -> None:
+    request_schema = GuidanceRequest.model_json_schema()
+    response_schema = GuidanceResponse.model_json_schema()
+    assert set(request_schema["properties"]) == {
+        "session_id",
+        "calibration_id",
+        "request_id",
+        "decision_id",
+        "state_version",
+        "risk_snapshot_id",
+        "target_role",
+        "condition",
+        "task_id",
+        "physical_space_id",
+        "current_exhibit",
+        "user_physical_position",
+        "user_physical_forward",
+        "participant_id",
+        "user_task",
+        "semantic_next_target",
+        "user_virtual_position",
+        "user_virtual_forward",
+    }
+    assert "semantic_next_target" in request_schema["required"]
+    assert request_schema["additionalProperties"] is False
+    assert set(response_schema["required"]) == set(response_schema["properties"])
+    assert response_schema["additionalProperties"] is False
+
+
+def test_pipeline_rejects_internal_target_mismatch(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    pipeline = client.app.state.pipeline
+    original_build = pipeline.guide.build
+
+    def mismatched_build(request, risk_state, affordance):
+        draft = original_build(request, risk_state, affordance)
+        return draft.model_copy(update={"selected_target": "E4"})
+
+    pipeline.guide.build = mismatched_build
+
+    response = client.post("/api/guidance", json=base_payload("ours_full"))
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "Deterministic guidance contract violation: "
+        "selected_target must match semantic_next_target."
+    )

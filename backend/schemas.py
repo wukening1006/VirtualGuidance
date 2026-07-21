@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -116,38 +116,28 @@ class MovementInstruction(str, Enum):
     RESET_REQUIRED = "reset_required"
 
 
-Direction = Literal["forward", "left", "right"]
-
-
-class NearbyExhibit(BaseModel):
-    id: str
-    relative_direction: Direction
-    semantic_relevance: float = Field(default=0.0, ge=0.0, le=1.0)
-
-
 class GuidanceRequest(BaseModel):
-    model_config = ConfigDict(use_enum_values=True)
+    model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
     # 字段名对应 Unity/backend 接口契约；除非同步更新 Unity 反序列化和分析脚本，否则不要改名。
-    session_id: str
-    calibration_id: str
-    request_id: str
-    decision_id: str
+    session_id: str = Field(min_length=1)
+    calibration_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    decision_id: str = Field(min_length=1)
     state_version: int = Field(ge=0)
-    risk_snapshot_id: str
+    risk_snapshot_id: str = Field(min_length=1)
     target_role: NavigationTargetRole
     condition: Condition
     task_id: TaskId
-    physical_space_id: str
-    current_exhibit: str
+    physical_space_id: str = Field(min_length=1)
+    current_exhibit: str = Field(min_length=1)
     user_physical_position: list[float]
     user_physical_forward: list[float]
     participant_id: str = "P001"
     user_task: str | None = None
-    semantic_next_target: str | None = None
+    semantic_next_target: str = Field(min_length=1)
     user_virtual_position: list[float] | None = None
     user_virtual_forward: list[float] | None = None
-    nearby_exhibits: list[NearbyExhibit] | None = None
 
     @field_validator("user_physical_position", "user_physical_forward")
     @classmethod
@@ -166,26 +156,30 @@ class GuidanceRequest(BaseModel):
 
 
 class VerifierResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     approved: bool
-    reason: str
+    reason: str = Field(min_length=1)
 
 
 class GuidanceResponse(BaseModel):
-    session_id: str
-    calibration_id: str
-    request_id: str
-    decision_id: str
-    state_version: int
-    risk_snapshot_id: str
+    model_config = ConfigDict(use_enum_values=True, extra="forbid")
+
+    session_id: str = Field(min_length=1)
+    calibration_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    decision_id: str = Field(min_length=1)
+    state_version: int = Field(ge=0)
+    risk_snapshot_id: str = Field(min_length=1)
     target_role: NavigationTargetRole
-    selected_target: str
-    route_decision: str
-    narration: str
-    gaze_cue: str
-    gaze_target_id: str
+    selected_target: str = Field(min_length=1)
+    route_decision: str = Field(min_length=1)
+    narration: str = Field(min_length=1)
+    gaze_cue: str = Field(min_length=1)
+    gaze_target_id: str = Field(min_length=1)
     avatar_action: AvatarAction
     movement_instruction: MovementInstruction
-    physical_intent: str
+    physical_intent: str = Field(min_length=1)
     verifier: VerifierResult
 
 

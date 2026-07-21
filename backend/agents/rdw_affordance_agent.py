@@ -79,18 +79,9 @@ class RDWAffordanceAgent:
 
 
 def infer_semantic_target(request: GuidanceRequest) -> str:
-    """在 physical affordance 重定向之前，先推断语义上的下一个展品。"""
+    """返回 Unity 已选择并写入请求契约的唯一语义目标。"""
 
-    if request.semantic_next_target:
-        return request.semantic_next_target
-
-    if request.task_id == TaskId.T2_MAIN_TARGET.value:
-        return "E5"
-    if request.task_id == TaskId.T3_COMPARE.value:
-        return "E7"
-    if request.task_id == TaskId.T4_NEXT_STEP.value:
-        return "E2"
-    return "E2"
+    return request.semantic_next_target
 
 
 def target_direction(exhibit_id: str) -> str:

@@ -1,6 +1,9 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
@@ -25,6 +28,32 @@ public interface IGuidanceRequestClient
 /// </summary>
 public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 {
+    private static readonly HashSet<string> ResponseFieldNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "session_id",
+        "calibration_id",
+        "request_id",
+        "decision_id",
+        "state_version",
+        "risk_snapshot_id",
+        "target_role",
+        "selected_target",
+        "route_decision",
+        "narration",
+        "gaze_cue",
+        "gaze_target_id",
+        "avatar_action",
+        "movement_instruction",
+        "physical_intent",
+        "verifier"
+    };
+
+    private static readonly HashSet<string> VerifierFieldNames = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "approved",
+        "reason"
+    };
+
     [Header("后端接口")]
     [Tooltip("后端 guidance endpoint 地址。")]
     [SerializeField] private string guidanceEndpoint = "http://127.0.0.1:8000/api/guidance";
@@ -222,6 +251,86 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         }
     }
 
+    /// <summary>
+    /// 解析并校验 Backend GuidanceResponse；缺字段、未知枚举、Identity 或 Target 不匹配时 Fail-Closed。
+    /// </summary>
+    /// <param name="responseText">Backend 返回的原始 JSON。</param>
+    /// <param name="request">产生该响应的当前请求。</param>
+    /// <param name="response">成功时返回完整 GuidanceResponse。</param>
+    /// <param name="failureReason">失败时返回稳定、可诊断的协议错误。</param>
+    /// <returns>JSON 结构完整且精确回显当前请求契约时返回 true。</returns>
+    public static bool TryParseGuidanceResponse(
+        string responseText,
+        GuidanceRequest request,
+        out GuidanceResponse response,
+        out string failureReason)
+    {
+        response = null;
+        failureReason = string.Empty;
+        if (string.IsNullOrWhiteSpace(responseText))
+        {
+            failureReason = "empty response body";
+            return false;
+        }
+
+        try
+        {
+            var responseObject = JObject.Parse(responseText);
+            if (!HasExactFields(responseObject, ResponseFieldNames, "response", out failureReason))
+            {
+                return false;
+            }
+
+            if (!(responseObject["verifier"] is JObject verifierObject))
+            {
+                failureReason = "verifier must be a JSON object";
+                return false;
+            }
+
+            if (!HasExactFields(verifierObject, VerifierFieldNames, "verifier", out failureReason))
+            {
+                return false;
+            }
+
+            response = responseObject.ToObject<GuidanceResponse>();
+        }
+        catch (JsonException error)
+        {
+            failureReason = $"invalid JSON: {error.Message}";
+            return false;
+        }
+
+        return ValidateGuidanceResponseContract(response, request, out failureReason);
+    }
+
+    private static bool HasExactFields(
+        JObject objectValue,
+        HashSet<string> expectedFields,
+        string objectName,
+        out string failureReason)
+    {
+        foreach (var expectedField in expectedFields)
+        {
+            if (objectValue.Property(expectedField) == null)
+            {
+                failureReason = $"required {objectName} field is missing: {expectedField}";
+                return false;
+            }
+        }
+
+        foreach (var property in objectValue.Properties())
+        {
+            if (!expectedFields.Contains(property.Name))
+            {
+                failureReason = $"unexpected {objectName} field: {property.Name}";
+                return false;
+            }
+        }
+
+        failureReason = string.Empty;
+        return true;
+    }
+
     private GuidanceRequest BuildRequest(GuidanceRequestContext context)
     {
         if (!TryGetCurrentRiskState(out var riskState) ||
@@ -307,6 +416,109 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         return string.IsNullOrWhiteSpace(expected) || string.Equals(expected, current, StringComparison.Ordinal);
     }
 
+    private static bool ValidateGuidanceResponseContract(
+        GuidanceResponse response,
+        GuidanceRequest request,
+        out string failureReason)
+    {
+        if (request == null)
+        {
+            failureReason = "current request is unavailable";
+            return false;
+        }
+
+        if (response == null)
+        {
+            failureReason = "response is null";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(response.session_id) ||
+            string.IsNullOrWhiteSpace(response.calibration_id) ||
+            string.IsNullOrWhiteSpace(response.request_id) ||
+            string.IsNullOrWhiteSpace(response.decision_id) ||
+            response.state_version < 0 ||
+            string.IsNullOrWhiteSpace(response.risk_snapshot_id) ||
+            string.IsNullOrWhiteSpace(response.target_role) ||
+            string.IsNullOrWhiteSpace(response.selected_target) ||
+            string.IsNullOrWhiteSpace(response.route_decision) ||
+            string.IsNullOrWhiteSpace(response.narration) ||
+            string.IsNullOrWhiteSpace(response.gaze_cue) ||
+            string.IsNullOrWhiteSpace(response.gaze_target_id) ||
+            string.IsNullOrWhiteSpace(response.avatar_action) ||
+            string.IsNullOrWhiteSpace(response.movement_instruction) ||
+            string.IsNullOrWhiteSpace(response.physical_intent) ||
+            response.verifier == null ||
+            string.IsNullOrWhiteSpace(response.verifier.reason))
+        {
+            failureReason = "required response field is missing";
+            return false;
+        }
+
+        if (!string.Equals(response.session_id, request.session_id, StringComparison.Ordinal) ||
+            !string.Equals(response.calibration_id, request.calibration_id, StringComparison.Ordinal) ||
+            !string.Equals(response.request_id, request.request_id, StringComparison.Ordinal) ||
+            !string.Equals(response.decision_id, request.decision_id, StringComparison.Ordinal) ||
+            response.state_version != request.state_version ||
+            !string.Equals(response.risk_snapshot_id, request.risk_snapshot_id, StringComparison.Ordinal))
+        {
+            failureReason = "response identity does not match the current request";
+            return false;
+        }
+
+        if (!string.Equals(response.target_role, request.target_role, StringComparison.Ordinal))
+        {
+            failureReason = "target_role does not match the current request";
+            return false;
+        }
+
+        if (!string.Equals(response.selected_target, request.semantic_next_target, StringComparison.Ordinal))
+        {
+            failureReason = "selected_target does not match semantic_next_target";
+            return false;
+        }
+
+        if (!IsKnownTargetRole(response.target_role) ||
+            !IsKnownMovementInstruction(response.movement_instruction) ||
+            !IsKnownAvatarAction(response.avatar_action))
+        {
+            failureReason = "response contains an unknown protocol enum value";
+            return false;
+        }
+
+        failureReason = string.Empty;
+        return true;
+    }
+
+    private static bool IsKnownTargetRole(string value)
+    {
+        return value == "final_target" ||
+               value == "route_subgoal" ||
+               value == "turn_cue_anchor" ||
+               value == "navigable_detour";
+    }
+
+    private static bool IsKnownMovementInstruction(string value)
+    {
+        return value == "move_forward_slowly" ||
+               value == "turn_left_slowly" ||
+               value == "turn_right_slowly" ||
+               value == "look_left" ||
+               value == "look_right" ||
+               value == "look_forward" ||
+               value == "pause_and_wait" ||
+               value == "reset_required";
+    }
+
+    private static bool IsKnownAvatarAction(string value)
+    {
+        return value == "point_left" ||
+               value == "point_right" ||
+               value == "point_forward" ||
+               value == "look_at_target" ||
+               value == "wait";
+    }
+
     private IEnumerator SendGuidanceRequest(GuidanceRequest request, int generation)
     {
         requestInFlight = true;
@@ -341,26 +553,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             }
 
             var responseText = webRequest.downloadHandler != null ? webRequest.downloadHandler.text : string.Empty;
-            if (string.IsNullOrWhiteSpace(responseText))
+            if (!TryParseGuidanceResponse(responseText, request, out var response, out var failureReason))
             {
-                GuidanceRequestFailed?.Invoke("Guidance request failed: empty response body.");
-                yield break;
-            }
-
-            GuidanceResponse response;
-            try
-            {
-                response = JsonUtility.FromJson<GuidanceResponse>(responseText);
-            }
-            catch (Exception error)
-            {
-                GuidanceRequestFailed?.Invoke($"Guidance JSON parse failed: {error.Message}");
-                yield break;
-            }
-
-            if (response == null)
-            {
-                GuidanceRequestFailed?.Invoke("Guidance JSON parse failed: response is null.");
+                GuidanceRequestFailed?.Invoke($"Guidance response rejected: {failureReason}.");
                 yield break;
             }
 

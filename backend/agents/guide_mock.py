@@ -124,7 +124,7 @@ class GuideMockAgent:
             and request.current_exhibit == "E1"
         ):
             return draft_for_direction(
-                selected_target="E5",
+                selected_target=infer_semantic_target(request),
                 direction="forward",
                 route_decision="unsafe_forward_without_final_verifier",
                 narration=(
@@ -140,21 +140,21 @@ class GuideMockAgent:
         request: GuidanceRequest,
         affordance: Affordance,
     ) -> GuideDraft:
+        target = infer_semantic_target(request)
         if affordance.intervention_type == "pause_reset":
             return GuideDraft(
-                selected_target=request.current_exhibit,
+                selected_target=target,
                 route_decision="pause_until_safe_direction_available",
                 narration="请在此暂停片刻，等待可以安全继续参观。",
                 gaze_cue="look_forward",
-                gaze_target_id=f"{request.current_exhibit}_GazeTarget",
+                gaze_target_id=f"{target}_GazeTarget",
                 avatar_action=AvatarAction.WAIT,
                 movement_instruction=MovementInstruction.PAUSE_AND_WAIT,
                 physical_intent=affordance.physical_goal,
                 intervention_type=affordance.intervention_type,
             )
 
-        direction = affordance.preferred_direction or "forward"
-        target = affordance.semantic_anchor
+        direction = target_direction(target)
         narration = narration_for_redirection(target, direction)
         if affordance.intervention_type == "direct_visit":
             narration = narration_for_direct_target(request, target)

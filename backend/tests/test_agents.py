@@ -35,6 +35,7 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
         current_exhibit="E1",
         user_physical_position=[1.8, 4.3],
         user_physical_forward=[0.0, 1.0],
+        semantic_next_target="E5",
     )
 
 
@@ -132,6 +133,7 @@ def test_b5_stably_outputs_unsafe_forward_without_verifier() -> None:
         current_exhibit="E1",
         user_physical_position=[1.0, 4.3],
         user_physical_forward=[0.0, 1.0],
+        semantic_next_target="E5",
     )
     state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
         request.physical_space_id,

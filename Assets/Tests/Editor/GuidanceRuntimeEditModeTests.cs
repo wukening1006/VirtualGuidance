@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using TMPro;
 using UnityEngine;
@@ -2165,6 +2166,123 @@ public sealed class GuidanceRuntimeEditModeTests
         {
             Object.DestroyImmediate(root);
         }
+    }
+
+    [Test]
+    public void AgentClient_ResponseContractFailsClosedForMalformedIdentityAndTargetMismatch()
+    {
+        var request = new GuidanceRequest
+        {
+            session_id = "session-contract",
+            calibration_id = "calibration-contract",
+            request_id = "request-contract",
+            decision_id = "decision-contract",
+            state_version = 5,
+            risk_snapshot_id = "risk-contract",
+            target_role = "route_subgoal",
+            semantic_next_target = "E3"
+        };
+        var response = new GuidanceResponse
+        {
+            session_id = request.session_id,
+            calibration_id = request.calibration_id,
+            request_id = request.request_id,
+            decision_id = request.decision_id,
+            state_version = request.state_version,
+            risk_snapshot_id = request.risk_snapshot_id,
+            target_role = request.target_role,
+            selected_target = request.semantic_next_target,
+            route_decision = "direct_to_next_semantic_target",
+            narration = "请看向左侧目标。",
+            gaze_cue = "look_left",
+            gaze_target_id = "E3_GazeTarget",
+            avatar_action = "point_left",
+            movement_instruction = "turn_left_slowly",
+            physical_intent = "continue_semantic_route",
+            verifier = new VerifierResult { approved = true, reason = "safe" }
+        };
+
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse("{}", request, out _, out var missingReason),
+            Is.False);
+        Assert.That(missingReason, Does.Contain("required response field"));
+
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                JsonUtility.ToJson(response),
+                request,
+                out var parsed,
+                out var validReason),
+            Is.True,
+            validReason);
+        Assert.That(parsed.selected_target, Is.EqualTo(request.semantic_next_target));
+
+        var missingStateVersion = JObject.Parse(JsonUtility.ToJson(response));
+        missingStateVersion.Remove("state_version");
+        request.state_version = 0;
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                missingStateVersion.ToString(),
+                request,
+                out _,
+                out var missingStateVersionReason),
+            Is.False);
+        Assert.That(missingStateVersionReason, Does.Contain("state_version"));
+        request.state_version = response.state_version;
+
+        var missingVerifierApproved = JObject.Parse(JsonUtility.ToJson(response));
+        ((JObject)missingVerifierApproved["verifier"]).Remove("approved");
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                missingVerifierApproved.ToString(),
+                request,
+                out _,
+                out var missingVerifierReason),
+            Is.False);
+        Assert.That(missingVerifierReason, Does.Contain("approved"));
+
+        var unexpectedField = JObject.Parse(JsonUtility.ToJson(response));
+        unexpectedField["unexpected_field"] = "not-in-contract";
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                unexpectedField.ToString(),
+                request,
+                out _,
+                out var unexpectedFieldReason),
+            Is.False);
+        Assert.That(unexpectedFieldReason, Does.Contain("unexpected response field"));
+
+        response.selected_target = "E4";
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                JsonUtility.ToJson(response),
+                request,
+                out _,
+                out var targetReason),
+            Is.False);
+        Assert.That(targetReason, Does.Contain("selected_target"));
+
+        response.selected_target = request.semantic_next_target;
+        response.request_id = "request-stale";
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                JsonUtility.ToJson(response),
+                request,
+                out _,
+                out var identityReason),
+            Is.False);
+        Assert.That(identityReason, Does.Contain("identity"));
+
+        response.request_id = request.request_id;
+        response.movement_instruction = "unknown_movement";
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                JsonUtility.ToJson(response),
+                request,
+                out _,
+                out var enumReason),
+            Is.False);
+        Assert.That(enumReason, Does.Contain("unknown protocol enum"));
     }
 
     [Test]
