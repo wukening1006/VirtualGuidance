@@ -114,11 +114,6 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
         latestRawYawDegrees = NormalizeYaw(rawYawDegrees);
         hasRawTrackingPose = true;
 
-        if (state == PhysicalCalibrationState.TemporarilyTrackingLost && HasMatchingPhysicalSpace())
-        {
-            SetState(PhysicalCalibrationState.Calibrated);
-        }
-
         ApplyLatestCalibratedPose();
     }
 
@@ -129,7 +124,8 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     public bool CalibrateCurrentPose()
     {
         ResolveReferences();
-        if (!hasRawTrackingPose || physicalSpaceManager == null || physicalSpaceManager.CurrentSpace == null || userPoseTracker == null)
+        if (!hasRawTrackingPose || physicalSpaceManager == null || physicalSpaceManager.CurrentSpace == null || userPoseTracker == null ||
+            !PhysicalSpaceGeometry.ContainsPoint(physicalSpaceManager.CurrentSpace.boundary, calibrationPointInRoom))
         {
             return false;
         }
@@ -152,6 +148,24 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
         {
             SetState(PhysicalCalibrationState.TemporarilyTrackingLost);
         }
+    }
+
+    /// <summary>
+    /// 在 Tracking 输入已连续稳定后恢复既有校准，并应用恢复后的最新 Raw Pose。
+    /// </summary>
+    /// <returns>既有校准与当前 Physical Space 匹配且成功恢复时返回 true。</returns>
+    public bool ReportTrackingRecovered()
+    {
+        if (state != PhysicalCalibrationState.TemporarilyTrackingLost ||
+            !hasRawTrackingPose ||
+            !HasMatchingPhysicalSpace())
+        {
+            return false;
+        }
+
+        SetState(PhysicalCalibrationState.Calibrated);
+        ApplyLatestCalibratedPose();
+        return true;
     }
 
     /// <summary>

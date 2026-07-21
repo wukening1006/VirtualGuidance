@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Text.RegularExpressions;
+using Newtonsoft.Json;
 using UnityEngine;
 
 /// <summary>
@@ -121,16 +120,40 @@ public sealed class PhysicalRiskState
     public bool reset_required;
 }
 
+internal static class PhysicalSpaceGeometry
+{
+    private const float Epsilon = 0.000001f;
+
+    internal static bool ContainsPoint(Vector2[] boundary, Vector2 point)
+    {
+        if (boundary == null || boundary.Length < 3)
+        {
+            return false;
+        }
+
+        var inside = false;
+        for (int i = 0, j = boundary.Length - 1; i < boundary.Length; j = i++)
+        {
+            var current = boundary[i];
+            var previous = boundary[j];
+            var intersects = ((current.y > point.y) != (previous.y > point.y)) &&
+                             (point.x < (previous.x - current.x) * (point.y - current.y) /
+                              (previous.y - current.y + Epsilon) + current.x);
+            if (intersects)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
+    }
+}
+
 /// <summary>
-/// 解析第一阶段的 physical space JSON 配置，避免引入额外 JSON 依赖。
+/// 使用项目现有 Newtonsoft.Json 能力解析 physical space 结构化配置。
 /// </summary>
 public static class PhysicalSpaceConfigParser
 {
-    // 配置格式目前固定且较小，用正则解析可避免在第一阶段引入新的序列化依赖。
-    private static readonly Regex StringFieldRegex = new Regex("\"(?<key>[^\"]+)\"\\s*:\\s*\"(?<value>[^\"]*)\"", RegexOptions.Compiled);
-    private static readonly Regex Vector2Regex = new Regex("\\[\\s*(?<x>-?\\d+(?:\\.\\d+)?)\\s*,\\s*(?<z>-?\\d+(?:\\.\\d+)?)\\s*\\]", RegexOptions.Compiled);
-    private static readonly Regex ObstacleRegex = new Regex("\\{\\s*\"id\"\\s*:\\s*\"(?<id>[^\"]+)\"\\s*,\\s*\"center\"\\s*:\\s*\\[\\s*(?<x>-?\\d+(?:\\.\\d+)?)\\s*,\\s*(?<z>-?\\d+(?:\\.\\d+)?)\\s*\\]\\s*,\\s*\"radius\"\\s*:\\s*(?<radius>-?\\d+(?:\\.\\d+)?)\\s*\\}", RegexOptions.Compiled | RegexOptions.Singleline);
-
     /// <summary>
     /// 将 JSON 文本解析为 physical space 配置，并返回结构化错误原因。
     /// </summary>
@@ -149,9 +172,29 @@ public static class PhysicalSpaceConfigParser
             return false;
         }
 
-        config.id = ReadStringField(json, "id");
-        config.boundary = ParseVectorArray(ExtractArraySection(json, "boundary")).ToArray();
-        config.obstacles = ParseObstacles(ExtractArraySection(json, "obstacles")).ToArray();
+        PhysicalSpaceConfigDto dto;
+        try
+        {
+            dto = JsonConvert.DeserializeObject<PhysicalSpaceConfigDto>(json);
+        }
+        catch (JsonException exception)
+        {
+            error = $"Physical space JSON is invalid: {exception.Message}";
+            return false;
+        }
+
+        if (dto == null)
+        {
+            error = "Physical space JSON does not contain an object.";
+            return false;
+        }
+
+        config.id = dto.id != null ? dto.id.Trim() : string.Empty;
+        if (!TryConvertBoundary(dto.boundary, out config.boundary, out error) ||
+            !TryConvertObstacles(dto.obstacles, out config.obstacles, out error))
+        {
+            return false;
+        }
 
         if (!config.IsValid)
         {
@@ -162,83 +205,93 @@ public static class PhysicalSpaceConfigParser
         return true;
     }
 
-    private static string ReadStringField(string json, string key)
+    private static bool TryConvertBoundary(float[][] source, out Vector2[] boundary, out string error)
     {
-        foreach (Match match in StringFieldRegex.Matches(json))
+        boundary = Array.Empty<Vector2>();
+        error = null;
+        if (source == null)
         {
-            if (match.Groups["key"].Value == key)
-            {
-                return match.Groups["value"].Value;
-            }
+            error = "Physical space boundary is missing.";
+            return false;
         }
 
-        return string.Empty;
+        var converted = new List<Vector2>(source.Length);
+        for (var i = 0; i < source.Length; i++)
+        {
+            if (!TryConvertPoint(source[i], out var point))
+            {
+                error = $"Physical space boundary point {i} must contain exactly two finite numbers.";
+                return false;
+            }
+
+            converted.Add(point);
+        }
+
+        boundary = converted.ToArray();
+        return true;
     }
 
-    private static string ExtractArraySection(string json, string key)
+    private static bool TryConvertObstacles(
+        PhysicalObstacleDto[] source,
+        out PhysicalObstacle[] obstacles,
+        out string error)
     {
-        var keyIndex = json.IndexOf($"\"{key}\"", StringComparison.Ordinal);
-        if (keyIndex < 0)
+        error = null;
+        if (source == null || source.Length == 0)
         {
-            return string.Empty;
+            obstacles = Array.Empty<PhysicalObstacle>();
+            return true;
         }
 
-        var arrayStart = json.IndexOf('[', keyIndex);
-        if (arrayStart < 0)
+        var converted = new List<PhysicalObstacle>(source.Length);
+        for (var i = 0; i < source.Length; i++)
         {
-            return string.Empty;
-        }
-
-        var depth = 0;
-        for (var i = arrayStart; i < json.Length; i++)
-        {
-            // 用深度计数支持 [[x,z], ...] 这种嵌套数组，避免在第一个子数组结尾提前截断。
-            if (json[i] == '[')
+            var item = source[i];
+            if (item == null || string.IsNullOrWhiteSpace(item.id) || !TryConvertPoint(item.center, out var center) ||
+                float.IsNaN(item.radius) || float.IsInfinity(item.radius) || item.radius < 0f)
             {
-                depth++;
+                obstacles = Array.Empty<PhysicalObstacle>();
+                error = $"Physical space obstacle {i} has an invalid id, center, or radius.";
+                return false;
             }
-            else if (json[i] == ']')
+
+            converted.Add(new PhysicalObstacle
             {
-                depth--;
-                if (depth == 0)
-                {
-                    return json.Substring(arrayStart, i - arrayStart + 1);
-                }
-            }
-        }
-
-        return string.Empty;
-    }
-
-    private static List<Vector2> ParseVectorArray(string section)
-    {
-        var points = new List<Vector2>();
-        foreach (Match match in Vector2Regex.Matches(section))
-        {
-            points.Add(new Vector2(ParseFloat(match.Groups["x"].Value), ParseFloat(match.Groups["z"].Value)));
-        }
-
-        return points;
-    }
-
-    private static List<PhysicalObstacle> ParseObstacles(string section)
-    {
-        var obstacles = new List<PhysicalObstacle>();
-        foreach (Match match in ObstacleRegex.Matches(section))
-        {
-            obstacles.Add(new PhysicalObstacle
-            {
-                id = match.Groups["id"].Value,
-                center = new Vector2(ParseFloat(match.Groups["x"].Value), ParseFloat(match.Groups["z"].Value)),
-                radius = Mathf.Max(0f, ParseFloat(match.Groups["radius"].Value))
+                id = item.id.Trim(),
+                center = center,
+                radius = item.radius
             });
         }
 
-        return obstacles;
+        obstacles = converted.ToArray();
+        return true;
     }
 
-    private static float ParseFloat(string value)
+    private static bool TryConvertPoint(float[] source, out Vector2 point)
     {
-        return float.Parse(value, CultureInfo.InvariantCulture);
+        point = default;
+        if (source == null || source.Length != 2 ||
+            float.IsNaN(source[0]) || float.IsInfinity(source[0]) ||
+            float.IsNaN(source[1]) || float.IsInfinity(source[1]))
+        {
+            return false;
+        }
+
+        point = new Vector2(source[0], source[1]);
+        return true;
+    }
+
+    private sealed class PhysicalSpaceConfigDto
+    {
+        public string id;
+        public float[][] boundary;
+        public PhysicalObstacleDto[] obstacles;
+    }
+
+    private sealed class PhysicalObstacleDto
+    {
+        public string id;
+        public float[] center;
+        public float radius;
     }
 }

@@ -131,6 +131,14 @@ public sealed class GuidanceRuntimeEditModeTests
         root.SetActive(false);
         try
         {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity);
+            tracking.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
             var task = root.AddComponent<GuidanceTaskController>();
             task.ConfigureTask(new GuidanceTaskDefinition
             {
@@ -146,9 +154,15 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
             SetPrivateField(dashboard, "stateBeforeSafetyHold", ExperimentRunState.Completing);
             SetPrivateField(dashboard, "completionSecondsRemaining", 6f);
+            SetPrivateField(dashboard, "physicalSpaceManager", space);
+            SetPrivateField(dashboard, "physicalSpaceCalibration", calibration);
+            SetPrivateField(dashboard, "xrTrackingAdapter", tracking);
 
             InvokePrivate(dashboard, "ResumeSessionWithRisk", new PhysicalRiskState
             {
+                risk_snapshot_id = "risk-critical",
+                calibration_id = calibration.CalibrationId,
+                physical_space = space.CurrentSpaceId,
                 boundary_risk = "critical",
                 reset_risk = "critical",
                 reset_required = true,
@@ -160,6 +174,9 @@ public sealed class GuidanceRuntimeEditModeTests
 
             InvokePrivate(dashboard, "ResumeSessionWithRisk", new PhysicalRiskState
             {
+                risk_snapshot_id = "risk-safe",
+                calibration_id = calibration.CalibrationId,
+                physical_space = space.CurrentSpaceId,
                 boundary_risk = "low",
                 reset_risk = "low",
                 reset_required = false,
@@ -236,18 +253,28 @@ public sealed class GuidanceRuntimeEditModeTests
                 clearance_right = 0.3f,
                 reset_required = true
             });
-            pose.SetSimulatedPhysicalPose(new Vector2(2.5f, 2.5f), 0f);
             var space = root.AddComponent<PhysicalSpaceManager>();
             space.LoadSpaces();
             Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
             var risk = root.AddComponent<PhysicalRiskEvaluator>();
-            risk.Configure(space, pose);
+            risk.Configure(space, pose, calibration);
             Assert.That(risk.CurrentRiskState.boundary_risk, Is.EqualTo("low"));
             var dashboard = root.AddComponent<ExperimentDashboard>();
             SetPrivateField(dashboard, "taskController", task);
             SetPrivateField(dashboard, "guidanceCoordinator", coordinator);
             SetPrivateField(dashboard, "pauseResetController", reset);
             SetPrivateField(dashboard, "riskEvaluator", risk);
+            SetPrivateField(dashboard, "physicalSpaceManager", space);
+            SetPrivateField(dashboard, "physicalSpaceCalibration", calibration);
+            SetPrivateField(dashboard, "xrTrackingAdapter", tracking);
             SetPrivateField(dashboard, "runState", ExperimentRunState.SafetyHold);
             InvokePrivate(dashboard, "Subscribe");
 
@@ -724,9 +751,13 @@ public sealed class GuidanceRuntimeEditModeTests
                 new Vector3(1.25f, 1.65f, -0.5f),
                 Quaternion.Euler(0f, 35f, 0f),
                 virtualHead.transform);
+            adapter.ApplyTrackedPose(
+                new Vector3(1.25f, 1.65f, -0.5f),
+                Quaternion.Euler(0f, 35f, 0f),
+                virtualHead.transform);
             Assert.That(calibration.CalibrateCurrentPose(), Is.True);
 
-            Assert.That(adapter.IsHeadsetTrackingActive, Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.True);
             Assert.That(adapter.LastHeadLocalPosition, Is.EqualTo(new Vector3(1.25f, 1.65f, -0.5f)));
             Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(new Vector2(2f, 3f)));
             Assert.That(adapter.PhysicalYawDegrees, Is.Zero.Within(0.001f));
@@ -742,6 +773,153 @@ public sealed class GuidanceRuntimeEditModeTests
             Object.DestroyImmediate(root);
             Object.DestroyImmediate(virtualHead);
         }
+    }
+
+    [Test]
+    public void XRTrackingAdapter_RequiresStableSamplesAndDoesNotFallbackAfterLoss()
+    {
+        var root = new GameObject("XRTrackingStabilityTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var adapter = root.AddComponent<XRTrackingAdapter>();
+            adapter.Configure(pose, calibration);
+
+            Assert.That(adapter.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity), Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(adapter.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity), Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.True);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            adapter.ReportTrackingUnavailable();
+
+            Assert.That(adapter.InputMode, Is.EqualTo(TrackingInputMode.XRDevice));
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
+            Assert.That(adapter.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity), Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
+
+            adapter.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity);
+
+            Assert.That(adapter.IsTrackingActive, Is.True);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void XRTrackingAdapter_EditorSimulationAcceptsOnlyExplicitSimulationSamples()
+    {
+        var root = new GameObject("XRTrackingSimulationModeTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            var adapter = root.AddComponent<XRTrackingAdapter>();
+            adapter.Configure(pose, calibration);
+            adapter.SetInputMode(TrackingInputMode.EditorSimulation);
+
+            Assert.That(adapter.ApplyTrackedPose(Vector3.zero, Quaternion.identity), Is.False);
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(adapter.ApplyEditorSimulationPose(Vector3.zero, Quaternion.identity), Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(adapter.ApplyEditorSimulationPose(Vector3.zero, Quaternion.identity), Is.True);
+            Assert.That(adapter.IsTrackingActive, Is.True);
+            Assert.That(adapter.InputMode, Is.EqualTo(TrackingInputMode.EditorSimulation));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalRiskEvaluator_ClearsSnapshotWhenCalibrationBecomesInvalid()
+    {
+        var root = new GameObject("PhysicalRiskCalibrationInvalidTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+            Assert.That(risk.CurrentRiskState, Is.Not.Null);
+
+            calibration.InvalidateCalibration();
+
+            Assert.That(risk.CurrentRiskState, Is.Null);
+            Assert.That(risk.EvaluateNow(), Is.Null);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_TrackingLossEntersSafetyHoldAndNeedsStableFreshRisk()
+    {
+        var root = new GameObject("ExperimentDashboardTrackingLossTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            var tracking = root.AddComponent<XRTrackingAdapter>();
+            tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity);
+            tracking.ApplyTrackedPose(new Vector3(2.5f, 1.65f, 2.5f), Quaternion.identity);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            root.SetActive(true);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+            var reset = root.AddComponent<PauseResetController>();
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            dashboard.Configure(
+                space, pose, risk, tracking, null, null, null, null, null, null, null, reset, null, null, calibration);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+
+            tracking.ReportTrackingUnavailable();
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(risk.CurrentRiskState, Is.Null);
+
+            tracking.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity);
+            dashboard.ResumeSession();
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+
+            tracking.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity);
+            Assert.That(risk.CurrentRiskState, Is.Not.Null);
+            Assert.That(risk.CurrentRiskState.calibration_id, Is.EqualTo(calibration.CalibrationId));
+            dashboard.ResumeSession();
+
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void PhysicalSpaceConfigParser_UsesStructuredDtoIndependentOfPropertyOrder()
+    {
+        const string json = "{\"obstacles\":[{\"radius\":0.45,\"center\":[2.0,2.2],\"id\":\"obstacle_01\"}]," +
+                            "\"boundary\":[[0,0],[4,0],[4,4],[0,4]],\"id\":\"obstacle_room\"}";
+
+        Assert.That(PhysicalSpaceConfigParser.TryParse(json, out var config, out var error), Is.True, error);
+        Assert.That(config.id, Is.EqualTo("obstacle_room"));
+        Assert.That(config.boundary, Has.Length.EqualTo(4));
+        Assert.That(config.obstacles, Has.Length.EqualTo(1));
+        Assert.That(config.obstacles[0].center, Is.EqualTo(new Vector2(2f, 2.2f)));
+        Assert.That(config.obstacles[0].radius, Is.EqualTo(0.45f));
     }
 
     [Test]
@@ -1254,6 +1432,57 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void AgentClient_RejectsStaleContextAndRetryAfterCalibrationInvalidation()
+    {
+        var root = new GameObject("AgentClientFailClosedIdentityTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var risk = root.AddComponent<PhysicalRiskEvaluator>();
+            risk.Configure(space, pose, calibration);
+            var client = root.AddComponent<AgentClient>();
+            client.Configure(space, pose, null, risk, calibration);
+
+            var currentContext = new GuidanceRequestContext
+            {
+                calibration_id = calibration.CalibrationId,
+                risk_snapshot_id = risk.CurrentRiskState.risk_snapshot_id
+            };
+            var currentRequest = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", currentContext);
+            Assert.That(currentRequest, Is.Not.Null);
+
+            var staleContext = new GuidanceRequestContext
+            {
+                calibration_id = "calibration-stale",
+                risk_snapshot_id = currentContext.risk_snapshot_id
+            };
+            Assert.That(InvokePrivateWithResult(client, "BuildRequest", staleContext), Is.Null);
+
+            staleContext.calibration_id = currentContext.calibration_id;
+            staleContext.risk_snapshot_id = "risk-stale";
+            Assert.That(InvokePrivateWithResult(client, "BuildRequest", staleContext), Is.Null);
+
+            string failure = null;
+            client.GuidanceRequestFailed.AddListener(message => failure = message);
+            SetPrivateField(client, "lastRequest", currentRequest);
+            calibration.InvalidateCalibration();
+
+            client.RetryLastRequest();
+
+            Assert.That(client.RequestInFlight, Is.False);
+            Assert.That(failure, Does.Contain("retry rejected"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void PhysicalSpaceCalibration_ZeroOffsetMapsRawPoseDirectly()
     {
         var root = new GameObject("PhysicalCalibrationZeroTest");
@@ -1387,6 +1616,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(calibration.CalibrationId, Is.EqualTo(calibrationId));
 
             calibration.UpdateRawTrackingPose(Vector2.right, 0f);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
+            Assert.That(calibration.ReportTrackingRecovered(), Is.True);
             Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
             Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(Vector2.right));
         }
@@ -1457,9 +1688,10 @@ public sealed class GuidanceRuntimeEditModeTests
         {
             CreateCalibrationRig(root, out var pose, out var space, out var calibration);
             var risk = root.AddComponent<PhysicalRiskEvaluator>();
-            risk.Configure(space, pose);
+            risk.Configure(space, pose, calibration);
             var tracking = root.AddComponent<XRTrackingAdapter>();
             tracking.Configure(pose, calibration);
+            tracking.ApplyTrackedPose(new Vector3(1f, 1.65f, 2f), Quaternion.identity);
             tracking.ApplyTrackedPose(new Vector3(1f, 1.65f, 2f), Quaternion.identity);
             var task = root.AddComponent<GuidanceTaskController>();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
@@ -1514,7 +1746,7 @@ public sealed class GuidanceRuntimeEditModeTests
             calibration.UpdateRawTrackingPose(new Vector2(5f, 5f), 0f);
             Assert.That(calibration.CalibrateCurrentPose(), Is.True);
             var risk = root.AddComponent<PhysicalRiskEvaluator>();
-            risk.Configure(space, pose);
+            risk.Configure(space, pose, calibration);
             var visualizer = root.AddComponent<BoundaryVisualizer>();
             visualizer.Configure(space, pose, risk, calibration);
 

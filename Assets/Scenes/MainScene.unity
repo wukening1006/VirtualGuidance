@@ -11724,7 +11724,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
-  calibrationPointInRoom: {x: 2.5, y: 2.5}
+  calibrationPointInRoom: {x: 1, y: 2.5}
   calibrationForwardYawDegrees: 0
 --- !u!1001 &1924432073
 PrefabInstance:
@@ -13284,8 +13284,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 0}
-  readHeadsetTrackingWhenAvailable: 1
+  inputMode: 0
+  stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
+  editorSimulationLocalPosition: {x: 1, y: 1.65, z: 2.5}
+  editorSimulationLocalEulerAngles: {x: 0, y: 0, z: 0}
 --- !u!114 &2100100006
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -54,6 +54,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         {
             physicalSpaceManager.CurrentSpaceChanged += HandleSpaceChanged;
         }
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
+        }
     }
 
     private void OnDisable()
@@ -61,6 +65,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         if (physicalSpaceManager != null)
         {
             physicalSpaceManager.CurrentSpaceChanged -= HandleSpaceChanged;
+        }
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
         }
     }
 
@@ -92,6 +100,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         {
             physicalSpaceManager.CurrentSpaceChanged -= HandleSpaceChanged;
         }
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+        }
 
         physicalSpaceManager = nextSpaceManager;
         userPoseTracker = nextPoseTracker;
@@ -100,6 +112,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         if (isActiveAndEnabled && physicalSpaceManager != null)
         {
             physicalSpaceManager.CurrentSpaceChanged += HandleSpaceChanged;
+        }
+        if (isActiveAndEnabled && physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
         }
 
         EvaluateNow();
@@ -113,9 +129,16 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     {
         ResolveReferences();
 
-        if (physicalSpaceManager == null || userPoseTracker == null || physicalSpaceManager.CurrentSpace == null)
+        if (physicalSpaceManager == null || userPoseTracker == null || physicalSpaceManager.CurrentSpace == null ||
+            physicalSpaceCalibration == null ||
+            !physicalSpaceCalibration.IsCalibrationValid ||
+            !string.Equals(
+                physicalSpaceCalibration.CalibratedSpaceId,
+                physicalSpaceManager.CurrentSpaceId,
+                StringComparison.Ordinal))
         {
-            return currentRiskState;
+            ClearInvalidRiskState();
+            return null;
         }
 
         currentRiskState = Evaluate(physicalSpaceManager.CurrentSpace, userPoseTracker.PhysicalPositionXZ, userPoseTracker.PhysicalForwardXZ);
@@ -141,7 +164,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             user_physical_forward = forward
         };
 
-        if (!IsPointInsidePolygon(position, space.boundary))
+        if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, position))
         {
             // 用户已经离开 tracking boundary 时不再尝试自然导览，直接标记所有方向危险。
             state.clearance_forward = 0f;
@@ -261,28 +284,20 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         EvaluateNow();
     }
 
-    private static bool IsPointInsidePolygon(Vector2 point, Vector2[] polygon)
+    private void HandleCalibrationStateChanged(PhysicalCalibrationState _)
     {
-        if (polygon == null || polygon.Length < 3)
+        EvaluateNow();
+    }
+
+    private void ClearInvalidRiskState()
+    {
+        if (currentRiskState == null)
         {
-            return false;
+            return;
         }
 
-        var inside = false;
-        for (int i = 0, j = polygon.Length - 1; i < polygon.Length; j = i++)
-        {
-            // 使用射线奇偶规则判断点是否在多边形内，支持 l_shaped_room 这类非矩形空间。
-            var pi = polygon[i];
-            var pj = polygon[j];
-            var intersects = ((pi.y > point.y) != (pj.y > point.y)) &&
-                             (point.x < (pj.x - pi.x) * (point.y - pi.y) / (pj.y - pi.y + Epsilon) + pi.x);
-            if (intersects)
-            {
-                inside = !inside;
-            }
-        }
-
-        return inside;
+        currentRiskState = null;
+        RiskStateChanged?.Invoke(null);
     }
 
     private static bool TryRaySegmentDistance(Vector2 origin, Vector2 direction, Vector2 segmentStart, Vector2 segmentEnd, out float distance)

@@ -177,7 +177,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
         ResolveReferences();
         currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
         experimentLogger?.LogCalibrationStarted();
-        if (physicalSpaceManager == null ||
+        if (xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
+            physicalSpaceManager == null ||
             !physicalSpaceManager.SetPhysicalSpace(currentSpec.physicalSpaceId) ||
             physicalSpaceCalibration == null ||
             !physicalSpaceCalibration.CalibrateCurrentPose())
@@ -193,10 +194,42 @@ public sealed class ExperimentDashboard : MonoBehaviour
         return true;
     }
 
-    /// <summary>研究员按钮入口：触发一次物理空间校准，忽略返回值。</summary>
+    /// <summary>
+    /// 在 SafetyHold 中使用稳定 Tracking 重新建立当前 Physical Space 校准；成功后仍等待显式恢复。
+    /// </summary>
+    /// <returns>重新校准成功并生成匹配风险快照时返回 true。</returns>
+    public bool RecalibratePhysicalSpace()
+    {
+        if (runState != ExperimentRunState.SafetyHold)
+        {
+            return false;
+        }
+
+        ResolveReferences();
+        experimentLogger?.LogCalibrationStarted();
+        if (xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
+            physicalSpaceManager == null || physicalSpaceManager.CurrentSpace == null ||
+            physicalSpaceCalibration == null || !physicalSpaceCalibration.CalibrateCurrentPose())
+        {
+            lastStatusMessage = "Recalibration failed";
+            WriteStatus();
+            return false;
+        }
+
+        var risk = riskEvaluator?.EvaluateNow();
+        experimentLogger?.LogCalibrationCompleted(physicalSpaceCalibration.CalibrationId);
+        lastStatusMessage = risk != null ? "Recalibration valid; waiting for resume" : "Recalibration waiting for risk";
+        WriteStatus();
+        return risk != null;
+    }
+
+    /// <summary>研究员按钮入口：准备阶段校准，或在 SafetyHold 中重新校准。</summary>
     public void RequestCalibration()
     {
-        CalibratePhysicalSpace();
+        if (runState == ExperimentRunState.SafetyHold)
+            RecalibratePhysicalSpace();
+        else
+            CalibratePhysicalSpace();
     }
 
     public void NextCondition() => SetConditionIndex(conditionIndex + 1);
@@ -240,11 +273,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             EnterError("Selected physical space could not be loaded.");
             return;
-        }
-
-        if (xrTrackingAdapter == null || !xrTrackingAdapter.IsHeadsetTrackingActive)
-        {
-            userPoseTracker.SetSimulatedPhysicalPose(currentSpec.simulatedPhysicalPosition, currentSpec.simulatedPhysicalYawDegrees);
         }
 
         experimentLogger.StartSession(currentSpec);
@@ -291,8 +319,16 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (runState == ExperimentRunState.SafetyHold &&
             pauseResetController != null &&
+            pauseResetController.State != ResetLifecycleState.Inactive &&
             pauseResetController.State != ResetLifecycleState.Completed)
         {
+            return;
+        }
+
+        if (xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
+            physicalSpaceCalibration == null || !physicalSpaceCalibration.IsCalibrationValid)
+        {
+            EnterSafetyHold("tracking or calibration is not ready", false);
             return;
         }
 
@@ -304,7 +340,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         if (!IsSafeForResume(risk))
         {
-            EnterSafetyHold("physical risk is not safe for resume");
+            EnterSafetyHold("physical risk is not safe for resume", false);
             return;
         }
 
@@ -405,9 +441,16 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return false;
         }
 
-        if (!xrTrackingAdapter.IsHeadsetTrackingActive)
+        if (!xrTrackingAdapter.IsTrackingActive)
         {
             missingConditions = "XR tracking";
+            return false;
+        }
+
+        if (Application.platform == RuntimePlatform.Android &&
+            xrTrackingAdapter.InputMode != TrackingInputMode.XRDevice)
+        {
+            missingConditions = "XRDevice tracking mode";
             return false;
         }
 
@@ -431,7 +474,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         return true;
     }
 
-    private void EnterSafetyHold(string reason)
+    private void EnterSafetyHold(string reason, bool startReset = true)
     {
         if (runState != ExperimentRunState.SafetyHold)
         {
@@ -445,11 +488,14 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         FreezeExperimentBehavior();
         TransitionTo(ExperimentRunState.SafetyHold, reason);
-        if (stateBeforeSafetyHold != ExperimentRunState.Completing)
+        if (startReset && stateBeforeSafetyHold != ExperimentRunState.Completing)
         {
             taskController?.PauseForReset();
         }
-        pauseResetController?.PauseForReset(reason);
+        if (startReset)
+        {
+            pauseResetController?.PauseForReset(reason);
+        }
         if (runtimeInterventionActive)
             participantUiController?.ShowRuntimeIntervention();
         else
@@ -672,12 +718,29 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleCalibrationStateChanged(PhysicalCalibrationState state)
     {
-        if (state == PhysicalCalibrationState.Invalid || state == PhysicalCalibrationState.CalibrationSuspect)
+        if (state != PhysicalCalibrationState.Calibrated)
         {
             experimentLogger?.LogCalibrationInvalidated(
                 physicalSpaceCalibration != null ? physicalSpaceCalibration.CalibrationId : string.Empty,
                 $"calibration state: {state}");
+
+            if (IsSessionActiveState())
+            {
+                rotationGainController?.AbortGain("tracking_invalid");
+                EnterSafetyHold($"calibration state: {state}", false);
+            }
         }
+    }
+
+    private void HandleTrackingStateChanged(bool trackingActive)
+    {
+        if (trackingActive || !IsSessionActiveState())
+        {
+            return;
+        }
+
+        rotationGainController?.AbortGain("tracking_invalid");
+        EnterSafetyHold("XR tracking lost", false);
     }
 
     private static string GainEventName(RotationGainEventType eventType)
@@ -799,9 +862,17 @@ public sealed class ExperimentDashboard : MonoBehaviour
         return state != null && (state.reset_required || state.boundary_risk == "critical" || state.reset_risk == "critical");
     }
 
-    private static bool IsSafeForResume(PhysicalRiskState state)
+    private bool IsSafeForResume(PhysicalRiskState state)
     {
-        return state != null && !IsCritical(state) && state.safe_directions != null && state.safe_directions.Length > 0;
+        return state != null &&
+               xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive &&
+               physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid &&
+               physicalSpaceManager != null && physicalSpaceManager.CurrentSpace != null &&
+               !string.IsNullOrWhiteSpace(state.risk_snapshot_id) &&
+               string.Equals(state.calibration_id, physicalSpaceCalibration.CalibrationId, StringComparison.Ordinal) &&
+               string.Equals(state.physical_space, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal) &&
+               !IsCritical(state) &&
+               state.safe_directions != null && state.safe_directions.Length > 0;
     }
 
     private void Subscribe()
@@ -873,6 +944,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
             physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
             physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
         }
+        if (xrTrackingAdapter != null)
+        {
+            xrTrackingAdapter.TrackingStateChanged -= HandleTrackingStateChanged;
+            xrTrackingAdapter.TrackingStateChanged += HandleTrackingStateChanged;
+        }
     }
 
     private void Unsubscribe()
@@ -906,6 +982,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
         if (rotationGainController != null) rotationGainController.LifecycleEventOccurred -= HandleRotationGainEvent;
         if (physicalSpaceCalibration != null) physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+        if (xrTrackingAdapter != null) xrTrackingAdapter.TrackingStateChanged -= HandleTrackingStateChanged;
     }
 
     private void WriteStatus()
@@ -922,7 +999,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         statusText.text =
             $"Participant: {spec.participantId}\nCondition: {spec.condition}\nTask: {spec.taskId}\n" +
             $"Physical Space: {spec.physicalSpaceId}\nBackend: {(agentClient != null && agentClient.BackendOnline ? "Online" : "Offline")}\n" +
-            $"Tracking: {(xrTrackingAdapter != null && xrTrackingAdapter.IsHeadsetTrackingActive ? "Valid" : "Invalid")}\n" +
+            $"Tracking: {(xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive ? "Valid" : "Invalid")}\n" +
             $"Calibration: {(physicalSpaceCalibration != null ? physicalSpaceCalibration.State.ToString() : "Missing")}\n" +
             $"Risk: {(riskEvaluator != null && riskEvaluator.CurrentRiskState != null ? riskEvaluator.CurrentRiskState.boundary_risk : "unknown")}\n" +
             $"Task State: {(taskController != null ? taskController.RuntimeState.phase.ToString() : "missing")}\n" +

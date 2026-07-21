@@ -222,7 +222,7 @@ public static class GuidanceLiveBackendValidator
             hideFlags = HideFlags.HideAndDontSave
         };
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
-        xrTrackingAdapter.SetHeadsetTrackingEnabled(false);
+        xrTrackingAdapter.SetInputMode(TrackingInputMode.EditorSimulation);
         userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
 
         if (!physicalSpaceManager.SetPhysicalSpace("narrow_room"))
@@ -232,7 +232,8 @@ public static class GuidanceLiveBackendValidator
         }
 
         physicalSpaceCalibration.SetCalibrationPoint(new Vector2(1.0f, 2.5f), 0f);
-        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         if (!physicalSpaceCalibration.CalibrateCurrentPose())
         {
             Fail("Could not establish physical calibration for live backend validation.");
@@ -435,7 +436,8 @@ public static class GuidanceLiveBackendValidator
         guidanceSessionLogPath = experimentLogger.LogPath;
         experimentDashboard.EndSession("validation_rejected");
         experimentDashboard.SetParticipantId("CODEX_VALIDATION_ROUTE");
-        xrTrackingAdapter.ApplyTrackedPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
+        xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         agentClient.SetBackendOnlineForTesting(true);
         experimentDashboard.StartSession();
         agentClient.CancelPendingRequest();

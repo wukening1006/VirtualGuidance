@@ -159,7 +159,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         var request = BuildRequest(context ?? defaultContext);
         if (request == null)
         {
-            GuidanceRequestFailed?.Invoke("Cannot build guidance request: missing PhysicalSpaceManager or UserPoseTracker.");
+            GuidanceRequestFailed?.Invoke("Cannot build guidance request: tracking, calibration, physical space, or risk is not ready.");
             return;
         }
 
@@ -171,7 +171,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     }
 
     /// <summary>
-    /// 重试上一次请求，常用于 rejected 或网络失败后的调试流程。
+    /// 在 Calibration、Physical Space 与 Risk Snapshot 仍匹配时重试上一次请求。
     /// </summary>
     public void RetryLastRequest()
     {
@@ -184,6 +184,12 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         if (lastRequest == null)
         {
             RequestGuidance();
+            return;
+        }
+
+        if (!TryGetCurrentRiskState(out var riskState) || !MatchesCurrentRequestIdentity(lastRequest, riskState))
+        {
+            GuidanceRequestFailed?.Invoke("Guidance retry rejected because calibration, physical space, or risk snapshot changed.");
             return;
         }
 
@@ -218,7 +224,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
     private GuidanceRequest BuildRequest(GuidanceRequestContext context)
     {
-        if (physicalSpaceManager == null || userPoseTracker == null)
+        if (!TryGetCurrentRiskState(out var riskState) ||
+            !MatchesOptionalIdentity(context.calibration_id, riskState.calibration_id) ||
+            !MatchesOptionalIdentity(context.risk_snapshot_id, riskState.risk_snapshot_id))
         {
             return null;
         }
@@ -227,11 +235,6 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         var physicalForward = userPoseTracker.PhysicalForwardXZ;
         var virtualPosition = userPoseTracker.UserVirtualPosition;
         var virtualForward = userPoseTracker.UserVirtualForward;
-        var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
-        if (riskState == null && riskEvaluator != null)
-        {
-            riskState = riskEvaluator.EvaluateNow();
-        }
 
         return new GuidanceRequest
         {
@@ -250,7 +253,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             state_version = context.state_version,
             risk_snapshot_id = EmptyFallback(
                 context.risk_snapshot_id,
-                riskState != null ? riskState.risk_snapshot_id : Guid.NewGuid().ToString("N")),
+                riskState.risk_snapshot_id),
             target_role = EmptyFallback(context.target_role, "route_subgoal"),
             condition = EmptyFallback(context.condition, "ours_full"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
@@ -264,6 +267,44 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             user_virtual_position = GuidanceTypeUtility.Vector3ToArray(virtualPosition),
             user_virtual_forward = GuidanceTypeUtility.Vector3ToArray(virtualForward)
         };
+    }
+
+    private bool TryGetCurrentRiskState(out PhysicalRiskState riskState)
+    {
+        riskState = null;
+        if (physicalSpaceManager == null || userPoseTracker == null || physicalSpaceManager.CurrentSpace == null ||
+            physicalSpaceCalibration == null || !physicalSpaceCalibration.IsCalibrationValid ||
+            !string.Equals(
+                physicalSpaceCalibration.CalibratedSpaceId,
+                physicalSpaceManager.CurrentSpaceId,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
+        if (riskState == null && riskEvaluator != null)
+        {
+            riskState = riskEvaluator.EvaluateNow();
+        }
+
+        return riskState != null &&
+               !string.IsNullOrWhiteSpace(riskState.risk_snapshot_id) &&
+               string.Equals(riskState.calibration_id, physicalSpaceCalibration.CalibrationId, StringComparison.Ordinal) &&
+               string.Equals(riskState.physical_space, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal);
+    }
+
+    private bool MatchesCurrentRequestIdentity(GuidanceRequest request, PhysicalRiskState riskState)
+    {
+        return request != null &&
+               string.Equals(request.calibration_id, riskState.calibration_id, StringComparison.Ordinal) &&
+               string.Equals(request.risk_snapshot_id, riskState.risk_snapshot_id, StringComparison.Ordinal) &&
+               string.Equals(request.physical_space_id, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal);
+    }
+
+    private static bool MatchesOptionalIdentity(string expected, string current)
+    {
+        return string.IsNullOrWhiteSpace(expected) || string.Equals(expected, current, StringComparison.Ordinal);
     }
 
     private IEnumerator SendGuidanceRequest(GuidanceRequest request, int generation)
