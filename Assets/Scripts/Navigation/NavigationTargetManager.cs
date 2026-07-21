@@ -79,22 +79,43 @@ public sealed class NavigationTargetManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 根据用户当前 Virtual Forward 返回 left、forward、right 或 behind；未知目标降级为 forward。
+    /// 根据用户当前 Virtual Forward 返回 left、forward、right 或 behind；无法解析时返回空字符串。
     /// </summary>
     /// <returns>供 RDW 风险标签匹配使用的英文方向值。</returns>
     public string GetTargetDirection(string targetId)
     {
-        // 保持 forward 回退可兼容缺少元数据的旧场景，最终仍由本地安全门校验该方向。
+        return TryGetTargetDirection(targetId, out var direction) ? direction : string.Empty;
+    }
+
+    /// <summary>
+    /// 尝试依据用户当前 Virtual Position/Forward 解析目标相对方向。
+    /// </summary>
+    /// <returns>目标、用户位姿与水平目标向量均有效时返回 true。</returns>
+    public bool TryGetTargetDirection(string targetId, out string direction)
+    {
+        direction = string.Empty;
         if (!TryGetTarget(targetId, out var target) || target == null)
         {
-            return "forward";
+            return false;
         }
 
         ResolveReferences();
+        if (userPoseTracker == null)
+        {
+            return false;
+        }
+
         var anchor = target.ViewPoint != null ? target.ViewPoint : target.transform;
-        var userPosition = userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero;
-        var userForward = userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward;
-        return ClassifyRelativeDirection(userPosition, userForward, anchor.position);
+        var userPosition = userPoseTracker.UserVirtualPosition;
+        var userForward = Vector3.ProjectOnPlane(userPoseTracker.UserVirtualForward, Vector3.up);
+        var toTarget = Vector3.ProjectOnPlane(anchor.position - userPosition, Vector3.up);
+        if (userForward.sqrMagnitude < 0.0001f || toTarget.sqrMagnitude < 0.0001f)
+        {
+            return false;
+        }
+
+        direction = ClassifyRelativeDirection(userPosition, userForward, anchor.position);
+        return !string.IsNullOrWhiteSpace(direction);
     }
 
     /// <summary>

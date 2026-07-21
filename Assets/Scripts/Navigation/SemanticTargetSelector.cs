@@ -1,6 +1,19 @@
 using UnityEngine;
 
 /// <summary>
+/// 表示语义候选相对最新物理风险的可执行状态。
+/// </summary>
+public enum CandidateSafetyState
+{
+    /// <summary>方向未达到 safe 或 unsafe 阈值，不能默认选中。</summary>
+    Unknown,
+    /// <summary>方向已达到 safe 阈值，可以用于重规划。</summary>
+    Eligible,
+    /// <summary>方向已进入 unsafe 阈值，禁止选中。</summary>
+    Blocked
+}
+
+/// <summary>
 /// 将任务的语义下一目标与当前物理安全方向结合，选择本次 guidance 的可执行展品目标。
 /// 候选来自当前展品的 related exhibits，结果提供给 GuidanceCoordinator。
 /// </summary>
@@ -69,10 +82,10 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
         if (navigationTargets == null || riskState == null || string.IsNullOrWhiteSpace(preferred))
         {
-            return new GuidanceTarget(preferred, preferredRole);
+            return null;
         }
 
-        if (!IsDirectionUnsafe(navigationTargets.GetTargetDirection(preferred), riskState))
+        if (GetCandidateSafetyState(preferred, riskState) == CandidateSafetyState.Eligible)
         {
             return new GuidanceTarget(preferred, preferredRole);
         }
@@ -84,25 +97,42 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             var role = navigationTargets.GetSafetyTargetRole(candidate);
             if (navigationTargets.HasTarget(candidate) &&
                 CanUseSafetyTarget(runtimeState, candidate, role) &&
-                IsDirectionSafe(navigationTargets.GetTargetDirection(candidate), riskState))
-            {
-                return new GuidanceTarget(candidate, role);
-            }
-        }
-
-        foreach (var candidate in related)
-        {
-            var role = navigationTargets.GetSafetyTargetRole(candidate);
-            if (navigationTargets.HasTarget(candidate) &&
-                CanUseSafetyTarget(runtimeState, candidate, role) &&
-                IsNaturalDirection(navigationTargets.GetTargetDirection(candidate)) &&
-                !IsDirectionUnsafe(navigationTargets.GetTargetDirection(candidate), riskState))
+                GetCandidateSafetyState(candidate, riskState) == CandidateSafetyState.Eligible)
             {
                 return new GuidanceTarget(candidate, role);
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 根据风险计算器已有 safe/unsafe 阈值带判定候选状态；Unknown 不视为可执行。
+    /// </summary>
+    public CandidateSafetyState GetCandidateSafetyState(string targetId, PhysicalRiskState riskState)
+    {
+        ResolveReferences();
+        if (navigationTargets == null ||
+            riskState == null ||
+            !navigationTargets.HasTarget(targetId))
+        {
+            return CandidateSafetyState.Unknown;
+        }
+
+        var direction = navigationTargets.GetTargetDirection(targetId);
+        if (!IsNaturalDirection(direction))
+        {
+            return CandidateSafetyState.Blocked;
+        }
+
+        if (IsDirectionUnsafe(direction, riskState))
+        {
+            return CandidateSafetyState.Blocked;
+        }
+
+        return IsDirectionSafe(direction, riskState)
+            ? CandidateSafetyState.Eligible
+            : CandidateSafetyState.Unknown;
     }
 
     private void ResolveReferences()

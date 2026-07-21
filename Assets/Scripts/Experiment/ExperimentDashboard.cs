@@ -634,13 +634,26 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleRuntimeIntervention(RuntimeInterventionInfo intervention)
     {
-        runtimeInterventionActive = true;
-        participantUiController?.ShowRuntimeIntervention();
         experimentLogger?.LogRuntimeIntervention(
             intervention != null ? intervention.Response : null,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
             intervention != null ? intervention.Reason : "runtime safety intervention");
+
+        if (intervention != null &&
+            intervention.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+        {
+            return;
+        }
+
+        runtimeInterventionActive = true;
+        participantUiController?.ShowRuntimeIntervention();
+        if (IsSessionActiveState())
+        {
+            EnterSafetyHold(
+                intervention != null ? intervention.Reason : "runtime safety intervention",
+                intervention != null && intervention.StartReset);
+        }
     }
 
     private void HandleGuidanceExecuted(GuidanceResponse response)

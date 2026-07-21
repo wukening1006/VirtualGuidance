@@ -347,7 +347,18 @@ public sealed class GuidanceRuntimeEditModeTests
         var go = new GameObject("LocalGuidanceValidatorTest");
         try
         {
+            var virtualUser = new GameObject("ValidatorVirtualUser");
+            virtualUser.transform.SetParent(go.transform, false);
+            var pose = go.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            CreateExhibit(go.transform, "E3", Vector3.forward * 2f, "route_subgoal", null);
+            CreateExhibit(go.transform, "E5", Vector3.left * 2f, "main_target", null);
+            var targets = go.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var riskEvaluator = go.AddComponent<PhysicalRiskEvaluator>();
             var validator = go.AddComponent<LocalGuidanceValidator>();
+            validator.Configure(targets, riskEvaluator);
             var runtimeState = new GuidanceRuntimeState();
             runtimeState.Begin("T2_main_target", "E1", "E3", "E5");
             var originalVersion = runtimeState.stateVersion;
@@ -378,6 +389,18 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(validator.Validate(unsafeResponse, snapshot, runtimeState, riskState, out var unsafeReason), Is.False);
             Assert.That(unsafeReason, Does.Contain("unsafe forward"));
 
+            var safeAtRequest = new PhysicalRiskState
+            {
+                physical_space = "narrow_room",
+                unsafe_directions = new string[0],
+                safe_directions = new[] { "forward", "left", "right" }
+            };
+            var safeSnapshot = GuidanceRequestSnapshot.Capture(request, safeAtRequest, runtimeState);
+            Assert.That(
+                validator.Validate(unsafeResponse, safeSnapshot, runtimeState, riskState, out var worsenedReason),
+                Is.False);
+            Assert.That(worsenedReason, Does.Contain("changed after the request"));
+
             runtimeState.AdvanceTo("E3", "E5");
             Assert.That(runtimeState.stateVersion, Is.GreaterThan(originalVersion));
 
@@ -392,6 +415,256 @@ public sealed class GuidanceRuntimeEditModeTests
         finally
         {
             Object.DestroyImmediate(go);
+        }
+    }
+
+    [Test]
+    public void RuntimeGuidanceSafetyPolicy_UsesActiveDirectionAndFailsClosed()
+    {
+        var policy = new RuntimeGuidanceSafetyPolicy();
+        var unsafeForward = new PhysicalRiskState
+        {
+            unsafe_directions = new[] { "forward" },
+            safe_directions = new[] { "left" }
+        };
+
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 1, true)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.Continue));
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 2, true)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 2, false)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+
+        var unrelatedCritical = new PhysicalRiskState
+        {
+            boundary_risk = "critical",
+            unsafe_directions = new[] { "left" },
+            safe_directions = new[] { "forward" }
+        };
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 2f, 0, false)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.Continue));
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 0.3f, 0, false, true)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 2f, 0, false, false, false)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(null, "forward", 0f, 0, false)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+    }
+
+    [Test]
+    public void LocalGuidanceValidator_FailsClosedForUnknownConflictAndBehind()
+    {
+        var root = new GameObject("LocalGuidanceFailClosedTest");
+        try
+        {
+            var virtualUser = new GameObject("FailClosedVirtualUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            CreateExhibit(root.transform, "ForwardTarget", Vector3.forward * 2f, "route_subgoal", null);
+            CreateExhibit(root.transform, "BehindTarget", Vector3.back * 2f, "route_subgoal", null);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            var validator = root.AddComponent<LocalGuidanceValidator>();
+            validator.Configure(targets, riskEvaluator);
+            var risk = new PhysicalRiskState
+            {
+                clearance_forward = 2f,
+                clearance_left = 2f,
+                clearance_right = 2f,
+                unsafe_directions = new string[0],
+                safe_directions = new[] { "forward", "left", "right" }
+            };
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "ForwardTarget",
+                        movement_instruction = "move_forward_slowly"
+                    },
+                    null,
+                    null,
+                    null,
+                    out var nullRiskReason),
+                Is.False);
+            Assert.That(nullRiskReason, Does.Contain("no current physical risk"));
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "ForwardTarget",
+                        movement_instruction = "fly_forward"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var movementReason),
+                Is.False);
+            Assert.That(movementReason, Does.Contain("unknown movement"));
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "MissingTarget",
+                        movement_instruction = "move_forward_slowly"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var targetReason),
+                Is.False);
+            Assert.That(targetReason, Does.Contain("cannot resolve"));
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "ForwardTarget",
+                        movement_instruction = "turn_left_slowly"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var conflictReason),
+                Is.False);
+            Assert.That(conflictReason, Does.Contain("conflicting movement"));
+
+            Assert.That(
+                validator.Validate(
+                    new GuidanceResponse
+                    {
+                        selected_target = "BehindTarget",
+                        movement_instruction = "turn_left_slowly"
+                    },
+                    null,
+                    null,
+                    risk,
+                    out var behindReason),
+                Is.False);
+            Assert.That(behindReason, Does.Contain("cannot calculate"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_TwoUnsafeSamplesSoftRerouteExactlyOnce()
+    {
+        var root = new GameObject("GuidanceRuntimeSoftRerouteTest");
+        root.SetActive(false);
+        try
+        {
+            var virtualUser = new GameObject("RuntimeSafetyVirtualUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            riskEvaluator.Configure(space, pose, calibration);
+
+            CreateExhibit(root.transform, "RuntimeE1", Vector3.back, "introduction", new[] { "RuntimeE2" });
+            CreateExhibit(root.transform, "RuntimeE2", Vector3.left * 2f, "left_related_anchor", null);
+            CreateExhibit(root.transform, "RuntimeE3", Vector3.forward * 2f, "route_subgoal", null);
+            CreateExhibit(root.transform, "RuntimeE5", Vector3.forward * 4f, "main_target", null);
+            root.SetActive(true);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var validator = root.AddComponent<LocalGuidanceValidator>();
+            validator.Configure(targets, riskEvaluator);
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "RuntimeE1",
+                finalTargetId = "RuntimeE5",
+                routeTargetIds = new[] { "RuntimeE1", "RuntimeE3", "RuntimeE5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                targets,
+                selector,
+                null,
+                riskEvaluator,
+                validator,
+                null,
+                null,
+                null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var softRerouteCount = 0;
+            var replanCount = 0;
+            coordinator.RuntimeIntervention += info =>
+            {
+                if (info.Decision == RuntimeGuidanceSafetyDecision.SoftReroute) softRerouteCount++;
+            };
+            coordinator.Replanning += _ => replanCount++;
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-runtime-safe");
+            request.physical_space_id = "wide_room";
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "RuntimeE3"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+
+            var unsafeForward = new PhysicalRiskState
+            {
+                risk_snapshot_id = "runtime-risk-1",
+                calibration_id = calibration.CalibrationId,
+                physical_space = space.CurrentSpaceId,
+                clearance_forward = 0.6f,
+                clearance_left = 2f,
+                clearance_right = 2f,
+                unsafe_directions = new[] { "forward" },
+                safe_directions = new[] { "left", "right" }
+            };
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
+            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+
+            unsafeForward.risk_snapshot_id = "runtime-risk-2";
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
+
+            Assert.That(softRerouteCount, Is.EqualTo(1));
+            Assert.That(replanCount, Is.EqualTo(1));
+            Assert.That(requests.Contexts.Count, Is.EqualTo(2));
+            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("RuntimeE2"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(task.RuntimeState.IsNavigating, Is.True);
+            Assert.That(task.RuntimeState.ActiveReservation.TargetId, Is.EqualTo("RuntimeE2"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
         }
     }
 
@@ -1810,6 +2083,10 @@ public sealed class GuidanceRuntimeEditModeTests
         var root = new GameObject("ConditionPolicyTargetSelectionTest");
         try
         {
+            var virtualUser = new GameObject("PolicyVirtualUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
             var current = new GameObject("PolicyCurrent");
             current.transform.SetParent(root.transform, false);
             current.AddComponent<ExhibitMetadata>().Configure(
@@ -1825,6 +2102,7 @@ public sealed class GuidanceRuntimeEditModeTests
             routeTarget.AddComponent<ExhibitMetadata>().Configure(
                 "PolicyE5", "Forward", null, null, null, null, routeTarget.transform, routeTarget.transform);
             var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
             targets.RebuildIndex();
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
@@ -2007,9 +2285,11 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(intervention, Is.Not.Null);
             Assert.That(intervention.Reason, Is.EqualTo("verifier blocked"));
             Assert.That(narrationText.text, Is.Empty);
-            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
             Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
+            coordinator.CancelActiveGuidance();
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
         }
         finally
@@ -2714,6 +2994,35 @@ public sealed class GuidanceRuntimeEditModeTests
         AssertPublicFieldNames<VerifierResult>(
             "approved",
             "reason");
+    }
+
+    private static RuntimeGuidanceSafetyInput CreateRuntimeSafetyInput(
+        PhysicalRiskState risk,
+        string direction,
+        float clearanceMeters,
+        int unsafeSamples,
+        bool safeCandidateAvailable,
+        bool plannedDirectionCritical = false,
+        bool trackingValid = true,
+        bool calibrationValid = true,
+        bool physicalSpaceMatches = true,
+        bool plannedDirectionAvailable = true)
+    {
+        return new RuntimeGuidanceSafetyInput(
+            "decision-runtime-safety",
+            "E3",
+            "move_forward_slowly",
+            risk,
+            trackingValid,
+            calibrationValid,
+            physicalSpaceMatches,
+            direction,
+            clearanceMeters,
+            plannedDirectionAvailable,
+            plannedDirectionCritical,
+            ResetLifecycleState.Inactive,
+            unsafeSamples,
+            safeCandidateAvailable);
     }
 
     private static TMP_Text CreateText(Transform parent, string name)

@@ -165,7 +165,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
         navigationTargetManager.RebuildIndex();
         semanticTargetSelector.Configure(navigationTargetManager);
         arrivalDetector.Configure(userPoseTracker, navigationTargetManager);
-        localGuidanceValidator.Configure(navigationTargetManager);
+        localGuidanceValidator.Configure(navigationTargetManager, riskEvaluator);
         narrationPlayer.Configure(narrationText);
         movementHintController.Configure(movementHintText);
         gazeCueController.Configure(gazeCueText);

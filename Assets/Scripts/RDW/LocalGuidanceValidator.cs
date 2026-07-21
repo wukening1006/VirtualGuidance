@@ -7,18 +7,23 @@ using UnityEngine;
 public sealed class LocalGuidanceValidator : MonoBehaviour
 {
     [SerializeField] private NavigationTargetManager navigationTargets;
+    [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
 
     private void Awake()
     {
         ResolveReferences();
     }
 
-    /// <summary>注入用于解析目标物理方向的导航目标索引。</summary>
-    public void Configure(NavigationTargetManager targetManager)
+    /// <summary>注入目标方向索引与唯一的物理 clearance 查询来源。</summary>
+    public void Configure(NavigationTargetManager targetManager, PhysicalRiskEvaluator evaluator = null)
     {
         if (targetManager != null)
         {
             navigationTargets = targetManager;
+        }
+        if (evaluator != null)
+        {
+            riskEvaluator = evaluator;
         }
     }
 
@@ -50,34 +55,69 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
-        // 风险模块未提供状态时保持现有降级行为，由后端 verifier 结果决定是否执行。
         if (currentRiskState == null)
         {
-            return true;
+            reason = "Local RDW check has no current physical risk snapshot.";
+            return false;
+        }
+
+        if (currentRiskState.unsafe_directions == null || currentRiskState.safe_directions == null)
+        {
+            reason = "Local RDW check received incomplete direction risk data.";
+            return false;
         }
 
         // reset_required 优先于普通移动指令，防止所有方向危险时继续诱导用户移动。
-        if (currentRiskState.reset_required && !IsPauseOrReset(response.movement_instruction))
+        if (currentRiskState.reset_required)
         {
             reason = "Local RDW check requires pause/reset before executing guidance.";
             return false;
         }
 
-        var movementDirection = MovementDirection(response.movement_instruction);
-        if (IsUnsafe(movementDirection, currentRiskState))
+        if (!TryGetMovementDirection(response.movement_instruction, out var movementDirection))
+        {
+            reason = $"Local RDW check rejected unknown movement '{response.movement_instruction}'.";
+            return false;
+        }
+
+        if (navigationTargets == null ||
+            string.IsNullOrWhiteSpace(response.selected_target) ||
+            !navigationTargets.HasTarget(response.selected_target))
+        {
+            reason = "Local RDW check cannot resolve the selected target.";
+            return false;
+        }
+
+        if (!navigationTargets.TryGetTargetDirection(response.selected_target, out var targetDirection) ||
+            !IsNaturalDirection(targetDirection))
+        {
+            reason = "Local RDW check cannot calculate an executable target direction.";
+            return false;
+        }
+
+        if (riskEvaluator == null ||
+            !riskEvaluator.TryGetDirectionClearance(currentRiskState, targetDirection, out _))
+        {
+            reason = "Local RDW check cannot query planned direction clearance.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(movementDirection) && movementDirection != targetDirection)
+        {
+            reason = $"Local RDW check rejected conflicting movement '{movementDirection}' for target direction '{targetDirection}'.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(movementDirection) && IsUnsafe(movementDirection, currentRiskState))
         {
             reason = $"Local RDW check rejected unsafe {movementDirection} movement.";
             return false;
         }
 
-        if (navigationTargets != null && !string.IsNullOrWhiteSpace(response.selected_target))
+        if (IsUnsafe(targetDirection, currentRiskState))
         {
-            var targetDirection = navigationTargets.GetTargetDirection(response.selected_target);
-            if (IsUnsafe(targetDirection, currentRiskState))
-            {
-                reason = $"Local RDW check rejected target in unsafe {targetDirection} direction.";
-                return false;
-            }
+            reason = $"Local RDW check rejected target in unsafe {targetDirection} direction.";
+            return false;
         }
 
         return true;
@@ -91,27 +131,34 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
         }
     }
 
-    private static bool IsPauseOrReset(string movement)
+    private static bool TryGetMovementDirection(string movement, out string direction)
     {
-        return movement == "pause_and_wait" || movement == "reset_required";
-    }
-
-    private static string MovementDirection(string movement)
-    {
+        direction = string.Empty;
         switch (movement)
         {
             case "move_forward_slowly":
             case "look_forward":
-                return "forward";
+                direction = "forward";
+                return true;
             case "turn_left_slowly":
             case "look_left":
-                return "left";
+                direction = "left";
+                return true;
             case "turn_right_slowly":
             case "look_right":
-                return "right";
+                direction = "right";
+                return true;
+            case "pause_and_wait":
+            case "reset_required":
+                return true;
             default:
-                return string.Empty;
+                return false;
         }
+    }
+
+    private static bool IsNaturalDirection(string direction)
+    {
+        return direction == "forward" || direction == "left" || direction == "right";
     }
 
     private static bool IsUnsafe(string direction, PhysicalRiskState riskState)

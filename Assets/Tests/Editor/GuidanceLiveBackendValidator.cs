@@ -24,6 +24,7 @@ public static class GuidanceLiveBackendValidator
     private static PhysicalRiskEvaluator riskEvaluator;
     private static XRTrackingAdapter xrTrackingAdapter;
     private static ExperimentDashboard experimentDashboard;
+    private static GuidanceCoordinator guidanceCoordinator;
     private static GuidanceTaskController taskController;
     private static NavigationTargetManager navigationTargets;
     private static ArrivalDetector arrivalDetector;
@@ -177,6 +178,7 @@ public static class GuidanceLiveBackendValidator
         riskEvaluator = UnityEngine.Object.FindObjectOfType<PhysicalRiskEvaluator>();
         xrTrackingAdapter = UnityEngine.Object.FindObjectOfType<XRTrackingAdapter>();
         experimentDashboard = UnityEngine.Object.FindObjectOfType<ExperimentDashboard>();
+        guidanceCoordinator = UnityEngine.Object.FindObjectOfType<GuidanceCoordinator>();
         taskController = UnityEngine.Object.FindObjectOfType<GuidanceTaskController>();
         navigationTargets = UnityEngine.Object.FindObjectOfType<NavigationTargetManager>();
         arrivalDetector = UnityEngine.Object.FindObjectOfType<ArrivalDetector>();
@@ -184,7 +186,8 @@ public static class GuidanceLiveBackendValidator
         experimentLogger = UnityEngine.Object.FindObjectOfType<ExperimentLogger>();
 
         if (agentClient == null || physicalSpaceManager == null || physicalSpaceCalibration == null || userPoseTracker == null ||
-            riskEvaluator == null || xrTrackingAdapter == null || experimentDashboard == null || taskController == null || navigationTargets == null ||
+            riskEvaluator == null || xrTrackingAdapter == null || experimentDashboard == null || guidanceCoordinator == null ||
+            taskController == null || navigationTargets == null ||
             arrivalDetector == null || pauseResetController == null || experimentLogger == null)
         {
             return;
@@ -308,17 +311,24 @@ public static class GuidanceLiveBackendValidator
             return;
         }
 
-        if (liveResponse.selected_target != "E3" || liveResponse.movement_instruction != "turn_left_slowly")
+        if (latestRequest == null ||
+            !string.Equals(
+                liveResponse.selected_target,
+                latestRequest.semantic_next_target,
+                StringComparison.Ordinal))
         {
-            Fail($"Unexpected live response: target={liveResponse.selected_target}, movement={liveResponse.movement_instruction}.");
+            Fail(
+                $"Live response target does not echo the Unity-selected target: " +
+                $"request={latestRequest?.semantic_next_target}, response={liveResponse.selected_target}.");
             return;
         }
 
         var narrationText = FindText("GuidanceTextPanel_Text");
         var movementText = FindText("MovementHintPanel_Text");
         var rejectionText = FindText("RejectionPanel_Text");
-        var presentationApplied = narrationText != null && narrationText.text == liveResponse.narration &&
-                                  movementText != null && movementText.text == "缓慢向左转" &&
+        var presentationApplied = guidanceCoordinator.RequestPhase == GuidanceRequestPhase.Executing &&
+                                  narrationText != null && narrationText.text == liveResponse.narration &&
+                                  movementText != null && movementText.text == MovementHint(liveResponse.movement_instruction) &&
                                   (rejectionText == null || string.IsNullOrWhiteSpace(rejectionText.text));
         if (!presentationApplied)
         {
@@ -326,7 +336,10 @@ public static class GuidanceLiveBackendValidator
             return;
         }
 
-        Record("live_backend_approved", true, "Unity received E3 / turn_left_slowly from the Anaconda-hosted backend and applied the visible guidance.");
+        Record(
+            "live_backend_approved",
+            true,
+            $"Unity executed target={liveResponse.selected_target}, movement={liveResponse.movement_instruction} and applied the visible guidance.");
 
         experimentDashboard.PauseSession();
         var pauseText = FindText("SafetyText");
@@ -390,12 +403,9 @@ public static class GuidanceLiveBackendValidator
         }
         Record("safety_hold_resume_gate", true, "Critical risk entered SafetyHold, blocked unsafe resume, and resumed only after risk recovery.");
 
-        latestRequest = null;
-        agentClient.RetryLastRequest();
-        agentClient.CancelPendingRequest();
         if (latestRequest == null)
         {
-            Fail("No active guidance request identity exists for verifier rejection validation.");
+            Fail("Reset recovery did not create a fresh guidance request identity for verifier rejection validation.");
             return;
         }
 
@@ -436,6 +446,8 @@ public static class GuidanceLiveBackendValidator
         guidanceSessionLogPath = experimentLogger.LogPath;
         experimentDashboard.EndSession("validation_rejected");
         experimentDashboard.SetParticipantId("CODEX_VALIDATION_ROUTE");
+        // 路线到达验证使用不启用候选改道的基线条件，固定检查 E1 -> E3 -> E5 原路线。
+        experimentDashboard.SetConditionIndex(0);
         xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         agentClient.SetBackendOnlineForTesting(true);
@@ -475,6 +487,8 @@ public static class GuidanceLiveBackendValidator
     private static void HandleTargetArrived(TargetReservation reservation)
     {
         arrivedTarget = reservation != null ? reservation.TargetId : string.Empty;
+        // 路线到达段只验证预留与任务推进；取消随后发出的 HTTP，避免响应校验抢占下一目标预留。
+        agentClient?.CancelPendingRequest();
     }
 
     private static void VerifyArrival(string expectedCurrent, string expectedNext, bool expectCompleted)
@@ -674,6 +688,22 @@ public static class GuidanceLiveBackendValidator
         };
     }
 
+    private static string MovementHint(string movementInstruction)
+    {
+        switch (movementInstruction)
+        {
+            case "move_forward_slowly": return "缓慢向前移动";
+            case "turn_left_slowly": return "缓慢向左转";
+            case "turn_right_slowly": return "缓慢向右转";
+            case "look_left": return "请看向左侧";
+            case "look_right": return "请看向右侧";
+            case "look_forward": return "请看向前方";
+            case "pause_and_wait":
+            case "reset_required":
+            default: return "请暂停等待";
+        }
+    }
+
     private static TMP_Text FindText(string objectName)
     {
         foreach (var text in Resources.FindObjectsOfTypeAll<TMP_Text>())
@@ -745,6 +775,7 @@ public static class GuidanceLiveBackendValidator
         riskEvaluator = null;
         xrTrackingAdapter = null;
         experimentDashboard = null;
+        guidanceCoordinator = null;
         taskController = null;
         navigationTargets = null;
         arrivalDetector = null;

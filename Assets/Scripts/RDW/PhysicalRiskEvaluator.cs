@@ -42,6 +42,21 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     /// 获取最近一次 deterministic 风险计算结果。
     /// </summary>
     public PhysicalRiskState CurrentRiskState => currentRiskState;
+    /// <summary>当前是否仍有可用于运行期安全判断的 Tracking 输入。</summary>
+    public bool IsTrackingValid => physicalSpaceCalibration != null &&
+                                   physicalSpaceCalibration.HasRawTrackingPose &&
+                                   physicalSpaceCalibration.State != PhysicalCalibrationState.TemporarilyTrackingLost;
+    /// <summary>当前 Physical Space Calibration 是否有效。</summary>
+    public bool IsCalibrationValid => physicalSpaceCalibration != null &&
+                                      physicalSpaceCalibration.IsCalibrationValid;
+    /// <summary>当前校准是否绑定到风险计算器正在使用的 Physical Space。</summary>
+    public bool PhysicalSpaceMatches => physicalSpaceManager != null &&
+                                        physicalSpaceManager.CurrentSpace != null &&
+                                        physicalSpaceCalibration != null &&
+                                        string.Equals(
+                                            physicalSpaceCalibration.CalibratedSpaceId,
+                                            physicalSpaceManager.CurrentSpaceId,
+                                            StringComparison.Ordinal);
 
     private void Awake()
     {
@@ -148,6 +163,63 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             : string.Empty;
         RiskStateChanged?.Invoke(currentRiskState);
         return currentRiskState;
+    }
+
+    /// <summary>
+    /// 检查风险快照是否仍与当前 Calibration 和 Physical Space 身份一致。
+    /// </summary>
+    public bool IsRiskIdentityCurrent(PhysicalRiskState riskState)
+    {
+        return riskState != null &&
+               !string.IsNullOrWhiteSpace(riskState.risk_snapshot_id) &&
+               IsCalibrationValid &&
+               PhysicalSpaceMatches &&
+               string.Equals(
+                   riskState.calibration_id,
+                   physicalSpaceCalibration.CalibrationId,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   riskState.physical_space,
+                   physicalSpaceManager.CurrentSpaceId,
+                   StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 从指定风险快照读取 forward、left 或 right 的 clearance，单位：米。
+    /// </summary>
+    /// <returns>方向有效且 clearance 为有限数值时返回 true。</returns>
+    public bool TryGetDirectionClearance(PhysicalRiskState riskState, string direction, out float clearanceMeters)
+    {
+        clearanceMeters = 0f;
+        if (riskState == null)
+        {
+            return false;
+        }
+
+        switch (direction)
+        {
+            case "forward":
+                clearanceMeters = riskState.clearance_forward;
+                break;
+            case "left":
+                clearanceMeters = riskState.clearance_left;
+                break;
+            case "right":
+                clearanceMeters = riskState.clearance_right;
+                break;
+            default:
+                return false;
+        }
+
+        return !float.IsNaN(clearanceMeters) && !float.IsInfinity(clearanceMeters);
+    }
+
+    /// <summary>判断指定 clearance 是否进入本风险计算器配置的 critical 阈值。</summary>
+    public bool IsCriticalClearance(float clearanceMeters)
+    {
+        return !float.IsNaN(clearanceMeters) &&
+               !float.IsInfinity(clearanceMeters) &&
+               clearanceMeters < criticalClearanceMeters;
     }
 
     private PhysicalRiskState Evaluate(PhysicalSpaceConfig space, Vector2 position, Vector2 forward)

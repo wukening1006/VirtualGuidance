@@ -27,20 +27,30 @@ public enum GuidanceRequestPhase
 }
 
 /// <summary>
-/// 描述一次 Hard Runtime Safety 干预，保留原始响应与拒绝原因供日志还原。
+/// 描述一次运行期安全干预，保留原始响应、判定与原因供日志还原。
 /// </summary>
 public sealed class RuntimeInterventionInfo
 {
-    /// <summary>被 Hard Runtime Safety 阻止的原始 Guidance。</summary>
+    /// <summary>被运行期安全策略中断的原始 Guidance。</summary>
     public GuidanceResponse Response { get; }
     /// <summary>运行时拒绝原因。</summary>
     public string Reason { get; }
+    /// <summary>本次运行期安全判定的动作类型。</summary>
+    public RuntimeGuidanceSafetyDecision Decision { get; }
+    /// <summary>本次 HardStop 是否由 Critical/Reset Required 触发并允许启动 Reset。</summary>
+    public bool StartReset { get; }
 
     /// <summary>创建一条不可变 Runtime Intervention 事件。</summary>
-    public RuntimeInterventionInfo(GuidanceResponse response, string reason)
+    public RuntimeInterventionInfo(
+        GuidanceResponse response,
+        string reason,
+        RuntimeGuidanceSafetyDecision decision = RuntimeGuidanceSafetyDecision.HardStop,
+        bool startReset = false)
     {
         Response = response;
         Reason = reason;
+        Decision = decision;
+        StartReset = startReset;
     }
 }
 
@@ -63,8 +73,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private RejectionPanel rejectionPanel;
 
     private GuidanceRequestSnapshot activeSnapshot;
+    private GuidanceResponse activeResponse;
     private IGuidanceRequestClient requestClient;
     private GuidanceRequestPhase requestPhase;
+    private readonly RuntimeGuidanceSafetyPolicy runtimeSafetyPolicy = new RuntimeGuidanceSafetyPolicy();
+    private int consecutiveUnsafeSamples;
+    private string sampledUnsafeDirection = string.Empty;
+    private string lastRuntimeRiskSnapshotId = string.Empty;
+    private bool runtimeReplanPending;
+    private GuidanceTarget pendingRuntimeSafetyTarget;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -110,6 +127,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindRequestCapture();
         BindArrival();
         BindRotationGain();
+        BindRuntimeSafety();
     }
 
     private void OnDisable()
@@ -117,6 +135,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRequestCapture();
         UnbindArrival();
         UnbindRotationGain();
+        UnbindRuntimeSafety();
     }
 
     /// <summary>
@@ -138,6 +157,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRequestCapture();
         UnbindArrival();
         UnbindRotationGain();
+        UnbindRuntimeSafety();
 
         if (client != null)
         {
@@ -158,6 +178,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindRequestCapture();
         BindArrival();
         BindRotationGain();
+        BindRuntimeSafety();
     }
 
     /// <summary>
@@ -186,7 +207,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
-        var selectedTarget = semanticTargetSelector != null
+        var selectedTarget = pendingRuntimeSafetyTarget ?? (semanticTargetSelector != null
             ? semanticTargetSelector.SelectNextGuidanceTarget(taskController.RuntimeState, riskState, conditionPolicy)
             : new GuidanceTarget(
                 taskController.RuntimeState.nextTargetId,
@@ -195,15 +216,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     taskController.RuntimeState.finalTargetId,
                     StringComparison.Ordinal)
                     ? NavigationTargetRole.FinalTarget
-                    : NavigationTargetRole.RouteSubgoal);
+                    : NavigationTargetRole.RouteSubgoal));
+        pendingRuntimeSafetyTarget = null;
 
         var decisionId = Guid.NewGuid().ToString("N");
         if (selectedTarget == null || string.IsNullOrWhiteSpace(selectedTarget.TargetId) ||
             !taskController.TryReserveGuidanceTarget(selectedTarget, decisionId))
         {
-            SetRequestPhase(GuidanceRequestPhase.Failed);
-            pauseResetController?.PauseForReset("No safe semantic navigation candidate is available.");
-            taskController.PauseForReset();
+            TriggerRuntimeIntervention(
+                null,
+                "No eligible semantic navigation candidate is available.",
+                false);
             return;
         }
 
@@ -306,6 +329,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         rotationGainController?.QueueFromMovementInstruction(response != null ? response.movement_instruction : string.Empty);
+        activeResponse = response;
+        ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Executing);
         GuidanceExecuted?.Invoke(response);
     }
@@ -418,9 +443,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         arrivalDetector?.WatchReservation(null);
         taskController?.AbandonReservation();
         activeSnapshot = null;
-        if (requestPhase != GuidanceRequestPhase.None &&
-            requestPhase != GuidanceRequestPhase.Completed &&
-            requestPhase != GuidanceRequestPhase.Cancelled)
+        activeResponse = null;
+        pendingRuntimeSafetyTarget = null;
+        ResetRuntimeSafetySampling();
+        if (requestPhase == GuidanceRequestPhase.Requested ||
+            requestPhase == GuidanceRequestPhase.Received ||
+            requestPhase == GuidanceRequestPhase.Verified ||
+            requestPhase == GuidanceRequestPhase.Executing)
         {
             SetRequestPhase(GuidanceRequestPhase.Cancelled);
         }
@@ -478,9 +507,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_completed");
         activeSnapshot = null;
+        activeResponse = null;
+        pendingRuntimeSafetyTarget = null;
+        ResetRuntimeSafetySampling();
     }
 
-    private void TriggerRuntimeIntervention(GuidanceResponse response, string reason)
+    private void TriggerRuntimeIntervention(GuidanceResponse response, string reason, bool startReset = false)
     {
         var resolvedReason = string.IsNullOrWhiteSpace(reason)
             ? "Hard Runtime Safety rejected unsafe guidance."
@@ -491,10 +523,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         arrivalDetector?.WatchReservation(null);
         taskController?.AbandonReservation();
         activeSnapshot = null;
+        activeResponse = null;
+        pendingRuntimeSafetyTarget = null;
+        ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
-        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(response, resolvedReason));
-        pauseResetController?.PauseForReset("请停止移动，等待安全引导。");
-        taskController?.PauseForReset();
+        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+            response,
+            resolvedReason,
+            RuntimeGuidanceSafetyDecision.HardStop,
+            startReset));
     }
 
     private void ExpireAndReplan(string reason)
@@ -504,9 +541,208 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         arrivalDetector?.WatchReservation(null);
         taskController?.AbandonReservation();
         activeSnapshot = null;
+        activeResponse = null;
+        pendingRuntimeSafetyTarget = null;
+        ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Expired);
         GuidanceExpired?.Invoke(reason);
         RequestNextGuidance();
+    }
+
+    private void BindRuntimeSafety()
+    {
+        if (riskEvaluator == null || !isActiveAndEnabled)
+        {
+            return;
+        }
+
+        riskEvaluator.RiskStateChanged -= HandleRuntimeRiskStateChanged;
+        riskEvaluator.RiskStateChanged += HandleRuntimeRiskStateChanged;
+    }
+
+    private void UnbindRuntimeSafety()
+    {
+        if (riskEvaluator != null)
+        {
+            riskEvaluator.RiskStateChanged -= HandleRuntimeRiskStateChanged;
+        }
+    }
+
+    private void HandleRuntimeRiskStateChanged(PhysicalRiskState riskState)
+    {
+        if (requestPhase != GuidanceRequestPhase.Executing ||
+            activeSnapshot == null ||
+            activeResponse == null ||
+            runtimeReplanPending)
+        {
+            return;
+        }
+
+        var plannedDirection = string.Empty;
+        var directionAvailable = navigationTargets != null &&
+                                 navigationTargets.TryGetTargetDirection(
+                                     activeResponse.selected_target,
+                                     out plannedDirection);
+        var plannedClearance = 0f;
+        var clearanceAvailable = directionAvailable &&
+                                 riskEvaluator != null &&
+                                 riskEvaluator.TryGetDirectionClearance(
+                                     riskState,
+                                     plannedDirection,
+                                     out plannedClearance);
+
+        UpdateUnsafeSampleCount(riskState, plannedDirection, directionAvailable);
+        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeResponse.selected_target);
+        var input = new RuntimeGuidanceSafetyInput(
+            activeSnapshot.decisionId,
+            activeResponse.selected_target,
+            activeResponse.movement_instruction,
+            riskState,
+            riskEvaluator != null && riskEvaluator.IsTrackingValid,
+            riskEvaluator != null && riskEvaluator.IsCalibrationValid,
+            riskEvaluator != null && riskEvaluator.IsRiskIdentityCurrent(riskState),
+            plannedDirection,
+            plannedClearance,
+            directionAvailable && clearanceAvailable,
+            clearanceAvailable && riskEvaluator.IsCriticalClearance(plannedClearance),
+            pauseResetController != null ? pauseResetController.State : ResetLifecycleState.Inactive,
+            consecutiveUnsafeSamples,
+            safeCandidate != null);
+        var decision = runtimeSafetyPolicy.Evaluate(input);
+        if (decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+        {
+            TriggerSoftReroute(safeCandidate);
+        }
+        else if (decision == RuntimeGuidanceSafetyDecision.HardStop)
+        {
+            var startReset = riskState != null &&
+                             (riskState.reset_required || input.PlannedDirectionCritical);
+            TriggerRuntimeIntervention(
+                activeResponse,
+                RuntimeSafetyReason(input),
+                startReset);
+        }
+    }
+
+    private void TriggerSoftReroute(GuidanceTarget safeCandidate)
+    {
+        if (runtimeReplanPending || safeCandidate == null)
+        {
+            return;
+        }
+
+        runtimeReplanPending = true;
+        var interruptedResponse = activeResponse;
+        try
+        {
+            requestClient?.CancelPendingRequest();
+            guidanceExecutor?.Clear();
+            rotationGainController?.AbortGain("soft_reroute");
+            arrivalDetector?.WatchReservation(null);
+            taskController?.AbandonReservation();
+            activeSnapshot = null;
+            activeResponse = null;
+            ResetRuntimeSafetySampling();
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+            RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+                interruptedResponse,
+                "Active planned direction remained unsafe for two consecutive risk samples.",
+                RuntimeGuidanceSafetyDecision.SoftReroute));
+            pendingRuntimeSafetyTarget = safeCandidate;
+            Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
+            RequestNextGuidance();
+        }
+        finally
+        {
+            runtimeReplanPending = false;
+        }
+    }
+
+    private GuidanceTarget FindRuntimeSafetyCandidate(PhysicalRiskState riskState, string activeTargetId)
+    {
+        if (semanticTargetSelector == null || taskController == null || riskState == null)
+        {
+            return null;
+        }
+
+        var candidate = semanticTargetSelector.SelectNextGuidanceTarget(
+            taskController.RuntimeState,
+            riskState,
+            ExperimentConditionMatrix.GetPolicy("ours_full"));
+        return candidate != null &&
+               !string.Equals(candidate.TargetId, activeTargetId, StringComparison.Ordinal)
+            ? candidate
+            : null;
+    }
+
+    private void UpdateUnsafeSampleCount(
+        PhysicalRiskState riskState,
+        string plannedDirection,
+        bool directionAvailable)
+    {
+        if (!directionAvailable || !Contains(riskState != null ? riskState.unsafe_directions : null, plannedDirection))
+        {
+            ResetRuntimeSafetySampling();
+            return;
+        }
+
+        if (riskState != null &&
+            !string.IsNullOrWhiteSpace(riskState.risk_snapshot_id) &&
+            string.Equals(lastRuntimeRiskSnapshotId, riskState.risk_snapshot_id, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        lastRuntimeRiskSnapshotId = riskState != null ? riskState.risk_snapshot_id : string.Empty;
+
+        if (!string.Equals(sampledUnsafeDirection, plannedDirection, StringComparison.Ordinal))
+        {
+            sampledUnsafeDirection = plannedDirection;
+            consecutiveUnsafeSamples = 1;
+            return;
+        }
+
+        consecutiveUnsafeSamples++;
+    }
+
+    private void ResetRuntimeSafetySampling()
+    {
+        consecutiveUnsafeSamples = 0;
+        sampledUnsafeDirection = string.Empty;
+        lastRuntimeRiskSnapshotId = string.Empty;
+    }
+
+    private static bool Contains(string[] values, string expected)
+    {
+        if (values == null || string.IsNullOrWhiteSpace(expected))
+        {
+            return false;
+        }
+
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string RuntimeSafetyReason(RuntimeGuidanceSafetyInput input)
+    {
+        if (input == null || input.LatestRisk == null) return "Runtime risk snapshot is unavailable.";
+        if (!input.TrackingValid) return "XR tracking is invalid.";
+        if (!input.CalibrationValid) return "Physical calibration is invalid.";
+        if (!input.PhysicalSpaceMatches) return "Physical space or risk identity does not match.";
+        if (input.ResetState == ResetLifecycleState.Required ||
+            input.ResetState == ResetLifecycleState.TurningToSafeDirection ||
+            input.ResetState == ResetLifecycleState.Completed) return "Physical reset is active.";
+        if (input.LatestRisk.reset_required) return "Physical risk requires reset.";
+        if (!input.PlannedDirectionAvailable) return "Planned physical direction clearance is unavailable.";
+        if (input.PlannedDirectionCritical) return "Planned physical direction clearance is critical.";
+        return "No eligible runtime safety candidate is available.";
     }
 
     private void BindRequestCapture()
@@ -535,6 +771,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         arrivalDetector?.WatchReservation(null);
         taskController?.AbandonReservation();
         activeSnapshot = null;
+        activeResponse = null;
+        pendingRuntimeSafetyTarget = null;
+        ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
     }
 
