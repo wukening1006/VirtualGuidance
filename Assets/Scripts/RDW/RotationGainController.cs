@@ -1,6 +1,5 @@
 using System;
 using UnityEngine;
-using UnityEngine.Serialization;
 
 /// <summary>
 /// 表示 Rotation Gain 生命周期中需要记录的研究事件。
@@ -93,15 +92,15 @@ public sealed class RotationGainController : MonoBehaviour
     [Header("安全依赖")]
     [Tooltip("Inspector 或 Condition Policy 是否允许 Rotation Gain。")]
     [SerializeField] private bool gainEnabled;
-    [Tooltip("接收额外虚拟 yaw 的 XR Origin、Locomotion Root 或 Virtual Root；不得绑定 Camera/HMD。")]
-    [FormerlySerializedAs("virtualUserRoot")]
-    [SerializeField] private Transform virtualRotationRoot;
     [Tooltip("提供 Physical Room 转头增量的检测器。")]
     [SerializeField] private MotionDetector motionDetector;
     [Tooltip("提供 Critical Risk 与 Reset Required 状态；触发时立即中止 Gain。")]
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
     [Tooltip("提供 Tracking 与校准有效性；非 Calibrated 状态会中止活动 Gain。")]
     [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
+
+    private UserPoseTracker userPoseTracker;
+    private Transform virtualRotationRoot;
 
     [Header("Gain 限制")]
     [Tooltip("真实水平转角转换为额外虚拟 yaw 的比例。")]
@@ -204,6 +203,14 @@ public sealed class RotationGainController : MonoBehaviour
             return;
         }
 
+        if (userPoseTracker != null &&
+            (!userPoseTracker.HasValidVirtualPoseContract ||
+             userPoseTracker.VirtualRotationRoot != virtualRotationRoot))
+        {
+            AbortGain("rotation_root_invalid");
+            return;
+        }
+
         if (physicalSpaceCalibration != null && !physicalSpaceCalibration.IsCalibrationValid)
         {
             AbortGain("tracking_invalid");
@@ -250,7 +257,13 @@ public sealed class RotationGainController : MonoBehaviour
         accumulatedPhysicalYaw += physicalYaw;
         if (requestedExtraYaw > 0f)
         {
-            virtualRotationRoot.Rotate(Vector3.up, requestedExtraYaw * expectedDirectionSign, Space.World);
+            var rotationPivot = userPoseTracker != null
+                ? userPoseTracker.UserVirtualPosition
+                : virtualRotationRoot.position;
+            virtualRotationRoot.RotateAround(
+                rotationPivot,
+                Vector3.up,
+                requestedExtraYaw * expectedDirectionSign);
             appliedExtraYaw += requestedExtraYaw;
         }
 
@@ -270,18 +283,14 @@ public sealed class RotationGainController : MonoBehaviour
         PhysicalSpaceCalibration calibration = null)
     {
         UnbindSafetySources();
+        if (poseTracker != null)
+        {
+            userPoseTracker = poseTracker;
+            virtualRotationRoot = poseTracker.VirtualRotationRoot;
+        }
         if (detector != null) motionDetector = detector;
         if (evaluator != null) riskEvaluator = evaluator;
         if (calibration != null) physicalSpaceCalibration = calibration;
-        if (poseTracker != null && poseTracker.VirtualRotationRoot != null)
-        {
-            virtualRotationRoot = poseTracker.VirtualRotationRoot;
-        }
-        else if (!IsValidRotationRoot(virtualRotationRoot))
-        {
-            var root = GameObject.Find("XR_Origin_or_UserStart");
-            virtualRotationRoot = root != null && IsValidRotationRoot(root.transform) ? root.transform : null;
-        }
         BindSafetySources();
     }
 
@@ -476,12 +485,6 @@ public sealed class RotationGainController : MonoBehaviour
     private void ResolveReferences()
     {
         if (motionDetector == null) motionDetector = FindObjectOfType<MotionDetector>();
-
-        if (!IsValidRotationRoot(virtualRotationRoot))
-        {
-            var root = GameObject.Find("XR_Origin_or_UserStart");
-            virtualRotationRoot = root != null && IsValidRotationRoot(root.transform) ? root.transform : null;
-        }
     }
 
     private void BindSafetySources()

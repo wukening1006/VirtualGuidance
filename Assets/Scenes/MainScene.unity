@@ -5597,7 +5597,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   gainEnabled: 0
-  virtualRotationRoot: {fileID: 0}
   motionDetector: {fileID: 0}
   riskEvaluator: {fileID: 0}
   physicalSpaceCalibration: {fileID: 0}
@@ -13207,7 +13206,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   virtualUserRoot: {fileID: 1462606602}
-  virtualRotationRoot: {fileID: 0}
+  virtualRotationRoot: {fileID: 400774973}
   simulatedPhysicalPosition: {x: 4, y: 4.3}
   simulatedPhysicalYawDegrees: 0
 --- !u!114 &2100100003

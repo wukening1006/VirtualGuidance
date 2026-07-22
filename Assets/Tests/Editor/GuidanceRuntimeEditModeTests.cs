@@ -1066,6 +1066,8 @@ public sealed class GuidanceRuntimeEditModeTests
         var rotationRoot = new GameObject("RotationGainVirtualRoot");
         try
         {
+            poseSource.transform.SetParent(rotationRoot.transform, false);
+            poseSource.transform.localPosition = new Vector3(1f, 1.65f, 2f);
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualPoseSource(poseSource.transform);
             Assert.That(pose.ConfigureVirtualRotationRoot(rotationRoot.transform), Is.True);
@@ -1092,12 +1094,15 @@ public sealed class GuidanceRuntimeEditModeTests
             gain.ProcessTurnSample(false, 0f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
 
+            var posePositionBeforeGain = poseSource.transform.position;
             gain.ProcessTurnSample(true, 10f);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.GainActive));
             Assert.That(gain.AccumulatedPhysicalYawDegrees, Is.EqualTo(10f).Within(0.001f));
             Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(1.5f).Within(0.001f));
             Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
-            Assert.That(poseSource.transform.eulerAngles.y, Is.Zero.Within(0.001f));
+            Assert.That(Vector3.Distance(poseSource.transform.position, posePositionBeforeGain), Is.LessThan(0.0001f));
+            Assert.That(poseSource.transform.localEulerAngles.y, Is.Zero.Within(0.001f));
+            Assert.That(poseSource.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
             Assert.That(events, Is.EqualTo(new[]
             {
                 RotationGainEventType.TurnRequested,
@@ -1193,6 +1198,7 @@ public sealed class GuidanceRuntimeEditModeTests
             CreateCalibrationRig(root, out var pose, out _, out var calibration);
             calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
             Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            pose.ConfigureVirtualPoseSource(root.transform);
             Assert.That(pose.ConfigureVirtualRotationRoot(root.transform), Is.True);
             var detector = root.AddComponent<MotionDetector>();
             detector.Configure(pose);
@@ -1223,7 +1229,12 @@ public sealed class GuidanceRuntimeEditModeTests
             cameraObject.AddComponent<Camera>();
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualPoseSource(cameraObject.transform);
+            Assert.That(pose.ConfigureVirtualRotationRoot(rotationRoot.transform), Is.False);
+
+            cameraObject.transform.SetParent(rotationRoot.transform, false);
+            cameraObject.transform.localPosition = new Vector3(1f, 1.65f, 2f);
             Assert.That(pose.ConfigureVirtualRotationRoot(rotationRoot.transform), Is.True);
+            Assert.That(pose.HasValidVirtualPoseContract, Is.True);
 
             Assert.That(pose.ConfigureVirtualRotationRoot(cameraObject.transform), Is.False);
             Assert.That(pose.VirtualPoseSource, Is.EqualTo(cameraObject.transform));
@@ -1238,10 +1249,13 @@ public sealed class GuidanceRuntimeEditModeTests
 
             gain.SetGainEnabled(true);
             gain.BeginPendingTurn(1);
+            var cameraPositionBeforeGain = cameraObject.transform.position;
             gain.ProcessTurnSample(true, 10f);
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.GainActive));
-            Assert.That(cameraObject.transform.rotation, Is.EqualTo(Quaternion.identity));
+            Assert.That(Vector3.Distance(cameraObject.transform.position, cameraPositionBeforeGain), Is.LessThan(0.0001f));
+            Assert.That(cameraObject.transform.localRotation, Is.EqualTo(Quaternion.identity));
+            Assert.That(cameraObject.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
             Assert.That(rotationRoot.transform.eulerAngles.y, Is.EqualTo(1.5f).Within(0.001f));
         }
         finally
@@ -1249,6 +1263,34 @@ public sealed class GuidanceRuntimeEditModeTests
             Object.DestroyImmediate(root);
             Object.DestroyImmediate(cameraObject);
             Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
+    public void SystemBootstrapper_RejectsRotationRootOutsideVirtualPoseHierarchy()
+    {
+        var root = new GameObject("BootstrapVirtualPoseContractTest");
+        var poseSource = new GameObject("BootstrapTrackedHead");
+        var unrelatedRotationRoot = new GameObject("BootstrapUnrelatedRotationRoot");
+        root.SetActive(false);
+        try
+        {
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualPoseSource(poseSource.transform);
+            SetPrivateField(pose, "virtualRotationRoot", unrelatedRotationRoot.transform);
+            var bootstrapper = root.AddComponent<SystemBootstrapper>();
+            SetPrivateField(bootstrapper, "userPoseTracker", pose);
+
+            var readiness = bootstrapper.ValidateReferences();
+
+            Assert.That(readiness.IsReady, Is.False);
+            Assert.That(readiness.MissingReferences, Does.Contain("userPoseTracker.virtualPoseHierarchy"));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(poseSource);
+            Object.DestroyImmediate(unrelatedRotationRoot);
         }
     }
 

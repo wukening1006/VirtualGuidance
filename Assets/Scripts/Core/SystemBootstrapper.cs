@@ -142,6 +142,14 @@ public sealed class SystemBootstrapper : MonoBehaviour
         AddIfMissing(missing, movementHintText, nameof(movementHintText));
         AddIfMissing(missing, gazeCueText, nameof(gazeCueText));
         AddIfMissing(missing, researcherStatusText, nameof(researcherStatusText));
+        if (userPoseTracker != null)
+        {
+            AddIfMissing(missing, userPoseTracker.VirtualPoseSource, "userPoseTracker.virtualUserRoot");
+            if (!userPoseTracker.HasValidVirtualPoseContract)
+            {
+                missing.Add("userPoseTracker.virtualPoseHierarchy");
+            }
+        }
         return new SceneReadinessReport(missing);
     }
 

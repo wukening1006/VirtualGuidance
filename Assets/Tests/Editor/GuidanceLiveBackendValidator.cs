@@ -224,9 +224,17 @@ public static class GuidanceLiveBackendValidator
         {
             hideFlags = HideFlags.HideAndDontSave
         };
+        var rotationRoot = userPoseTracker.VirtualRotationRoot;
+        if (rotationRoot == null)
+        {
+            Fail("Virtual Rotation Root is unavailable.");
+            return;
+        }
+
+        validationUser.transform.SetParent(rotationRoot, false);
         validationUser.transform.SetPositionAndRotation(TargetPosition(e1), Quaternion.identity);
         xrTrackingAdapter.SetInputMode(TrackingInputMode.EditorSimulation);
-        userPoseTracker.ConfigureVirtualUserRoot(validationUser.transform);
+        userPoseTracker.ConfigureVirtualPoseSource(validationUser.transform);
 
         if (!physicalSpaceManager.SetPhysicalSpace("narrow_room"))
         {
