@@ -490,7 +490,6 @@ MonoBehaviour:
     finalTargetId: E5
     routeTargetIds:
     - E1
-    - E3
     - E5
     maxConsecutiveDetours: 2
 --- !u!1 &72397490

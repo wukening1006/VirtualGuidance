@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+TASK_DEFINITION_VERSION = "t2-main-target-v2"
+GUIDANCE_SCHEMA_VERSION = "guidance-schema-v2"
+CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
+RISK_POLICY_VERSION = "unity-risk-policy-v1"
 
 
 class Condition(str, Enum):
@@ -119,7 +125,11 @@ class MovementInstruction(str, Enum):
 class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
-    # 字段名对应 Unity/backend 接口契约；除非同步更新 Unity 反序列化和分析脚本，否则不要改名。
+    # 字段名对应 Unity/backend 接口契约；旧版本请求必须显式失败，不能与新客户端混用。
+    task_definition_version: Literal["t2-main-target-v2"]
+    guidance_schema_version: Literal["guidance-schema-v2"]
+    candidate_policy_version: Literal["t2-candidate-policy-v1"]
+    risk_policy_version: Literal["unity-risk-policy-v1"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -138,6 +148,13 @@ class GuidanceRequest(BaseModel):
     semantic_next_target: str = Field(min_length=1)
     user_virtual_position: list[float] | None = None
     user_virtual_forward: list[float] | None = None
+
+    @field_validator("task_id")
+    @classmethod
+    def validate_active_task(cls, value: TaskId) -> TaskId:
+        if value != TaskId.T2_MAIN_TARGET:
+            raise ValueError("Formal sessions only support T2_main_target.")
+        return value
 
     @field_validator("user_physical_position", "user_physical_forward")
     @classmethod
@@ -165,6 +182,10 @@ class VerifierResult(BaseModel):
 class GuidanceResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
+    task_definition_version: Literal["t2-main-target-v2"]
+    guidance_schema_version: Literal["guidance-schema-v2"]
+    candidate_policy_version: Literal["t2-candidate-policy-v1"]
+    risk_policy_version: Literal["unity-risk-policy-v1"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -283,6 +304,10 @@ def response_from_draft(
     """在不改动 Unity guidance 字段名的前提下附加 verifier 结果。"""
 
     return GuidanceResponse(
+        task_definition_version=request.task_definition_version,
+        guidance_schema_version=request.guidance_schema_version,
+        candidate_policy_version=request.candidate_policy_version,
+        risk_policy_version=request.risk_policy_version,
         session_id=request.session_id,
         calibration_id=request.calibration_id,
         request_id=request.request_id,

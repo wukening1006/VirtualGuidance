@@ -80,11 +80,16 @@ public static class ExperimentConditionMatrix
         "ours_full"
     };
 
-    /// <summary>实验覆盖的任务 ID 集合。</summary>
+    /// <summary>当前正式实验允许启动的任务 ID 集合。</summary>
     public static readonly string[] TaskIds =
     {
+        "T2_main_target"
+    };
+
+    /// <summary>保留兼容身份但不允许进入正式 Session 的冻结任务 ID。</summary>
+    public static readonly string[] FrozenTaskIds =
+    {
         "T1_overview",
-        "T2_main_target",
         "T3_compare",
         "T4_next_step"
     };
@@ -176,48 +181,21 @@ public static class ExperimentConditionMatrix
 
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
     {
-        switch (taskId)
-        {
-            case "T1_overview":
-                spec.startExhibitId = "E1";
-                spec.semanticNextTargetId = "E2";
-                spec.finalTargetId = "E2";
-                spec.routeTargetIds = new[] { "E1", "E2" };
-                break;
-            case "T3_compare":
-                spec.startExhibitId = "E1";
-                spec.semanticNextTargetId = "E7";
-                spec.finalTargetId = "E7";
-                spec.routeTargetIds = new[] { "E1", "E4", "E7" };
-                break;
-            case "T4_next_step":
-                spec.startExhibitId = "E1";
-                spec.semanticNextTargetId = "E2";
-                spec.finalTargetId = "E8";
-                spec.routeTargetIds = new[] { "E1", "E2", "E5", "E8" };
-                break;
-            default:
-                spec.startExhibitId = "E1";
-                spec.semanticNextTargetId = "E5";
-                spec.finalTargetId = "E5";
-                spec.routeTargetIds = new[] { "E1", "E3", "E5" };
-                break;
-        }
+        spec.startExhibitId = "E1";
+        spec.semanticNextTargetId = "E5";
+        spec.finalTargetId = "E5";
+        spec.routeTargetIds = new[] { "E1", "E5" };
     }
 
     private static string UserTaskFor(string taskId)
     {
-        switch (taskId)
-        {
-            case "T1_overview":
-                return "Get an overview of the gallery.";
-            case "T3_compare":
-                return "Compare related exhibits before choosing the next target.";
-            case "T4_next_step":
-                return "Continue to the next meaningful exhibit in the sequence.";
-            default:
-                return "Guide the participant to the key target exhibit.";
-        }
+        return "请带我前往展厅中最重要的展品。";
+    }
+
+    /// <summary>检查任务是否属于当前正式实验允许启动的 T2 范围。</summary>
+    public static bool IsFormalTaskSupported(string taskId)
+    {
+        return string.Equals(taskId, "T2_main_target", StringComparison.Ordinal);
     }
 
     private static Vector2 PoseFor(string physicalSpaceId)

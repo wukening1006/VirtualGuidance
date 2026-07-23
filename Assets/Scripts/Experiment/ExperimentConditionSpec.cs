@@ -25,7 +25,7 @@ public sealed class ExperimentConditionSpec
     /// <summary>提供给后端的自然语言任务描述。</summary>
     public string userTask;
     /// <summary>包含起点在内的有序路线展品 ID。</summary>
-    public string[] routeTargetIds = { "E1", "E3", "E5" };
+    public string[] routeTargetIds = { "E1", "E5" };
     /// <summary>模拟用户在 physical XZ 平面的位置，单位：米。</summary>
     public Vector2 simulatedPhysicalPosition = new Vector2(1.8f, 4.3f);
     /// <summary>模拟用户以 physical +Z 为 0 度的水平朝向，单位：度。</summary>

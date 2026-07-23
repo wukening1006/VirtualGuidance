@@ -2,11 +2,38 @@ using System;
 using UnityEngine;
 
 /// <summary>
+/// 冻结 T2 正式实验跨端使用的任务、Guidance、候选与风险策略版本。
+/// </summary>
+public static class GuidanceProtocolVersions
+{
+    /// <summary>T2 固定任务定义版本。</summary>
+    public const string TaskDefinition = "t2-main-target-v2";
+    /// <summary>Unity 与 Backend 精确 JSON 契约版本。</summary>
+    public const string GuidanceSchema = "guidance-schema-v2";
+    /// <summary>T2 Candidate Set 生成策略版本。</summary>
+    public const string CandidatePolicy = "t2-candidate-policy-v1";
+    /// <summary>Unity 权威运行时风险策略版本。</summary>
+    public const string RiskPolicy = "unity-risk-policy-v1";
+}
+
+/// <summary>
 /// Unity 发送给后端 /api/guidance 的请求数据，字段名必须与后端 schema 保持一致。
 /// </summary>
 [Serializable]
 public sealed class GuidanceRequest
 {
+    /// <summary>当前 T2 任务定义版本。</summary>
+    public string task_definition_version = GuidanceProtocolVersions.TaskDefinition;
+
+    /// <summary>当前 Guidance JSON Schema 版本。</summary>
+    public string guidance_schema_version = GuidanceProtocolVersions.GuidanceSchema;
+
+    /// <summary>当前 Candidate Set 生成策略版本。</summary>
+    public string candidate_policy_version = GuidanceProtocolVersions.CandidatePolicy;
+
+    /// <summary>当前 Unity 风险策略版本。</summary>
+    public string risk_policy_version = GuidanceProtocolVersions.RiskPolicy;
+
     /// <summary>本次实验会话 ID。</summary>
     public string session_id;
 
@@ -107,6 +134,18 @@ public sealed class VerifierResult
 [Serializable]
 public sealed class GuidanceResponse
 {
+    /// <summary>对应请求的 T2 任务定义版本。</summary>
+    public string task_definition_version;
+
+    /// <summary>对应请求的 Guidance JSON Schema 版本。</summary>
+    public string guidance_schema_version;
+
+    /// <summary>对应请求的 Candidate Set 生成策略版本。</summary>
+    public string candidate_policy_version;
+
+    /// <summary>对应请求的 Unity 风险策略版本。</summary>
+    public string risk_policy_version;
+
     /// <summary>对应 GuidanceRequest 的会话 ID。</summary>
     public string session_id;
 

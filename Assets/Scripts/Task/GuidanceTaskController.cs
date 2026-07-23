@@ -27,6 +27,11 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// </summary>
     public void BeginDefaultTask()
     {
+        if (!ExperimentConditionMatrix.IsFormalTaskSupported(defaultTask.taskId))
+        {
+            throw new InvalidOperationException($"正式实验仅允许启动 T2_main_target，当前任务为 {defaultTask.taskId}。");
+        }
+
         routeIndex = 0;
         runtimeState.Begin(
             defaultTask.taskId,
@@ -45,6 +50,11 @@ public sealed class GuidanceTaskController : MonoBehaviour
         if (taskDefinition == null)
         {
             return;
+        }
+
+        if (!ExperimentConditionMatrix.IsFormalTaskSupported(taskDefinition.taskId))
+        {
+            throw new ArgumentException("正式实验仅允许配置 T2_main_target。", nameof(taskDefinition));
         }
 
         defaultTask = taskDefinition;

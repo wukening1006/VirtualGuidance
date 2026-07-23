@@ -14,7 +14,7 @@ public sealed class GuidanceRuntimeState
     /// <summary>用户当前已到达的展品 ID。</summary>
     public string currentExhibitId = "E1";
     /// <summary>路线中的下一目标 ID；为空表示路线已完成。</summary>
-    public string nextTargetId = "E3";
+    public string nextTargetId = "E5";
     /// <summary>本次任务的最终目标展品 ID。</summary>
     public string finalTargetId = "E5";
     /// <summary>状态转换版本，用于检测请求与响应之间的竞态。</summary>

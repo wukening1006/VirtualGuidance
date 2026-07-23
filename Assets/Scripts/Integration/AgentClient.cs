@@ -30,6 +30,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 {
     private static readonly HashSet<string> ResponseFieldNames = new HashSet<string>(StringComparer.Ordinal)
     {
+        "task_definition_version",
+        "guidance_schema_version",
+        "candidate_policy_version",
+        "risk_policy_version",
         "session_id",
         "calibration_id",
         "request_id",
@@ -347,6 +351,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
         return new GuidanceRequest
         {
+            task_definition_version = GuidanceProtocolVersions.TaskDefinition,
+            guidance_schema_version = GuidanceProtocolVersions.GuidanceSchema,
+            candidate_policy_version = GuidanceProtocolVersions.CandidatePolicy,
+            risk_policy_version = GuidanceProtocolVersions.RiskPolicy,
             session_id = EmptyFallback(
                 context.session_id,
                 experimentLogger != null && experimentLogger.Session != null
@@ -433,7 +441,11 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(response.session_id) ||
+        if (string.IsNullOrWhiteSpace(response.task_definition_version) ||
+            string.IsNullOrWhiteSpace(response.guidance_schema_version) ||
+            string.IsNullOrWhiteSpace(response.candidate_policy_version) ||
+            string.IsNullOrWhiteSpace(response.risk_policy_version) ||
+            string.IsNullOrWhiteSpace(response.session_id) ||
             string.IsNullOrWhiteSpace(response.calibration_id) ||
             string.IsNullOrWhiteSpace(response.request_id) ||
             string.IsNullOrWhiteSpace(response.decision_id) ||
@@ -455,7 +467,11 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             return false;
         }
 
-        if (!string.Equals(response.session_id, request.session_id, StringComparison.Ordinal) ||
+        if (!string.Equals(response.task_definition_version, request.task_definition_version, StringComparison.Ordinal) ||
+            !string.Equals(response.guidance_schema_version, request.guidance_schema_version, StringComparison.Ordinal) ||
+            !string.Equals(response.candidate_policy_version, request.candidate_policy_version, StringComparison.Ordinal) ||
+            !string.Equals(response.risk_policy_version, request.risk_policy_version, StringComparison.Ordinal) ||
+            !string.Equals(response.session_id, request.session_id, StringComparison.Ordinal) ||
             !string.Equals(response.calibration_id, request.calibration_id, StringComparison.Ordinal) ||
             !string.Equals(response.request_id, request.request_id, StringComparison.Ordinal) ||
             !string.Equals(response.decision_id, request.decision_id, StringComparison.Ordinal) ||

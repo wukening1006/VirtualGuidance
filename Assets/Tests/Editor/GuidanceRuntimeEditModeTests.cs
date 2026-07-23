@@ -2226,6 +2226,10 @@ public sealed class GuidanceRuntimeEditModeTests
         };
         var response = new GuidanceResponse
         {
+            task_definition_version = request.task_definition_version,
+            guidance_schema_version = request.guidance_schema_version,
+            candidate_policy_version = request.candidate_policy_version,
+            risk_policy_version = request.risk_policy_version,
             session_id = request.session_id,
             calibration_id = request.calibration_id,
             request_id = request.request_id,
@@ -2671,9 +2675,10 @@ public sealed class GuidanceRuntimeEditModeTests
     [Test]
     public void ExperimentConditionMatrix_CoversExpectedExperimentGrid()
     {
-        Assert.That(ExperimentConditionMatrix.TotalCombinations, Is.EqualTo(96));
+        Assert.That(ExperimentConditionMatrix.TotalCombinations, Is.EqualTo(24));
         Assert.That(ExperimentConditionMatrix.Conditions, Does.Contain("ours_full"));
-        Assert.That(ExperimentConditionMatrix.TaskIds, Does.Contain("T4_next_step"));
+        Assert.That(ExperimentConditionMatrix.TaskIds, Is.EqualTo(new[] { "T2_main_target" }));
+        Assert.That(ExperimentConditionMatrix.FrozenTaskIds, Does.Contain("T4_next_step"));
         Assert.That(ExperimentConditionMatrix.PhysicalSpaces, Does.Contain("l_shaped_room"));
 
         var spec = ExperimentConditionMatrix.Build(5, 1, 3, "P042");
@@ -2682,7 +2687,7 @@ public sealed class GuidanceRuntimeEditModeTests
         Assert.That(spec.condition, Is.EqualTo("ours_full"));
         Assert.That(spec.taskId, Is.EqualTo("T2_main_target"));
         Assert.That(spec.physicalSpaceId, Is.EqualTo("l_shaped_room"));
-        Assert.That(spec.routeTargetIds, Is.EqualTo(new[] { "E1", "E3", "E5" }));
+        Assert.That(spec.routeTargetIds, Is.EqualTo(new[] { "E1", "E5" }));
 
         var task = spec.ToTaskDefinition();
         Assert.That(task.routeTargetIds, Is.EqualTo(spec.routeTargetIds));
@@ -3616,6 +3621,10 @@ public sealed class GuidanceRuntimeEditModeTests
     public void GuidanceDtos_KeepBackendJsonContractFieldNames()
     {
         AssertPublicFieldNames<GuidanceRequest>(
+            "task_definition_version",
+            "guidance_schema_version",
+            "candidate_policy_version",
+            "risk_policy_version",
             "session_id",
             "calibration_id",
             "request_id",
@@ -3636,6 +3645,10 @@ public sealed class GuidanceRuntimeEditModeTests
             "user_virtual_forward");
 
         AssertPublicFieldNames<GuidanceResponse>(
+            "task_definition_version",
+            "guidance_schema_version",
+            "candidate_policy_version",
+            "risk_policy_version",
             "session_id",
             "calibration_id",
             "request_id",

@@ -18,6 +18,10 @@ def make_client(tmp_path: Path) -> TestClient:
 
 def base_payload(condition: str) -> dict:
     return {
+        "task_definition_version": "t2-main-target-v2",
+        "guidance_schema_version": "guidance-schema-v2",
+        "candidate_policy_version": "t2-candidate-policy-v1",
+        "risk_policy_version": "unity-risk-policy-v1",
         "session_id": "session-test-001",
         "calibration_id": "calibration-test-001",
         "request_id": "request-test-001",
@@ -87,6 +91,10 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
+        "task_definition_version",
+        "guidance_schema_version",
+        "candidate_policy_version",
+        "risk_policy_version",
         "session_id",
         "calibration_id",
         "request_id",
@@ -221,10 +229,35 @@ def test_request_schema_requires_unity_target_and_rejects_unknown_condition(tmp_
     assert any(item["loc"][-1] == "condition" for item in unknown_response.json()["detail"])
 
 
+@pytest.mark.parametrize("task_id", ["T1_overview", "T3_compare", "T4_next_step"])
+def test_formal_api_rejects_frozen_tasks(task_id: str, tmp_path: Path) -> None:
+    response = make_client(tmp_path).post(
+        "/api/guidance",
+        json={**base_payload("ours_full"), "task_id": task_id},
+    )
+
+    assert response.status_code == 422
+    assert any(item["loc"][-1] == "task_id" for item in response.json()["detail"])
+
+
+def test_api_rejects_legacy_guidance_schema_version(tmp_path: Path) -> None:
+    response = make_client(tmp_path).post(
+        "/api/guidance",
+        json={**base_payload("ours_full"), "guidance_schema_version": "guidance-schema-v1"},
+    )
+
+    assert response.status_code == 422
+    assert any(item["loc"][-1] == "guidance_schema_version" for item in response.json()["detail"])
+
+
 def test_pydantic_contract_matches_unity_dto_fields() -> None:
     request_schema = GuidanceRequest.model_json_schema()
     response_schema = GuidanceResponse.model_json_schema()
     assert set(request_schema["properties"]) == {
+        "task_definition_version",
+        "guidance_schema_version",
+        "candidate_policy_version",
+        "risk_policy_version",
         "session_id",
         "calibration_id",
         "request_id",
