@@ -381,11 +381,6 @@ public sealed class GuidanceResponse
     public string gaze_target_id;
 
     /// <summary>
-    /// 导览员 avatar 应执行的动作标签。
-    /// </summary>
-    public string avatar_action;
-
-    /// <summary>
     /// 给用户的身体移动指令，例如 pause、turn_left 或 continue。
     /// </summary>
     public string movement_instruction;

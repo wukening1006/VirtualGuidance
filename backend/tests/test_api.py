@@ -110,7 +110,6 @@ def test_b1_narrow_room_returns_forward_and_logs_risk(tmp_path: Path) -> None:
     body = response.json()
     assert body["selected_target"] == "E5"
     assert body["movement_instruction"] == "move_forward_slowly"
-    assert body["avatar_action"] == "point_forward"
     assert body["verifier"]["approved"] is True
     assert_chinese_narration(body)
 
@@ -146,7 +145,6 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "narration",
         "gaze_cue",
         "gaze_target_id",
-        "avatar_action",
         "movement_instruction",
         "physical_intent",
         "verifier",
@@ -176,6 +174,9 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert record["runtime_validation_result"] == "pending_unity"
     assert record["runtime_intervention"] is None
     assert record["executed_guidance"] is None
+    assert "avatar_action" not in body
+    assert "avatar_action" not in record
+    assert "avatar_action" not in record["raw_guidance"]
 
 
 def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> None:
@@ -396,6 +397,36 @@ def test_pydantic_contract_matches_unity_dto_fields() -> None:
     assert request_schema["additionalProperties"] is False
     assert set(response_schema["required"]) == set(response_schema["properties"])
     assert response_schema["additionalProperties"] is False
+
+
+def test_guidance_response_schema_rejects_legacy_avatar_action() -> None:
+    payload = {
+        "task_definition_version": "t2-main-target-v2",
+        "guidance_schema_version": "guidance-schema-v2",
+        "candidate_policy_version": "t2-candidate-policy-v1",
+        "risk_policy_version": "unity-risk-policy-v1",
+        "session_id": "session-test-001",
+        "calibration_id": "calibration-test-001",
+        "request_id": "request-test-001",
+        "decision_id": "decision-test-001",
+        "candidate_set_id": "candidates-test-001",
+        "state_version": 3,
+        "risk_snapshot_id": "risk-test-001",
+        "risk_revision": 7,
+        "target_role": "final_target",
+        "selected_target": "E5",
+        "route_decision": "direct_to_target",
+        "narration": "请继续向前，前往重点展品。",
+        "gaze_cue": "look_forward",
+        "gaze_target_id": "E5_GazeTarget",
+        "movement_instruction": "move_forward_slowly",
+        "physical_intent": "semantic_only_no_physical_grounding",
+        "verifier": {"approved": True, "reason": "approved"},
+        "avatar_action": "point_forward",
+    }
+
+    with pytest.raises(ValueError, match="avatar_action"):
+        GuidanceResponse.model_validate(payload)
 
 
 def test_pipeline_rejects_internal_target_mismatch(tmp_path: Path) -> None:

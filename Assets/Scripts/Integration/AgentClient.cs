@@ -48,7 +48,6 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         "narration",
         "gaze_cue",
         "gaze_target_id",
-        "avatar_action",
         "movement_instruction",
         "physical_intent",
         "verifier"
@@ -448,7 +447,6 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             string.IsNullOrWhiteSpace(response.narration) ||
             string.IsNullOrWhiteSpace(response.gaze_cue) ||
             string.IsNullOrWhiteSpace(response.gaze_target_id) ||
-            string.IsNullOrWhiteSpace(response.avatar_action) ||
             string.IsNullOrWhiteSpace(response.movement_instruction) ||
             string.IsNullOrWhiteSpace(response.physical_intent) ||
             response.verifier == null ||
@@ -489,8 +487,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         }
 
         if (!IsKnownTargetRole(response.target_role) ||
-            !IsKnownMovementInstruction(response.movement_instruction) ||
-            !IsKnownAvatarAction(response.avatar_action))
+            !IsKnownMovementInstruction(response.movement_instruction))
         {
             failureReason = "response contains an unknown protocol enum value";
             return false;
@@ -549,15 +546,6 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
                value == "look_forward" ||
                value == "pause_and_wait" ||
                value == "reset_required";
-    }
-
-    private static bool IsKnownAvatarAction(string value)
-    {
-        return value == "point_left" ||
-               value == "point_right" ||
-               value == "point_forward" ||
-               value == "look_at_target" ||
-               value == "wait";
     }
 
     private IEnumerator SendGuidanceRequest(GuidanceRequest request, int generation)

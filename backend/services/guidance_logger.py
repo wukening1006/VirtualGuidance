@@ -77,7 +77,6 @@ class GuidanceLogger:
             intervention_type=draft.intervention_type,
             narration=draft.narration,
             movement_instruction=draft.movement_instruction.value,
-            avatar_action=draft.avatar_action.value,
             verifier_approved=verifier.approved,
             verifier_rejection_reason="" if verifier.approved else verifier.reason,
             explicit_reset_triggered=draft.explicit_reset_triggered,

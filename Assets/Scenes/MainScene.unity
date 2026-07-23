@@ -10364,7 +10364,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1668959135
 Transform:
   m_ObjectHideFlags: 0
@@ -10616,9 +10616,6 @@ MonoBehaviour:
   guidanceDebugPanel: {fileID: 1780042334}
   participantUiController: {fileID: 1094502200}
   boundaryVisualizer: {fileID: 2100100003}
-  guideAvatarController: {fileID: 1780042337}
-  avatarRoot: {fileID: 1668959135}
-  pointingArm: {fileID: 1834799934}
   narrationText: {fileID: 1971076563}
   movementHintText: {fileID: 591438180}
   gazeCueText: {fileID: 795234305}
@@ -10847,7 +10844,6 @@ GameObject:
   - component: {fileID: 1780042340}
   - component: {fileID: 1780042339}
   - component: {fileID: 1780042338}
-  - component: {fileID: 1780042337}
   - component: {fileID: 1780042336}
   - component: {fileID: 1780042335}
   - component: {fileID: 1780042334}
@@ -10914,21 +10910,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   highlightColor: {r: 1, g: 0.86, b: 0.25, a: 1}
   collectOnAwake: 1
---- !u!114 &1780042337
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1780042332}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: a7c79225e21649c68019e8fc5d0258b0, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  avatarRoot: {fileID: 0}
-  pointingArm: {fileID: 0}
-  pointingPitchDegrees: -25
 --- !u!114 &1780042338
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -10985,7 +10966,6 @@ MonoBehaviour:
   narrationPlayer: {fileID: 0}
   gazeCueController: {fileID: 0}
   movementHintController: {fileID: 0}
-  guideAvatarController: {fileID: 0}
   exhibitHighlightManager: {fileID: 0}
   rejectionPanel: {fileID: 0}
   guidanceDebugPanel: {fileID: 0}

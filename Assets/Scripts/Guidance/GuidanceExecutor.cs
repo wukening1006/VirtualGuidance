@@ -12,8 +12,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
     [SerializeField] private GazeCueController gazeCueController;
     [Tooltip("显示 movement_instruction 身体动作提示的控制器；未配置时自动查找。")]
     [SerializeField] private MovementHintController movementHintController;
-    [Tooltip("执行 avatar_action 导览员表现的控制器；未配置时自动查找。")]
-    [SerializeField] private GuideAvatarController guideAvatarController;
     [Tooltip("根据 selected_target 高亮展品的控制器；未配置时自动查找。")]
     [SerializeField] private ExhibitHighlightManager exhibitHighlightManager;
     [Tooltip("显示 verifier 拒绝原因或请求错误的面板；未配置时自动查找。")]
@@ -33,7 +31,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
         NarrationPlayer narration,
         GazeCueController gazeCue,
         MovementHintController movementHint,
-        GuideAvatarController avatar,
         ExhibitHighlightManager highlight,
         RejectionPanel rejection,
         GuidanceDebugPanel debugPanel)
@@ -41,7 +38,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
         if (narration != null) narrationPlayer = narration;
         if (gazeCue != null) gazeCueController = gazeCue;
         if (movementHint != null) movementHintController = movementHint;
-        if (avatar != null) guideAvatarController = avatar;
         if (highlight != null) exhibitHighlightManager = highlight;
         if (rejection != null) rejectionPanel = rejection;
         if (debugPanel != null) guidanceDebugPanel = debugPanel;
@@ -75,7 +71,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
 
         rejectionPanel?.Hide();
         narrationPlayer?.Play(response.narration);
-        guideAvatarController?.Apply(response.avatar_action, response.selected_target, response.gaze_target_id);
         movementHintController?.Show(response.movement_instruction);
         exhibitHighlightManager?.Highlight(response.selected_target);
         gazeCueController?.Show(response.gaze_cue, response.gaze_target_id);
@@ -89,7 +84,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
         narrationPlayer?.Clear();
         gazeCueController?.Clear();
         movementHintController?.Clear();
-        guideAvatarController?.Wait();
         exhibitHighlightManager?.Clear();
     }
 
@@ -114,11 +108,6 @@ public sealed class GuidanceExecutor : MonoBehaviour
         if (movementHintController == null)
         {
             movementHintController = FindObjectOfType<MovementHintController>();
-        }
-
-        if (guideAvatarController == null)
-        {
-            guideAvatarController = FindObjectOfType<GuideAvatarController>();
         }
 
         if (exhibitHighlightManager == null)

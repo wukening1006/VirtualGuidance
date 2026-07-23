@@ -12,7 +12,6 @@ from backend.schemas import (
     GuidanceRequest,
     GuideDraft,
     MovementInstruction,
-    AvatarAction,
     condition_policy_for,
 )
 
@@ -127,7 +126,6 @@ def test_verifier_rejects_unsafe_forward_movement() -> None:
         narration="Go forward.",
         gaze_cue="look_forward",
         gaze_target_id="E5_GazeTarget",
-        avatar_action=AvatarAction.POINT_FORWARD,
         movement_instruction=MovementInstruction.MOVE_FORWARD_SLOWLY,
         physical_intent="test",
         intervention_type="test",
@@ -152,7 +150,6 @@ def test_verifier_rejects_unsafe_selected_target() -> None:
         narration="Look right.",
         gaze_cue="look_left",
         gaze_target_id="E4_GazeTarget",
-        avatar_action=AvatarAction.POINT_LEFT,
         movement_instruction=MovementInstruction.TURN_LEFT_SLOWLY,
         physical_intent="test",
         intervention_type="test",

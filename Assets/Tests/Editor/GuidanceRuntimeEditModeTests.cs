@@ -1301,7 +1301,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var rejection = root.AddComponent<RejectionPanel>();
             rejection.Configure(rejectionText, rejectionRoot);
             var executor = root.AddComponent<GuidanceExecutor>();
-            executor.Configure(narration, gaze, movement, null, null, rejection, null);
+            executor.Configure(narration, gaze, movement, null, rejection, null);
             var gain = root.AddComponent<RotationGainController>();
             Assert.That(gain.ConfigureRotationRoot(root.transform), Is.True);
             gain.SetGainEnabled(true);
@@ -2358,7 +2358,6 @@ public sealed class GuidanceRuntimeEditModeTests
             narration = "请看向左侧目标。",
             gaze_cue = "look_left",
             gaze_target_id = "E3_GazeTarget",
-            avatar_action = "point_left",
             movement_instruction = "turn_left_slowly",
             physical_intent = "continue_semantic_route",
             verifier = new VerifierResult { approved = true, reason = "safe" }
@@ -2377,7 +2376,18 @@ public sealed class GuidanceRuntimeEditModeTests
                 out var validReason),
             Is.True,
             validReason);
-        Assert.That(parsed.selected_target, Is.EqualTo("E3"));
+            Assert.That(parsed.selected_target, Is.EqualTo("E3"));
+
+        var legacyAvatarResponse = JObject.Parse(JsonUtility.ToJson(response));
+        legacyAvatarResponse["avatar_action"] = "point_left";
+        Assert.That(
+            AgentClient.TryParseGuidanceResponse(
+                legacyAvatarResponse.ToString(),
+                request,
+                out _,
+                out var legacyAvatarReason),
+            Is.False);
+        Assert.That(legacyAvatarReason, Does.Contain("unexpected response field: avatar_action"));
 
         var missingStateVersion = JObject.Parse(JsonUtility.ToJson(response));
         missingStateVersion.Remove("state_version");
@@ -3007,7 +3017,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var rejection = root.AddComponent<RejectionPanel>();
             rejection.Configure(rejectionText, rejectionRoot);
             var executor = root.AddComponent<GuidanceExecutor>();
-            executor.Configure(narration, null, null, null, null, rejection, null);
+            executor.Configure(narration, null, null, null, rejection, null);
             var task = root.AddComponent<GuidanceTaskController>();
             task.ConfigureTask(new GuidanceTaskDefinition
             {
@@ -3770,7 +3780,6 @@ public sealed class GuidanceRuntimeEditModeTests
             "narration",
             "gaze_cue",
             "gaze_target_id",
-            "avatar_action",
             "movement_instruction",
             "physical_intent",
             "verifier");

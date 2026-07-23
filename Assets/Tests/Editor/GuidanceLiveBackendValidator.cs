@@ -320,14 +320,11 @@ public static class GuidanceLiveBackendValidator
         }
 
         if (latestRequest == null ||
-            !string.Equals(
-                liveResponse.selected_target,
-                latestRequest.semantic_next_target,
-                StringComparison.Ordinal))
+            Array.IndexOf(latestRequest.model_candidate_ids ?? Array.Empty<string>(), liveResponse.selected_target) < 0)
         {
             Fail(
-                $"Live response target does not echo the Unity-selected target: " +
-                $"request={latestRequest?.semantic_next_target}, response={liveResponse.selected_target}.");
+                $"Live response target is outside the frozen model candidates: " +
+                $"response={liveResponse.selected_target}.");
             return;
         }
 
@@ -652,19 +649,24 @@ public static class GuidanceLiveBackendValidator
     {
         return new GuidanceResponse
         {
+            task_definition_version = request.task_definition_version,
+            guidance_schema_version = request.guidance_schema_version,
+            candidate_policy_version = request.candidate_policy_version,
+            risk_policy_version = request.risk_policy_version,
             session_id = request.session_id,
             calibration_id = request.calibration_id,
             request_id = request.request_id,
             decision_id = request.decision_id,
+            candidate_set_id = request.candidate_set_id,
             state_version = request.state_version,
             risk_snapshot_id = request.risk_snapshot_id,
-            target_role = request.target_role,
-            selected_target = request.semantic_next_target,
+            risk_revision = request.risk_snapshot != null ? request.risk_snapshot.risk_revision : 1,
+            target_role = source.target_role,
+            selected_target = source.selected_target,
             route_decision = source.route_decision,
             narration = source.narration,
             gaze_cue = source.gaze_cue,
             gaze_target_id = source.gaze_target_id,
-            avatar_action = source.avatar_action,
             movement_instruction = source.movement_instruction,
             physical_intent = source.physical_intent,
             verifier = source.verifier
@@ -675,22 +677,32 @@ public static class GuidanceLiveBackendValidator
     {
         return new GuidanceRequest
         {
+            task_definition_version = source.task_definition_version,
+            guidance_schema_version = source.guidance_schema_version,
+            candidate_policy_version = source.candidate_policy_version,
+            risk_policy_version = source.risk_policy_version,
             session_id = source.session_id,
             calibration_id = source.calibration_id,
             request_id = source.request_id,
             decision_id = source.decision_id,
+            candidate_set_id = source.candidate_set_id,
             state_version = source.state_version,
             risk_snapshot_id = source.risk_snapshot_id,
-            target_role = source.target_role,
             condition = source.condition,
             task_id = source.task_id,
             physical_space_id = source.physical_space_id,
             current_exhibit = source.current_exhibit,
+            risk_snapshot = source.risk_snapshot,
             user_physical_position = source.user_physical_position,
             user_physical_forward = source.user_physical_forward,
             participant_id = source.participant_id,
             user_task = source.user_task,
-            semantic_next_target = source.semantic_next_target,
+            final_target = source.final_target,
+            preferred_task_target = source.preferred_task_target,
+            candidate_ids = source.candidate_ids,
+            model_candidate_ids = source.model_candidate_ids,
+            allowed_candidate_ids = source.allowed_candidate_ids,
+            semantic_candidates = source.semantic_candidates,
             user_virtual_position = source.user_virtual_position,
             user_virtual_forward = source.user_virtual_forward
         };

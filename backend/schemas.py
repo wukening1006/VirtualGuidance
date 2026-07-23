@@ -136,14 +136,6 @@ class SemanticCandidate(BaseModel):
         return value
 
 
-class AvatarAction(str, Enum):
-    POINT_LEFT = "point_left"
-    POINT_RIGHT = "point_right"
-    POINT_FORWARD = "point_forward"
-    LOOK_AT_TARGET = "look_at_target"
-    WAIT = "wait"
-
-
 class MovementInstruction(str, Enum):
     MOVE_FORWARD_SLOWLY = "move_forward_slowly"
     TURN_LEFT_SLOWLY = "turn_left_slowly"
@@ -382,7 +374,6 @@ class GuidanceResponse(BaseModel):
     narration: str = Field(min_length=1)
     gaze_cue: str = Field(min_length=1)
     gaze_target_id: str = Field(min_length=1)
-    avatar_action: AvatarAction
     movement_instruction: MovementInstruction
     physical_intent: str = Field(min_length=1)
     verifier: VerifierResult
@@ -426,7 +417,6 @@ class GuideDraft(BaseModel):
     narration: str
     gaze_cue: str
     gaze_target_id: str
-    avatar_action: AvatarAction
     movement_instruction: MovementInstruction
     physical_intent: str
     intervention_type: str
@@ -474,7 +464,6 @@ class GuidanceLogRecord(BaseModel):
     intervention_type: str
     narration: str
     movement_instruction: str
-    avatar_action: str
     verifier_approved: bool
     verifier_rejection_reason: str
     explicit_reset_triggered: bool
@@ -525,7 +514,6 @@ def response_from_draft(
         narration=draft.narration,
         gaze_cue=draft.gaze_cue,
         gaze_target_id=draft.gaze_target_id,
-        avatar_action=draft.avatar_action,
         movement_instruction=draft.movement_instruction,
         physical_intent=draft.physical_intent,
         verifier=verifier,

@@ -5,7 +5,6 @@ from __future__ import annotations
 from backend.agents.rdw_affordance_agent import preferred_model_target, target_direction
 from backend.schemas import (
     Affordance,
-    AvatarAction,
     Condition,
     GuidanceRequest,
     GuideDraft,
@@ -85,7 +84,6 @@ class GuideMockAgent:
                 ),
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
-                avatar_action=AvatarAction.WAIT,
                 movement_instruction=MovementInstruction.PAUSE_AND_WAIT,
                 physical_intent="react_to_risk_label_without_semantic_redirection",
                 intervention_type="risk_label_pause",
@@ -105,7 +103,6 @@ class GuideMockAgent:
                 narration="请在此停下，继续参观前需要重新校准活动空间。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
-                avatar_action=AvatarAction.WAIT,
                 movement_instruction=MovementInstruction.RESET_REQUIRED,
                 physical_intent="scripted_reset_on_high_or_critical_risk",
                 intervention_type="scripted_reset",
@@ -153,7 +150,6 @@ class GuideMockAgent:
                 narration="请在此暂停片刻，等待可以安全继续参观。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
-                avatar_action=AvatarAction.WAIT,
                 movement_instruction=MovementInstruction.PAUSE_AND_WAIT,
                 physical_intent=affordance.physical_goal,
                 intervention_type=affordance.intervention_type,
@@ -207,17 +203,12 @@ def draft_for_direction(
     physical_intent: str,
     intervention_type: str,
 ) -> GuideDraft:
-    """把语义方向映射为 Unity 端可识别的 action enum 值。"""
+    """把语义方向映射为 Unity 端可识别的 movement/gaze enum 值。"""
 
     movement_by_direction = {
         "forward": MovementInstruction.MOVE_FORWARD_SLOWLY,
         "left": MovementInstruction.TURN_LEFT_SLOWLY,
         "right": MovementInstruction.TURN_RIGHT_SLOWLY,
-    }
-    avatar_by_direction = {
-        "forward": AvatarAction.POINT_FORWARD,
-        "left": AvatarAction.POINT_LEFT,
-        "right": AvatarAction.POINT_RIGHT,
     }
     gaze_by_direction = {
         "forward": "look_forward",
@@ -230,7 +221,6 @@ def draft_for_direction(
         narration=narration,
         gaze_cue=gaze_by_direction[direction],
         gaze_target_id=f"{selected_target}_GazeTarget",
-        avatar_action=avatar_by_direction[direction],
         movement_instruction=movement_by_direction[direction],
         physical_intent=physical_intent,
         intervention_type=intervention_type,

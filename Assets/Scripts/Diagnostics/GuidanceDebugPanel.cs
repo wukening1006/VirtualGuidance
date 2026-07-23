@@ -58,7 +58,6 @@ public sealed class GuidanceDebugPanel : MonoBehaviour
         builder.Append("Route: ").AppendLine(Empty(response.route_decision));
         builder.Append("Intent: ").AppendLine(Empty(response.physical_intent));
         builder.Append("Gaze: ").AppendLine(Empty(response.gaze_cue));
-        builder.Append("Avatar: ").AppendLine(Empty(response.avatar_action));
         builder.Append("Movement: ").AppendLine(Empty(response.movement_instruction));
         builder.Append("Reason: ").AppendLine(response.verifier != null ? Empty(response.verifier.reason) : "missing verifier");
         debugText.text = builder.ToString();

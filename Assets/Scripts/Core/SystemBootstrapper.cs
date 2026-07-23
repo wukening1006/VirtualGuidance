@@ -48,12 +48,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [SerializeField] private ParticipantUiController participantUiController;
     [SerializeField] private BoundaryVisualizer boundaryVisualizer;
 
-    [Header("可选 Avatar 表现")]
-    [Tooltip("现有 Guide Avatar 控制器；不参与正式安全闭环时可留空。")]
-    [SerializeField] private GuideAvatarController guideAvatarController;
-    [SerializeField] private Transform avatarRoot;
-    [SerializeField] private Transform pointingArm;
-
     [Header("UI 显式引用")]
     [SerializeField] private TMP_Text narrationText;
     [SerializeField] private TMP_Text movementHintText;
@@ -177,11 +171,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
         gazeCueController.Configure(gazeCueText);
         exhibitHighlightManager.RebuildIndex();
 
-        if (guideAvatarController != null)
-        {
-            guideAvatarController.Configure(avatarRoot, pointingArm);
-        }
-
         if (rejectionText != null || rejectionPanelRoot != null)
         {
             rejectionPanel.Configure(
@@ -198,7 +187,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
             narrationPlayer,
             gazeCueController,
             movementHintController,
-            guideAvatarController,
             exhibitHighlightManager,
             rejectionPanel,
             guidanceDebugPanel);
