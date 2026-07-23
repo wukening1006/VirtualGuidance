@@ -92,7 +92,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private string sampledUnsafeDirection = string.Empty;
     private string lastRuntimeRiskSnapshotId = string.Empty;
     private bool runtimeReplanPending;
-    private GuidanceTarget pendingRuntimeSafetyTarget;
     private readonly TurnCueCompletionTracker turnCueCompletionTracker = new TurnCueCompletionTracker();
     private bool handlingGainTermination;
 
@@ -211,7 +210,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
-    /// 根据最新物理风险选择安全语义目标并发起 guidance 请求；无可用目标时进入暂停重置流程。
+    /// 根据任务、Target Registry 与最新风险构建并冻结 Candidate Set；请求前不修改 Current Subgoal。
     /// </summary>
     public void RequestNextGuidance()
     {
@@ -228,43 +227,38 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
-        var selectedTarget = pendingRuntimeSafetyTarget ?? (semanticTargetSelector != null
-            ? semanticTargetSelector.SelectNextGuidanceTarget(taskController.RuntimeState, riskState, conditionPolicy)
-            : new GuidanceTarget(
-                taskController.RuntimeState.nextTargetId,
-                string.Equals(
-                    taskController.RuntimeState.nextTargetId,
-                    taskController.RuntimeState.finalTargetId,
-                    StringComparison.Ordinal)
-                    ? NavigationTargetRole.FinalTarget
-                    : NavigationTargetRole.RouteSubgoal));
-        pendingRuntimeSafetyTarget = null;
-
+        var candidateSet = semanticTargetSelector != null
+            ? semanticTargetSelector.BuildCandidateSet(taskController.RuntimeState, riskState, conditionPolicy)
+            : null;
+        var requestId = Guid.NewGuid().ToString("N");
         var decisionId = Guid.NewGuid().ToString("N");
-        if (selectedTarget == null || string.IsNullOrWhiteSpace(selectedTarget.TargetId) ||
-            !taskController.TryReserveGuidanceTarget(selectedTarget, decisionId))
+        var candidateSetId = Guid.NewGuid().ToString("N");
+        if (riskState == null || candidateSet == null || !candidateSet.HasModelCandidates ||
+            !taskController.TryReserveCandidateSet(
+                candidateSet,
+                candidateSetId,
+                requestId,
+                decisionId,
+                riskState,
+                out var reservation))
         {
             TriggerRuntimeIntervention(
                 null,
-                "No eligible semantic navigation candidate is available.",
+                "No eligible navigation candidate set is available.",
                 false);
             return;
         }
 
-        var reservation = taskController.RuntimeState.ActiveReservation;
-        arrivalDetector?.WatchReservation(
-            selectedTarget.TargetRole == NavigationTargetRole.TurnCueAnchor
-                ? null
-                : reservation);
-        var context = taskController.BuildRequestContext(selectedTarget.TargetId);
-        context.calibration_id = riskState != null ? riskState.calibration_id : string.Empty;
-        context.risk_snapshot_id = riskState != null ? riskState.risk_snapshot_id : string.Empty;
-        context.decision_id = decisionId;
-        context.state_version = reservation.TaskStateVersion;
-        context.target_role = GuidanceTypeUtility.TargetRoleToProtocol(selectedTarget.TargetRole);
+        var context = taskController.BuildRequestContext(reservation);
+        if (context == null)
+        {
+            taskController.AbandonCandidateSetReservation();
+            TriggerRuntimeIntervention(null, "Candidate set request context could not be built.", false);
+            return;
+        }
+
         SetRequestPhase(GuidanceRequestPhase.Requested);
         requestClient.RequestGuidance(context);
-        GuidanceTargetSelected?.Invoke(selectedTarget);
     }
 
     /// <summary>
@@ -283,8 +277,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (response == null)
         {
-            SetRequestPhase(GuidanceRequestPhase.Failed);
-            GuidanceRejected?.Invoke("Guidance response is null.");
+            TriggerRuntimeIntervention(null, "Guidance response is null.");
             return;
         }
 
@@ -305,10 +298,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (response.verifier == null)
         {
-            guidanceExecutor?.Apply(response);
-            var verifierReason = "Guidance verifier result is missing.";
-            SetRequestPhase(GuidanceRequestPhase.Failed);
-            GuidanceRejected?.Invoke(string.IsNullOrWhiteSpace(verifierReason) ? "Guidance rejected by verifier." : verifierReason);
+            TriggerRuntimeIntervention(response, "Guidance verifier result is missing.");
             return;
         }
 
@@ -332,22 +322,56 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        SetRequestPhase(GuidanceRequestPhase.Verified);
-        var activeReservation = runtimeState.ActiveReservation;
-        if (activeReservation == null ||
-            !string.Equals(activeReservation.TargetId, response.selected_target, StringComparison.Ordinal) ||
-            !taskController.CommitReservation(activeReservation))
+        var candidateReservation = runtimeState.ActiveCandidateSetReservation;
+        var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
+        if (candidateReservation == null ||
+            candidateReservation.Phase != CandidateSetReservationPhase.Reserved ||
+            !candidateReservation.ContainsModelCandidate(response.selected_target) ||
+            !candidateReservation.TryGetCandidate(response.selected_target, out var frozenCandidate) ||
+            !string.Equals(
+                response.target_role,
+                GuidanceTypeUtility.TargetRoleToProtocol(frozenCandidate.TargetRole),
+                StringComparison.Ordinal) ||
+            !semanticTargetSelector.IsReservationCurrent(
+                candidateReservation,
+                runtimeState,
+                riskState,
+                conditionPolicy))
         {
-            TriggerRuntimeIntervention(response, "Guidance response target does not match the active reservation.");
+            ExpireAndReplan("Guidance response does not match the active Candidate-Set Reservation.");
             return;
         }
-        guidanceExecutor?.Apply(response);
-        if (response != null && !string.IsNullOrWhiteSpace(response.selected_target) &&
-            (CurrentGuidanceTarget == null ||
-             CurrentGuidanceTarget.TargetRole != NavigationTargetRole.TurnCueAnchor))
+
+        if (conditionPolicy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled &&
+            !Contains(candidateReservation.AllowedCandidateIds, response.selected_target))
         {
-            arrivalDetector?.WatchReservation(activeReservation);
+            TriggerRuntimeIntervention(response, "Guidance selected_target is outside allowed_candidate_ids.");
+            return;
         }
+
+        if (!taskController.TryValidateCandidateSelection(
+                candidateReservation,
+                response.selected_target,
+                out var selectedCandidate) ||
+            !taskController.CommitCurrentSubgoal(
+                candidateReservation,
+                selectedCandidate,
+                out var targetReservation))
+        {
+            taskController.AbandonCandidateSetReservation();
+            TriggerRuntimeIntervention(response, "Candidate selection could not be committed atomically.");
+            return;
+        }
+
+        SetRequestPhase(GuidanceRequestPhase.Verified);
+        guidanceExecutor?.Apply(response);
+        if (selectedCandidate.TargetRole != NavigationTargetRole.TurnCueAnchor)
+        {
+            arrivalDetector?.WatchReservation(targetReservation);
+        }
+        GuidanceTargetSelected?.Invoke(new GuidanceTarget(
+            selectedCandidate.TargetId,
+            selectedCandidate.TargetRole));
 
         activeResponse = response;
         ResetRuntimeSafetySampling();
@@ -473,11 +497,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_cancelled");
         arrivalDetector?.WatchReservation(null);
-        taskController?.AbandonReservation();
+        AbandonReservations();
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
-        pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         if (requestPhase == GuidanceRequestPhase.Requested ||
             requestPhase == GuidanceRequestPhase.Received ||
@@ -542,7 +565,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
-        pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
     }
 
@@ -555,11 +577,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         guidanceExecutor?.Clear();
         rotationGainController?.AbortGain("runtime_intervention");
         arrivalDetector?.WatchReservation(null);
-        taskController?.AbandonReservation();
+        AbandonReservations();
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
-        pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
@@ -574,11 +595,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_expired");
         arrivalDetector?.WatchReservation(null);
-        taskController?.AbandonReservation();
+        AbandonReservations();
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
-        pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Expired);
         GuidanceExpired?.Invoke(reason);
@@ -677,7 +697,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             guidanceExecutor?.Clear();
             rotationGainController?.AbortGain("soft_reroute");
             arrivalDetector?.WatchReservation(null);
-            taskController?.AbandonReservation();
+            AbandonReservations();
             activeSnapshot = null;
             activeResponse = null;
             turnCueCompletionTracker.Cancel();
@@ -687,7 +707,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 interruptedResponse,
                 reason,
                 RuntimeGuidanceSafetyDecision.SoftReroute));
-            pendingRuntimeSafetyTarget = safeCandidate;
             Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
             RequestNextGuidance();
         }
@@ -808,13 +827,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private void HandleRequestFailed(string _)
     {
         arrivalDetector?.WatchReservation(null);
-        taskController?.AbandonReservation();
+        AbandonReservations();
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
-        pendingRuntimeSafetyTarget = null;
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
+    }
+
+    private void AbandonReservations()
+    {
+        taskController?.AbandonCandidateSetReservation();
+        taskController?.AbandonReservation();
     }
 
     private void BindArrival()

@@ -30,7 +30,6 @@ class GuidanceLogger:
         risk_state: PhysicalRiskState,
         draft: GuideDraft,
         verifier: VerifierResult,
-        semantic_next_target: str,
     ) -> Path:
         timestamp = datetime.now(timezone.utc).isoformat()
         policy = condition_policy_for(request.condition)
@@ -41,10 +40,11 @@ class GuidanceLogger:
             calibration_id=request.calibration_id,
             request_id=request.request_id,
             decision_id=request.decision_id,
+            candidate_set_id=request.candidate_set_id,
             state_version=request.state_version,
             risk_snapshot_id=request.risk_snapshot_id,
             risk_revision=request.risk_snapshot.risk_revision,
-            target_role=request.target_role,
+            target_role=request.candidate_for(draft.selected_target).target_role,
             policy_version=policy.policy_version,
             raw_guidance=draft.model_dump(mode="json"),
             condition_verifier_result={
@@ -60,7 +60,12 @@ class GuidanceLogger:
             physical_space=risk_state.physical_space,
             task_id=request.task_id,
             current_exhibit=request.current_exhibit,
-            semantic_next_target=semantic_next_target,
+            final_target=request.final_target,
+            preferred_task_target=request.preferred_task_target,
+            candidate_ids=request.candidate_ids,
+            model_candidate_ids=request.model_candidate_ids,
+            allowed_candidate_ids=request.allowed_candidate_ids,
+            semantic_candidates=[candidate.model_dump(mode="json") for candidate in request.semantic_candidates],
             selected_target=draft.selected_target,
             clearance_forward=risk_state.clearance_forward,
             clearance_left=risk_state.clearance_left,

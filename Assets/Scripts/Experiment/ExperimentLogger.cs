@@ -22,6 +22,7 @@ public sealed class LogTraceContext
     public string CalibrationId { get; }
     public string RequestId { get; }
     public string DecisionId { get; }
+    public string CandidateSetId { get; }
     public string RiskSnapshotId { get; }
     public int StateVersion { get; }
     public string TargetId { get; }
@@ -39,6 +40,7 @@ public sealed class LogTraceContext
         string calibrationId = "",
         string requestId = "",
         string decisionId = "",
+        string candidateSetId = "",
         string riskSnapshotId = "",
         int stateVersion = 0,
         string targetId = "",
@@ -50,6 +52,7 @@ public sealed class LogTraceContext
         CalibrationId = calibrationId ?? string.Empty;
         RequestId = requestId ?? string.Empty;
         DecisionId = decisionId ?? string.Empty;
+        CandidateSetId = candidateSetId ?? string.Empty;
         RiskSnapshotId = riskSnapshotId ?? string.Empty;
         StateVersion = stateVersion;
         TargetId = targetId ?? string.Empty;
@@ -68,10 +71,10 @@ public sealed class LogTraceContext
                 FirstNonEmpty(request.calibration_id, riskState != null ? riskState.calibration_id : string.Empty),
                 request.request_id,
                 request.decision_id,
+                request.candidate_set_id,
                 FirstNonEmpty(request.risk_snapshot_id, riskState != null ? riskState.risk_snapshot_id : string.Empty),
                 request.state_version,
-                request.semantic_next_target,
-                request.target_role);
+                request.preferred_task_target);
     }
 
     /// <summary>从 Backend 响应创建追踪上下文。</summary>
@@ -84,6 +87,7 @@ public sealed class LogTraceContext
                 FirstNonEmpty(response.calibration_id, riskState != null ? riskState.calibration_id : string.Empty),
                 response.request_id,
                 response.decision_id,
+                response.candidate_set_id,
                 FirstNonEmpty(response.risk_snapshot_id, riskState != null ? riskState.risk_snapshot_id : string.Empty),
                 response.state_version,
                 response.selected_target,
@@ -484,9 +488,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         var taskId = FirstNonEmpty(runtimeState?.taskId, request?.task_id, spec?.taskId, session?.taskId);
         var physicalSpaceId = FirstNonEmpty(request?.physical_space_id, spec?.physicalSpaceId, session?.physicalSpaceId);
         var currentExhibit = FirstNonEmpty(runtimeState?.currentExhibitId, request?.current_exhibit, spec?.startExhibitId);
-        var semanticNextTarget = FirstNonEmpty(runtimeState?.nextTargetId, request?.semantic_next_target, spec?.semanticNextTargetId);
+        var preferredTaskTarget = FirstNonEmpty(runtimeState?.nextTargetId, request?.preferred_task_target, spec?.semanticNextTargetId);
         var requestId = FirstNonEmpty(request?.request_id, response?.request_id, trace.RequestId);
         var decisionId = FirstNonEmpty(request?.decision_id, response?.decision_id, trace.DecisionId);
+        var candidateSetId = FirstNonEmpty(request?.candidate_set_id, response?.candidate_set_id, trace.CandidateSetId);
         var riskSnapshotId = FirstNonEmpty(
             riskState?.risk_snapshot_id,
             request?.risk_snapshot_id,
@@ -495,7 +500,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         var runtimeTargetRole = runtimeState != null && !string.IsNullOrWhiteSpace(runtimeState.guidanceTargetId)
             ? GuidanceTypeUtility.TargetRoleToProtocol(runtimeState.guidanceTargetRole)
             : string.Empty;
-        var targetRole = FirstNonEmpty(targetRoleOverride, request?.target_role, response?.target_role, trace.TargetRole, runtimeTargetRole);
+        var targetRole = FirstNonEmpty(targetRoleOverride, response?.target_role, trace.TargetRole, runtimeTargetRole);
         var selectedTarget = FirstNonEmpty(selectedTargetOverride, response?.selected_target, trace.TargetId, runtimeState?.guidanceTargetId);
         var stateVersion = request != null
             ? request.state_version
@@ -544,6 +549,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["calibration_id"] = calibrationId,
                 ["request_id"] = requestId,
                 ["decision_id"] = decisionId,
+                ["candidate_set_id"] = candidateSetId,
                 ["risk_snapshot_id"] = riskSnapshotId,
                 ["state_version"] = stateVersion
             };
@@ -555,7 +561,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["task_id"] = taskId,
                 ["physical_space_id"] = physicalSpaceId,
                 ["current_exhibit"] = currentExhibit,
-                ["semantic_next_target"] = semanticNextTarget,
+                ["preferred_task_target"] = preferredTaskTarget,
                 ["runtime_phase"] = runtimeState != null ? runtimeState.phase.ToString() : string.Empty,
                 ["run_state"] = runState.ToString().ToLowerInvariant(),
                 ["target_role"] = targetRole,

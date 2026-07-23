@@ -233,7 +233,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var versionDuringReset = task.RuntimeState.stateVersion;
 
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             var replanningCount = 0;
@@ -284,7 +284,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(replanningCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
             Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E3"));
-            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E5"));
+            Assert.That(requests.Contexts[0].preferred_task_target, Is.EqualTo("E5"));
         }
         finally
         {
@@ -528,9 +528,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 decision_id = "decision-validator",
                 state_version = originalVersion,
                 physical_space_id = "narrow_room",
-                current_exhibit = "E1",
-                semantic_next_target = "E3"
+                current_exhibit = "E1"
             };
+            ConfigureSingleCandidate(request, "E3", "navigable_detour");
             var snapshot = GuidanceRequestSnapshot.Capture(request, riskState, runtimeState);
 
             var unsafeResponse = new GuidanceResponse
@@ -764,14 +764,11 @@ public sealed class GuidanceRuntimeEditModeTests
             var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
             riskEvaluator.Configure(space, pose, calibration);
 
-            CreateExhibit(root.transform, "RuntimeE1", Vector3.back, "introduction", new[] { "RuntimeE2" });
-            CreateExhibit(root.transform, "RuntimeE2", Vector3.left * 2f, "left_related_anchor", null);
-            CreateExhibit(root.transform, "RuntimeE3", Vector3.forward * 2f, "route_subgoal", null);
-            CreateExhibit(root.transform, "RuntimeE5", Vector3.forward * 4f, "main_target", null);
             root.SetActive(true);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            AlignVirtualUserToT2Route(virtualUser.transform, targets);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
             var validator = root.AddComponent<LocalGuidanceValidator>();
@@ -780,9 +777,9 @@ public sealed class GuidanceRuntimeEditModeTests
             task.ConfigureTask(new GuidanceTaskDefinition
             {
                 condition = "ours_full",
-                startExhibitId = "RuntimeE1",
-                finalTargetId = "RuntimeE5",
-                routeTargetIds = new[] { "RuntimeE1", "RuntimeE3", "RuntimeE5" }
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
@@ -812,8 +809,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var request = RequestForContext(requests.Contexts[0], "request-runtime-safe");
             request.physical_space_id = "wide_room";
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
-            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "RuntimeE3"));
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "E3"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            var selectedDirection = CandidateDirectionForRequest(request, "E3");
 
             var unsafeForward = new PhysicalRiskState(
                 riskSnapshotId: "runtime-risk-1",
@@ -822,8 +820,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 clearanceForward: 0.6f,
                 clearanceLeft: 2f,
                 clearanceRight: 2f,
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left", "right" });
+                unsafeDirections: new[] { selectedDirection },
+                safeDirections: SafeDirectionsExcept(selectedDirection));
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
@@ -836,18 +834,19 @@ public sealed class GuidanceRuntimeEditModeTests
                 clearanceForward: 0.6f,
                 clearanceLeft: 2f,
                 clearanceRight: 2f,
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left", "right" });
+                unsafeDirections: new[] { selectedDirection },
+                safeDirections: SafeDirectionsExcept(selectedDirection));
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
 
             Assert.That(softRerouteCount, Is.EqualTo(1));
             Assert.That(replanCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
-            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("RuntimeE2"));
+            Assert.That(requests.Contexts[1].preferred_task_target, Is.EqualTo("E5"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
             Assert.That(task.RuntimeState.IsNavigating, Is.True);
-            Assert.That(task.RuntimeState.ActiveReservation.TargetId, Is.EqualTo("RuntimeE2"));
+            Assert.That(task.RuntimeState.ActiveReservation, Is.Null);
+            Assert.That(task.RuntimeState.ActiveCandidateSetReservation.Phase, Is.EqualTo(CandidateSetReservationPhase.Reserved));
         }
         finally
         {
@@ -877,14 +876,11 @@ public sealed class GuidanceRuntimeEditModeTests
             var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
             riskEvaluator.Configure(space, pose, calibration);
 
-            CreateExhibit(root.transform, "GainAbortE1", Vector3.back, "introduction", new[] { "GainAbortE2" });
-            CreateExhibit(root.transform, "GainAbortE2", Vector3.left * 2f, "left_related_anchor", null);
-            CreateExhibit(root.transform, "GainAbortE3", Vector3.forward * 2f, "route_subgoal", null);
-            CreateExhibit(root.transform, "GainAbortE5", Vector3.forward * 4f, "main_target", null);
             root.SetActive(true);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            AlignVirtualUserToT2Route(virtualUser.transform, targets);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
             var validator = root.AddComponent<LocalGuidanceValidator>();
@@ -893,9 +889,9 @@ public sealed class GuidanceRuntimeEditModeTests
             task.ConfigureTask(new GuidanceTaskDefinition
             {
                 condition = "ours_full",
-                startExhibitId = "GainAbortE1",
-                finalTargetId = "GainAbortE5",
-                routeTargetIds = new[] { "GainAbortE1", "GainAbortE3", "GainAbortE5" }
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             var gain = root.AddComponent<RotationGainController>();
@@ -940,8 +936,9 @@ public sealed class GuidanceRuntimeEditModeTests
             request.physical_space_id = space.CurrentSpaceId;
             expectedAbortDecisionId = request.decision_id;
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
-            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "GainAbortE3"));
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, "E3"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            var selectedDirection = CandidateDirectionForRequest(request, "E3");
 
             SetPrivateField(riskEvaluator, "currentRiskState", new PhysicalRiskState(
                 riskSnapshotId: "risk-gain-abort",
@@ -950,8 +947,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 clearanceForward: 0.6f,
                 clearanceLeft: 2f,
                 clearanceRight: 2f,
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left", "right" }));
+                unsafeDirections: new[] { selectedDirection },
+                safeDirections: SafeDirectionsExcept(selectedDirection)));
 
             gain.BeginPendingTurn(1, 30f, "stale-decision");
             gain.AbortGain("gain_limit_exceeded");
@@ -967,7 +964,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(matchedAbort.Reason, Is.EqualTo("gain_limit_exceeded"));
             Assert.That(softRerouteCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
-            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("GainAbortE2"));
+            Assert.That(requests.Contexts[1].preferred_task_target, Is.EqualTo("E5"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
         }
         finally
@@ -1652,11 +1649,11 @@ public sealed class GuidanceRuntimeEditModeTests
                 taskId = "T2_main_target",
                 startExhibitId = "E1",
                 finalTargetId = "E5",
-                routeTargetIds = new[] { "E1", "E3", "E5" }
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             var replanningCount = 0;
@@ -1671,15 +1668,21 @@ public sealed class GuidanceRuntimeEditModeTests
             coordinator.RequestNextGuidance();
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
             Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E1"));
-            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+            var firstRequest = RequestForContext(requests.Contexts[0], "request-arrival-e3");
+            InvokePrivate(coordinator, "HandleRequestBuilt", firstRequest);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(firstRequest, "E3"));
+            Assert.That(task.RuntimeState.CurrentGuidanceTarget.TargetId, Is.EqualTo("E3"));
 
             coordinator.HandleTargetArrived("E3");
             Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
             Assert.That(requests.Contexts[1].current_exhibit, Is.EqualTo("E3"));
-            Assert.That(requests.Contexts[1].semantic_next_target, Is.EqualTo("E5"));
             Assert.That(replanningCount, Is.EqualTo(1));
+
+            var finalRequest = RequestForContext(requests.Contexts[1], "request-arrival-e5");
+            InvokePrivate(coordinator, "HandleRequestBuilt", finalRequest);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(finalRequest, "E5"));
 
             coordinator.HandleTargetArrived("E5");
             Assert.That(task.RuntimeState.IsCompleted, Is.True);
@@ -1735,12 +1738,20 @@ public sealed class GuidanceRuntimeEditModeTests
         root.SetActive(false);
         try
         {
-            var task = CreateRouteTask(root);
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                taskId = "T2_main_target",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
             Assert.That(
-                task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
+                task.TrySetGuidanceTarget(new GuidanceTarget("E3", NavigationTargetRole.NavigableDetour)),
                 Is.True);
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             GuidanceTarget reachedTarget = null;
@@ -1748,17 +1759,17 @@ public sealed class GuidanceRuntimeEditModeTests
             coordinator.TargetReached += target => reachedTarget = target;
             coordinator.DetourCompleted += target => completedDetour = target;
 
-            coordinator.HandleTargetArrived("E2");
+            coordinator.HandleTargetArrived("E3");
 
-            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E2"));
-            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
-            Assert.That(task.RuntimeState.HasVisitedDetour("E2"), Is.True);
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
+            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+            Assert.That(task.RuntimeState.HasVisitedDetour("E3"), Is.True);
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
-            Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E2"));
-            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
-            Assert.That(requests.Contexts[0].target_role, Is.EqualTo("route_subgoal"));
+            Assert.That(requests.Contexts[0].current_exhibit, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts[0].preferred_task_target, Is.EqualTo("E5"));
+            Assert.That(requests.Contexts[0].semantic_candidates[0].target_role, Is.EqualTo("final_target"));
             Assert.That(reachedTarget, Is.Not.Null);
-            Assert.That(reachedTarget.TargetId, Is.EqualTo("E2"));
+            Assert.That(reachedTarget.TargetId, Is.EqualTo("E3"));
             Assert.That(completedDetour, Is.SameAs(reachedTarget));
         }
         finally
@@ -1779,7 +1790,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 task.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.TurnCueAnchor)),
                 Is.True);
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
 
@@ -1794,7 +1805,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
             Assert.That(task.RuntimeState.HasCompletedTurnCue("E2"), Is.True);
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
-            Assert.That(requests.Contexts[0].semantic_next_target, Is.EqualTo("E3"));
+            Assert.That(requests.Contexts[0].preferred_task_target, Is.EqualTo("E3"));
         }
         finally
         {
@@ -1863,15 +1874,20 @@ public sealed class GuidanceRuntimeEditModeTests
                 calibration_id = calibration.CalibrationId,
                 risk_snapshot_id = currentRisk.risk_snapshot_id,
                 risk_snapshot = GuidanceRiskSnapshot.From(currentRisk),
-                target_role = "turn_cue_anchor",
-                current_exhibit = task.RuntimeState.currentExhibitId,
-                semantic_next_target = turnCueTargetId
+                current_exhibit = task.RuntimeState.currentExhibitId
             };
+            ConfigureSingleCandidate(request, turnCueTargetId, "turn_cue_anchor");
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
             var response = ResponseForRequest(request, turnCueTargetId);
             response.movement_instruction = "turn_left_slowly";
 
-            coordinator.HandleGuidanceResponse(response);
+            SetPrivateField(coordinator, "activeSnapshot", GuidanceRequestSnapshot.Capture(
+                request,
+                currentRisk,
+                task.RuntimeState));
+            SetPrivateField(coordinator, "activeResponse", response);
+            SetPrivateField(coordinator, "requestPhase", GuidanceRequestPhase.Executing);
+            InvokePrivate(coordinator, "BeginTurnCueTracking", response);
 
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
             Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.False);
@@ -1888,7 +1904,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.True);
             Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E1"));
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E3"));
-            Assert.That(requests.Contexts.Count, Is.EqualTo(1));
+            Assert.That(requests.Contexts, Is.Empty);
             if (gainEnabled)
             {
                 Assert.That(lifecycleEvents, Is.EqualTo(new[]
@@ -1904,6 +1920,102 @@ public sealed class GuidanceRuntimeEditModeTests
             {
                 Assert.That(lifecycleEvents, Is.Empty);
             }
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceRuntimeState_CandidateReservationCommitsExactlyOnceAfterValidation()
+    {
+        var state = new GuidanceRuntimeState();
+        state.Begin("T2_main_target", "E1", "E5", "E5");
+        var initialVersion = state.stateVersion;
+        var finalCandidate = new NavigationCandidate(
+            "E5", NavigationTargetRole.FinalTarget, "forward", "E5", "", "main_target", null, null);
+        var detourCandidate = new NavigationCandidate(
+            "E3", NavigationTargetRole.NavigableDetour, "left", "E3", "", "detour", null, new[] { "E1" });
+        var candidateSet = new NavigationCandidateSet(
+            new[] { "E5", "E3" },
+            new[] { "E3" },
+            new[] { "E3" },
+            new[] { finalCandidate, detourCandidate },
+            1);
+        var risk = new PhysicalRiskState(
+            riskSnapshotId: "risk-reservation",
+            riskRevision: 7,
+            calibrationId: "calibration-reservation");
+
+        Assert.That(state.TryReserveCandidateSet(
+            candidateSet,
+            "candidate-set-reservation",
+            "request-reservation",
+            "decision-reservation",
+            "ours_full",
+            risk,
+            out var reservation), Is.True);
+        Assert.That(state.stateVersion, Is.EqualTo(initialVersion));
+        Assert.That(state.CurrentGuidanceTarget, Is.Null);
+        Assert.That(state.ActiveReservation, Is.Null);
+        Assert.That(state.ActiveCandidateSetReservation.Phase, Is.EqualTo(CandidateSetReservationPhase.Reserved));
+
+        Assert.That(state.TryValidateCandidateSelection(reservation, "E4", out _), Is.False);
+        Assert.That(state.CurrentGuidanceTarget, Is.Null);
+        Assert.That(state.ActiveReservation, Is.Null);
+
+        Assert.That(state.TryValidateCandidateSelection(reservation, "E3", out var selected), Is.True);
+        Assert.That(state.CommitCurrentSubgoal(reservation, selected, out var arrivalReservation), Is.True);
+        Assert.That(state.CurrentGuidanceTarget.TargetId, Is.EqualTo("E3"));
+        Assert.That(arrivalReservation.Phase, Is.EqualTo(TargetReservationPhase.Committed));
+        Assert.That(state.ActiveCandidateSetReservation.Phase, Is.EqualTo(CandidateSetReservationPhase.Committed));
+        Assert.That(state.CommitCurrentSubgoal(reservation, selected, out _), Is.False);
+    }
+
+    [Test]
+    public void GuidanceCoordinator_RequestReservesCandidateSetWithoutArrivalWatch()
+    {
+        var root = new GameObject("CandidateRequestBeforeCommitTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var arrival = root.AddComponent<ArrivalDetector>();
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                root.GetComponent<NavigationTargetManager>(),
+                root.GetComponent<SemanticTargetSelector>(),
+                arrival,
+                root.GetComponent<PhysicalRiskEvaluator>(),
+                root.GetComponent<LocalGuidanceValidator>(),
+                null,
+                null,
+                null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            coordinator.RequestNextGuidance();
+
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+            Assert.That(task.RuntimeState.CurrentGuidanceTarget, Is.Null);
+            Assert.That(task.RuntimeState.ActiveReservation, Is.Null);
+            Assert.That(task.RuntimeState.ActiveCandidateSetReservation.Phase,
+                Is.EqualTo(CandidateSetReservationPhase.Reserved));
+            Assert.That(GetPrivateField<TargetReservation>(arrival, "watchedReservation"), Is.Null);
         }
         finally
         {
@@ -1990,11 +2102,11 @@ public sealed class GuidanceRuntimeEditModeTests
             {
                 startExhibitId = "E1",
                 finalTargetId = "E5",
-                routeTargetIds = new[] { "E1", "E3", "E5" }
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             var phases = new System.Collections.Generic.List<GuidanceRequestPhase>();
@@ -2040,10 +2152,11 @@ public sealed class GuidanceRuntimeEditModeTests
             decision_id = "decision-current",
             state_version = runtime.stateVersion,
             risk_snapshot_id = "risk-current",
+            risk_snapshot = new GuidanceRiskSnapshot { risk_revision = 1 },
             current_exhibit = "E1",
-            semantic_next_target = "E3",
             physical_space_id = "narrow_room"
         };
+        ConfigureSingleCandidate(request, "E3", "navigable_detour");
         var snapshot = GuidanceRequestSnapshot.Capture(request, null, runtime);
 
         Assert.That(snapshot.MatchesResponse(ResponseForRequest(request, "E3")), Is.True);
@@ -2056,6 +2169,10 @@ public sealed class GuidanceRuntimeEditModeTests
         wrongDecision.decision_id = "decision-old";
         Assert.That(snapshot.MatchesResponse(wrongDecision), Is.False);
 
+        var wrongCandidateSet = ResponseForRequest(request, "E3");
+        wrongCandidateSet.candidate_set_id = "candidate-set-old";
+        Assert.That(snapshot.MatchesResponse(wrongCandidateSet), Is.False);
+
         var wrongState = ResponseForRequest(request, "E3");
         wrongState.state_version++;
         Assert.That(snapshot.MatchesResponse(wrongState), Is.False);
@@ -2067,6 +2184,10 @@ public sealed class GuidanceRuntimeEditModeTests
         var wrongRisk = ResponseForRequest(request, "E3");
         wrongRisk.risk_snapshot_id = "risk-old";
         Assert.That(snapshot.MatchesResponse(wrongRisk), Is.False);
+
+        var wrongRiskRevision = ResponseForRequest(request, "E3");
+        wrongRiskRevision.risk_revision++;
+        Assert.That(snapshot.MatchesResponse(wrongRiskRevision), Is.False);
     }
 
     [Test]
@@ -2081,17 +2202,18 @@ public sealed class GuidanceRuntimeEditModeTests
             {
                 startExhibitId = "E1",
                 finalTargetId = "E5",
-                routeTargetIds = new[] { "E1", "E3", "E5" }
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
 
             coordinator.RequestNextGuidance();
             var firstRequest = RequestForContext(requests.Contexts[0], "request-old");
             InvokePrivate(coordinator, "HandleRequestBuilt", firstRequest);
+            coordinator.HandleGuidanceResponse(ResponseForRequest(firstRequest, "E3"));
             coordinator.HandleTargetArrived("E3");
             var secondRequest = RequestForContext(requests.Contexts[1], "request-current");
             InvokePrivate(coordinator, "HandleRequestBuilt", secondRequest);
@@ -2121,16 +2243,17 @@ public sealed class GuidanceRuntimeEditModeTests
             {
                 startExhibitId = "E1",
                 finalTargetId = "E5",
-                routeTargetIds = new[] { "E1", "E3", "E5" }
+                routeTargetIds = new[] { "E1", "E5" }
             });
             task.StartTask();
             Assert.That(task.TryReserveGuidanceTarget(
-                new GuidanceTarget("E3", NavigationTargetRole.RouteSubgoal), "decision-old"), Is.True);
+                new GuidanceTarget("E5", NavigationTargetRole.FinalTarget), "decision-old"), Is.True);
             var oldReservation = task.RuntimeState.ActiveReservation;
             Assert.That(task.AbandonReservation(), Is.True);
             Assert.That(task.TryReserveGuidanceTarget(
-                new GuidanceTarget("E3", NavigationTargetRole.RouteSubgoal), "decision-current"), Is.True);
+                new GuidanceTarget("E5", NavigationTargetRole.FinalTarget), "decision-current"), Is.True);
             var currentReservation = task.RuntimeState.ActiveReservation;
+            Assert.That(task.CommitReservation(currentReservation), Is.True);
             var coordinator = root.AddComponent<GuidanceCoordinator>();
             coordinator.Configure(null, null, task, null, null, null, null, null, null, null, null);
 
@@ -2139,8 +2262,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.ActiveReservation, Is.SameAs(currentReservation));
 
             coordinator.HandleTargetArrived(currentReservation);
-            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
-            Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
+            Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E5"));
+            Assert.That(task.RuntimeState.IsCompleted, Is.True);
         }
         finally
         {
@@ -2149,7 +2272,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void AgentClient_BuildRequestCreatesUniqueRequestIdentityAndPreservesDecisionState()
+    public void AgentClient_BuildRequestPreservesReservedRequestAndDecisionIdentity()
     {
         var root = new GameObject("AgentClientRequestIdentityTest");
         root.SetActive(false);
@@ -2173,15 +2296,16 @@ public sealed class GuidanceRuntimeEditModeTests
                 session_id = "session-stable",
                 decision_id = "decision-stable",
                 state_version = 9,
-                current_exhibit = "E1",
-                semantic_next_target = "E3"
+                current_exhibit = "E1"
             };
+            ConfigureSingleCandidateContext(context, "E3", "navigable_detour");
+            context.request_id = "request-stable";
 
             var first = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", context);
             var second = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", context);
 
-            Assert.That(first.request_id, Is.Not.Empty);
-            Assert.That(second.request_id, Is.Not.EqualTo(first.request_id));
+            Assert.That(first.request_id, Is.EqualTo("request-stable"));
+            Assert.That(second.request_id, Is.EqualTo(first.request_id));
             Assert.That(first.decision_id, Is.EqualTo("decision-stable"));
             Assert.That(first.state_version, Is.EqualTo(9));
             Assert.That(first.session_id, Is.EqualTo("session-stable"));
@@ -2211,10 +2335,9 @@ public sealed class GuidanceRuntimeEditModeTests
             decision_id = "decision-contract",
             state_version = 5,
             risk_snapshot_id = "risk-contract",
-            risk_snapshot = new GuidanceRiskSnapshot { risk_revision = 1 },
-            target_role = "route_subgoal",
-            semantic_next_target = "E3"
+            risk_snapshot = new GuidanceRiskSnapshot { risk_revision = 1 }
         };
+        ConfigureSingleCandidate(request, "E3", "navigable_detour");
         var response = new GuidanceResponse
         {
             task_definition_version = request.task_definition_version,
@@ -2225,12 +2348,13 @@ public sealed class GuidanceRuntimeEditModeTests
             calibration_id = request.calibration_id,
             request_id = request.request_id,
             decision_id = request.decision_id,
+            candidate_set_id = request.candidate_set_id,
             state_version = request.state_version,
             risk_snapshot_id = request.risk_snapshot_id,
             risk_revision = request.risk_snapshot.risk_revision,
-            target_role = request.target_role,
-            selected_target = request.semantic_next_target,
-            route_decision = "direct_to_next_semantic_target",
+            target_role = "navigable_detour",
+            selected_target = "E3",
+            route_decision = "visit_route_subgoal",
             narration = "请看向左侧目标。",
             gaze_cue = "look_left",
             gaze_target_id = "E3_GazeTarget",
@@ -2253,7 +2377,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 out var validReason),
             Is.True,
             validReason);
-        Assert.That(parsed.selected_target, Is.EqualTo(request.semantic_next_target));
+        Assert.That(parsed.selected_target, Is.EqualTo("E3"));
 
         var missingStateVersion = JObject.Parse(JsonUtility.ToJson(response));
         missingStateVersion.Remove("state_version");
@@ -2300,7 +2424,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Is.False);
         Assert.That(targetReason, Does.Contain("selected_target"));
 
-        response.selected_target = request.semantic_next_target;
+        response.selected_target = "E3";
         response.request_id = "request-stale";
         Assert.That(
             AgentClient.TryParseGuidanceResponse(
@@ -2344,6 +2468,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 calibration_id = calibration.CalibrationId,
                 risk_snapshot_id = risk.CurrentRiskState.risk_snapshot_id
             };
+            ConfigureSingleCandidateContext(currentContext, "E3", "navigable_detour");
+            currentContext.request_id = "request-current";
+            currentContext.decision_id = "decision-current";
             var currentRequest = (GuidanceRequest)InvokePrivateWithResult(client, "BuildRequest", currentContext);
             Assert.That(currentRequest, Is.Not.Null);
 
@@ -2352,6 +2479,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 calibration_id = "calibration-stale",
                 risk_snapshot_id = currentContext.risk_snapshot_id
             };
+            ConfigureSingleCandidateContext(staleContext, "E3", "navigable_detour");
+            staleContext.request_id = "request-stale";
+            staleContext.decision_id = "decision-stale";
             Assert.That(InvokePrivateWithResult(client, "BuildRequest", staleContext), Is.Null);
 
             staleContext.calibration_id = currentContext.calibration_id;
@@ -2366,7 +2496,7 @@ public sealed class GuidanceRuntimeEditModeTests
             client.RetryLastRequest();
 
             Assert.That(client.RequestInFlight, Is.False);
-            Assert.That(failure, Does.Contain("retry rejected"));
+            Assert.That(failure, Does.Contain("Direct retry is disabled"));
         }
         finally
         {
@@ -2743,30 +2873,26 @@ public sealed class GuidanceRuntimeEditModeTests
             virtualUser.transform.SetParent(root.transform, false);
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualUserRoot(virtualUser.transform);
-            var current = new GameObject("PolicyCurrent");
-            current.transform.SetParent(root.transform, false);
-            current.AddComponent<ExhibitMetadata>().Configure(
-                "PolicyE1", "Current", null, null, null, new[] { "PolicyE3" }, current.transform, current.transform);
-            var detour = new GameObject("PolicyLeftCandidate");
-            detour.transform.SetParent(root.transform, false);
-            detour.transform.position = new Vector3(-2f, 0f, 0f);
-            detour.AddComponent<ExhibitMetadata>().Configure(
-                "PolicyE3", "Left", null, null, null, null, detour.transform, detour.transform);
-            var routeTarget = new GameObject("PolicyRouteTarget");
-            routeTarget.transform.SetParent(root.transform, false);
-            routeTarget.transform.position = new Vector3(0f, 0f, 2f);
-            routeTarget.AddComponent<ExhibitMetadata>().Configure(
-                "PolicyE5", "Forward", null, null, null, null, routeTarget.transform, routeTarget.transform);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            Assert.That(targets.TryGetTarget("E1", out var current), Is.True);
+            Assert.That(targets.TryGetTarget("E3", out var detour), Is.True);
+            Assert.That(targets.TryGetTarget("E5", out var routeTarget), Is.True);
+            var currentPosition = current.ViewPoint != null ? current.ViewPoint.position : current.transform.position;
+            var finalPosition = routeTarget.ViewPoint != null
+                ? routeTarget.ViewPoint.position
+                : routeTarget.transform.position;
+            virtualUser.transform.position = currentPosition;
+            virtualUser.transform.forward = Vector3.ProjectOnPlane(finalPosition - currentPosition, Vector3.up).normalized;
+            Assert.That(targets.TryGetTargetDirection("E3", out var detourDirection), Is.True);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
             var runtime = new GuidanceRuntimeState();
-            runtime.Begin("T2_main_target", "PolicyE1", "PolicyE5", "PolicyE5");
+            runtime.Begin("T2_main_target", "E1", "E5", "E5");
             var risk = new PhysicalRiskState(
                 unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left" });
+                safeDirections: new[] { detourDirection });
 
             var baselineTarget = selector.SelectNextTarget(
                 runtime,
@@ -2777,8 +2903,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 risk,
                 ExperimentConditionMatrix.GetPolicy("ours_full"));
 
-            Assert.That(baselineTarget, Is.EqualTo("PolicyE5"));
-            Assert.That(fullTarget, Is.EqualTo("PolicyE3"));
+            Assert.That(baselineTarget, Is.EqualTo("E5"));
+            Assert.That(fullTarget, Is.EqualTo("E3"));
         }
         finally
         {
@@ -2816,7 +2942,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void SemanticTargetSelector_DistinguishesRouteTurnCueAndNavigableDetourRoles()
+    public void SemanticTargetSelector_DistinguishesDetourAndFinalRoles()
     {
         var root = new GameObject("GuidanceTargetRoleSelectionTest");
         try
@@ -2825,62 +2951,34 @@ public sealed class GuidanceRuntimeEditModeTests
             userRoot.transform.SetParent(root.transform, false);
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualUserRoot(userRoot.transform);
-            var current = CreateExhibit(
-                root.transform,
-                "RoleE1",
-                Vector3.zero,
-                "introduction",
-                new[] { "RoleE2", "RoleE3" });
-            CreateExhibit(
-                root.transform,
-                "RoleE2",
-                new Vector3(-2f, 0f, 1f),
-                "turn_cue_anchor",
-                null);
-            CreateExhibit(
-                root.transform,
-                "RoleE3",
-                new Vector3(-3f, 0f, 1f),
-                "left_related_anchor",
-                null);
-            CreateExhibit(
-                root.transform,
-                "RoleE5",
-                new Vector3(0f, 0f, 3f),
-                "route_subgoal",
-                null);
-            CreateExhibit(
-                root.transform,
-                "RoleE6",
-                new Vector3(0f, 0f, 5f),
-                "main_target",
-                null);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            Assert.That(targets.TryGetTarget("E1", out var current), Is.True);
+            Assert.That(targets.TryGetTarget("E5", out var finalMetadata), Is.True);
+            var currentPosition = current.ViewPoint != null ? current.ViewPoint.position : current.transform.position;
+            var finalPosition = finalMetadata.ViewPoint != null
+                ? finalMetadata.ViewPoint.position
+                : finalMetadata.transform.position;
+            userRoot.transform.position = currentPosition;
+            userRoot.transform.forward = Vector3.ProjectOnPlane(finalPosition - currentPosition, Vector3.up).normalized;
+            Assert.That(targets.TryGetTargetDirection("E3", out var detourDirection), Is.True);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
             var runtime = new GuidanceRuntimeState();
-            runtime.Begin("T2_main_target", current.Id, "RoleE5", "RoleE6");
+            runtime.Begin("T2_main_target", current.Id, "E5", "E5");
             var unsafeForward = new PhysicalRiskState(
                 unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left" });
+                safeDirections: new[] { detourDirection });
 
-            var turnCue = selector.SelectNextGuidanceTarget(
+            var detour = selector.SelectNextGuidanceTarget(
                 runtime,
                 unsafeForward,
                 ExperimentConditionMatrix.GetPolicy("ours_full"));
-            Assert.That(turnCue.TargetId, Is.EqualTo("RoleE2"));
-            Assert.That(turnCue.TargetRole, Is.EqualTo(NavigationTargetRole.TurnCueAnchor));
-            Assert.That(targets.GetSafetyTargetRole("RoleE3"), Is.EqualTo(NavigationTargetRole.NavigableDetour));
+            Assert.That(detour.TargetId, Is.EqualTo("E3"));
+            Assert.That(detour.TargetRole, Is.EqualTo(NavigationTargetRole.NavigableDetour));
+            Assert.That(targets.GetSafetyTargetRole("E4"), Is.EqualTo(NavigationTargetRole.NavigableDetour));
 
-            var routeSubgoal = selector.SelectNextGuidanceTarget(
-                runtime,
-                new PhysicalRiskState(safeDirections: new[] { "forward" }),
-                ExperimentConditionMatrix.GetPolicy("ours_full"));
-            Assert.That(routeSubgoal.TargetRole, Is.EqualTo(NavigationTargetRole.RouteSubgoal));
-
-            runtime.Begin("T2_main_target", current.Id, "RoleE6", "RoleE6");
             var finalTarget = selector.SelectNextGuidanceTarget(
                 runtime,
                 new PhysicalRiskState(safeDirections: new[] { "forward" }),
@@ -2919,7 +3017,7 @@ public sealed class GuidanceRuntimeEditModeTests
             });
             task.StartTask();
             var coordinator = root.AddComponent<GuidanceCoordinator>();
-            coordinator.Configure(null, executor, task, null, null, null, null, null, null, null, rejection);
+            ConfigureT2CoordinatorHarness(root, coordinator, task, executor, rejection);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             coordinator.RequestNextGuidance();
@@ -3238,12 +3336,11 @@ public sealed class GuidanceRuntimeEditModeTests
                 decision_id = "decision-trace",
                 state_version = runtime.stateVersion,
                 risk_snapshot_id = "risk-request",
-                target_role = "route_subgoal",
                 condition = "ours_full",
                 task_id = "T2_main_target",
-                current_exhibit = "E1",
-                semantic_next_target = "E3"
+                current_exhibit = "E1"
             };
+            ConfigureSingleCandidate(request, "E3", "navigable_detour");
             var response = ResponseForRequest(request, "E3");
 
             var trace = logger.LogRequest(request, new PhysicalRiskState(
@@ -3346,12 +3443,11 @@ public sealed class GuidanceRuntimeEditModeTests
                 decision_id = "decision-console",
                 state_version = runtime.stateVersion,
                 risk_snapshot_id = risk.risk_snapshot_id,
-                target_role = "route_subgoal",
                 condition = "ours_full",
                 task_id = runtime.taskId,
-                current_exhibit = runtime.currentExhibitId,
-                semantic_next_target = runtime.nextTargetId
+                current_exhibit = runtime.currentExhibitId
             };
+            ConfigureSingleCandidate(request, runtime.nextTargetId, "route_subgoal");
             var response = ResponseForRequest(request, "E3");
 
             var trace = logger.LogRequest(request, risk);
@@ -3472,12 +3568,11 @@ public sealed class GuidanceRuntimeEditModeTests
                 decision_id = "decision-required-events",
                 state_version = 1,
                 risk_snapshot_id = "risk-required-events",
-                target_role = "navigable_detour",
                 condition = "ours_full",
                 task_id = "T2_main_target",
-                current_exhibit = "E1",
-                semantic_next_target = "E2"
+                current_exhibit = "E1"
             };
+            ConfigureSingleCandidate(request, "E2", "navigable_detour");
             var response = ResponseForRequest(request, "E2");
             var risk = new PhysicalRiskState(
                 riskSnapshotId: request.risk_snapshot_id,
@@ -3635,9 +3730,9 @@ public sealed class GuidanceRuntimeEditModeTests
             "calibration_id",
             "request_id",
             "decision_id",
+            "candidate_set_id",
             "state_version",
             "risk_snapshot_id",
-            "target_role",
             "condition",
             "task_id",
             "physical_space_id",
@@ -3647,7 +3742,12 @@ public sealed class GuidanceRuntimeEditModeTests
             "user_physical_forward",
             "participant_id",
             "user_task",
-            "semantic_next_target",
+            "final_target",
+            "preferred_task_target",
+            "candidate_ids",
+            "model_candidate_ids",
+            "allowed_candidate_ids",
+            "semantic_candidates",
             "user_virtual_position",
             "user_virtual_forward");
 
@@ -3660,6 +3760,7 @@ public sealed class GuidanceRuntimeEditModeTests
             "calibration_id",
             "request_id",
             "decision_id",
+            "candidate_set_id",
             "state_version",
             "risk_snapshot_id",
             "risk_revision",
@@ -3706,6 +3807,107 @@ public sealed class GuidanceRuntimeEditModeTests
             ResetLifecycleState.Inactive,
             unsafeSamples,
             safeCandidateAvailable);
+    }
+
+    [Test]
+    public void NavigationTargetManager_RelatedExhibitsDoNotAdvanceMembershipRevision()
+    {
+        var root = new GameObject("CandidateMembershipMetadataTest");
+        try
+        {
+            var targetObject = new GameObject("MembershipOnlyTarget");
+            targetObject.transform.SetParent(root.transform, false);
+            var metadata = targetObject.AddComponent<ExhibitMetadata>();
+            metadata.Configure(
+                "MembershipOnlyTarget",
+                "Membership",
+                null,
+                string.Empty,
+                "navigable_detour",
+                new[] { "E1" },
+                targetObject.transform,
+                targetObject.transform);
+            var manager = root.AddComponent<NavigationTargetManager>();
+            manager.RebuildIndex();
+            var membershipRevision = manager.RegistryRevision;
+
+            metadata.Configure(
+                "MembershipOnlyTarget",
+                "Membership changed",
+                null,
+                string.Empty,
+                "navigable_detour",
+                new[] { "E2", "E5" },
+                targetObject.transform,
+                targetObject.transform);
+            manager.RebuildIndex();
+
+            Assert.That(manager.RegistryRevision, Is.EqualTo(membershipRevision));
+            Assert.That(manager.GetRelatedTargetIds("MembershipOnlyTarget"), Is.EqualTo(new[] { "E2", "E5" }));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void SemanticTargetSelector_ReservationUsesRiskRevisionInsteadOfSampleId()
+    {
+        var root = new GameObject("CandidateReservationRiskRevisionTest");
+        try
+        {
+            var virtualUser = new GameObject("ReservationRiskUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            AlignVirtualUserToT2Route(virtualUser.transform, targets);
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E5", "E5");
+            var policy = ExperimentConditionMatrix.GetPolicy("ours_full");
+            var initialRisk = new PhysicalRiskState(
+                riskSnapshotId: "risk-sample-1",
+                riskRevision: 4,
+                calibrationId: "calibration-current",
+                safeDirections: new[] { "forward", "left", "right" });
+            var candidateSet = selector.BuildCandidateSet(runtime, initialRisk, policy);
+
+            Assert.That(runtime.TryReserveCandidateSet(
+                candidateSet,
+                "candidate-set-risk",
+                "request-risk",
+                "decision-risk",
+                policy.Condition,
+                initialRisk,
+                out var reservation), Is.True);
+
+            var sameRevisionNewSample = new PhysicalRiskState(
+                riskSnapshotId: "risk-sample-2",
+                riskRevision: 4,
+                calibrationId: "calibration-current",
+                safeDirections: new[] { "forward", "left", "right" });
+            Assert.That(
+                selector.IsReservationCurrent(reservation, runtime, sameRevisionNewSample, policy),
+                Is.True);
+
+            var changedRevision = new PhysicalRiskState(
+                riskSnapshotId: "risk-sample-3",
+                riskRevision: 5,
+                calibrationId: "calibration-current",
+                safeDirections: new[] { "forward", "left", "right" });
+            Assert.That(
+                selector.IsReservationCurrent(reservation, runtime, changedRevision, policy),
+                Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
     }
 
     private static TMP_Text CreateText(Transform parent, string name)
@@ -3770,38 +3972,206 @@ public sealed class GuidanceRuntimeEditModeTests
 
     private static GuidanceRequest RequestForContext(GuidanceRequestContext context, string requestId)
     {
+        var preferredTarget = !string.IsNullOrWhiteSpace(context.preferred_task_target)
+            ? context.preferred_task_target
+            : "E5";
+        var candidateIds = context.candidate_ids != null && context.candidate_ids.Length > 0
+            ? context.candidate_ids
+            : new[] { preferredTarget };
+        var modelCandidateIds = context.model_candidate_ids != null && context.model_candidate_ids.Length > 0
+            ? context.model_candidate_ids
+            : candidateIds;
+        var semanticCandidates = context.semantic_candidates != null && context.semantic_candidates.Length > 0
+            ? context.semantic_candidates
+            : new[]
+            {
+                new GuidanceSemanticCandidate
+                {
+                    id = preferredTarget,
+                    target_role = "final_target",
+                    relative_direction = "forward"
+                }
+            };
         return new GuidanceRequest
         {
             session_id = context.session_id,
             calibration_id = context.calibration_id,
             request_id = requestId,
             decision_id = context.decision_id,
+            candidate_set_id = string.IsNullOrWhiteSpace(context.candidate_set_id)
+                ? "candidate-set-test"
+                : context.candidate_set_id,
             state_version = context.state_version,
             risk_snapshot_id = context.risk_snapshot_id,
             risk_snapshot = new GuidanceRiskSnapshot { risk_revision = 1 },
-            target_role = context.target_role,
             current_exhibit = context.current_exhibit,
-            semantic_next_target = context.semantic_next_target,
+            final_target = string.IsNullOrWhiteSpace(context.final_target) ? preferredTarget : context.final_target,
+            preferred_task_target = preferredTarget,
+            candidate_ids = candidateIds,
+            model_candidate_ids = modelCandidateIds,
+            allowed_candidate_ids = context.allowed_candidate_ids ?? new string[0],
+            semantic_candidates = semanticCandidates,
             physical_space_id = "narrow_room"
         };
     }
 
     private static GuidanceResponse ResponseForRequest(GuidanceRequest request, string selectedTarget)
     {
+        var direction = CandidateDirectionForRequest(request, selectedTarget);
         return new GuidanceResponse
         {
             session_id = request.session_id,
             calibration_id = request.calibration_id,
             request_id = request.request_id,
             decision_id = request.decision_id,
+            candidate_set_id = request.candidate_set_id,
             state_version = request.state_version,
             risk_snapshot_id = request.risk_snapshot_id,
             risk_revision = request.risk_snapshot != null ? request.risk_snapshot.risk_revision : 1,
-            target_role = request.target_role,
+            target_role = CandidateRoleForRequest(request, selectedTarget),
             selected_target = selectedTarget,
-            movement_instruction = "move_forward_slowly",
+            movement_instruction = direction == "left"
+                ? "turn_left_slowly"
+                : direction == "right" ? "turn_right_slowly" : "move_forward_slowly",
             verifier = new VerifierResult { approved = true, reason = "ok" }
         };
+    }
+
+    private static string CandidateDirectionForRequest(GuidanceRequest request, string selectedTarget)
+    {
+        if (request != null && request.semantic_candidates != null)
+        {
+            foreach (var candidate in request.semantic_candidates)
+            {
+                if (candidate != null && candidate.id == selectedTarget)
+                {
+                    return candidate.relative_direction;
+                }
+            }
+        }
+        return selectedTarget == "E3" ? "left" : selectedTarget == "E4" ? "right" : "forward";
+    }
+
+    private static string[] SafeDirectionsExcept(string unsafeDirection)
+    {
+        return new[] { "forward", "left", "right" }
+            .Where(direction => direction != unsafeDirection)
+            .ToArray();
+    }
+
+    private static void ConfigureT2CoordinatorHarness(
+        GameObject root,
+        GuidanceCoordinator coordinator,
+        GuidanceTaskController task,
+        GuidanceExecutor executor = null,
+        RejectionPanel rejection = null)
+    {
+        var virtualUser = new GameObject("T2HarnessUser");
+        virtualUser.transform.SetParent(root.transform, false);
+        var pose = root.AddComponent<UserPoseTracker>();
+        pose.ConfigureVirtualUserRoot(virtualUser.transform);
+        var space = root.AddComponent<PhysicalSpaceManager>();
+        space.LoadSpaces();
+        space.SetPhysicalSpace("wide_room");
+        var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+        calibration.Configure(space, pose);
+        calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+        calibration.UpdateRawTrackingPose(new Vector2(2.5f, 2.5f), 0f);
+        calibration.CalibrateCurrentPose();
+        var risk = root.AddComponent<PhysicalRiskEvaluator>();
+        risk.Configure(space, pose, calibration);
+
+        root.SetActive(true);
+        var targets = root.AddComponent<NavigationTargetManager>();
+        targets.Configure(pose);
+        targets.RebuildIndex();
+        AlignVirtualUserToT2Route(virtualUser.transform, targets);
+        var selector = root.AddComponent<SemanticTargetSelector>();
+        selector.Configure(targets);
+        var validator = root.AddComponent<LocalGuidanceValidator>();
+        validator.Configure(targets, risk);
+        coordinator.Configure(null, executor, task, targets, selector, null, risk, validator, null, null, rejection);
+    }
+
+    private static void AlignVirtualUserToT2Route(Transform virtualUser, NavigationTargetManager targets)
+    {
+        if (virtualUser == null || targets == null ||
+            !targets.TryGetTarget("E1", out var start) || !targets.TryGetTarget("E5", out var finalTarget))
+        {
+            return;
+        }
+
+        var startPosition = start.ViewPoint != null ? start.ViewPoint.position : start.transform.position;
+        var finalPosition = finalTarget.ViewPoint != null
+            ? finalTarget.ViewPoint.position
+            : finalTarget.transform.position;
+        virtualUser.position = startPosition;
+        var forward = Vector3.ProjectOnPlane(finalPosition - startPosition, Vector3.up);
+        if (forward.sqrMagnitude > 0.0001f)
+        {
+            virtualUser.forward = forward.normalized;
+        }
+    }
+
+    private static void ConfigureSingleCandidate(
+        GuidanceRequest request,
+        string targetId,
+        string targetRole)
+    {
+        request.candidate_set_id = string.IsNullOrWhiteSpace(request.candidate_set_id)
+            ? $"candidate-set-{request.request_id ?? "test"}"
+            : request.candidate_set_id;
+        request.final_target = "E5";
+        request.preferred_task_target = targetId;
+        request.candidate_ids = targetId == "E5" ? new[] { "E5" } : new[] { "E5", targetId };
+        request.model_candidate_ids = new[] { targetId };
+        request.allowed_candidate_ids = new[] { targetId };
+        request.semantic_candidates = new[]
+        {
+            new GuidanceSemanticCandidate
+            {
+                id = targetId,
+                target_role = targetRole,
+                relative_direction = targetId == "E3" ? "left" : targetId == "E4" ? "right" : "forward"
+            }
+        };
+    }
+
+    private static void ConfigureSingleCandidateContext(
+        GuidanceRequestContext context,
+        string targetId,
+        string targetRole)
+    {
+        context.candidate_set_id = "candidate-set-context-test";
+        context.final_target = "E5";
+        context.preferred_task_target = targetId;
+        context.candidate_ids = targetId == "E5" ? new[] { "E5" } : new[] { "E5", targetId };
+        context.model_candidate_ids = new[] { targetId };
+        context.allowed_candidate_ids = new[] { targetId };
+        context.semantic_candidates = new[]
+        {
+            new GuidanceSemanticCandidate
+            {
+                id = targetId,
+                target_role = targetRole,
+                relative_direction = targetId == "E3" ? "left" : targetId == "E4" ? "right" : "forward"
+            }
+        };
+    }
+
+    private static string CandidateRoleForRequest(GuidanceRequest request, string selectedTarget)
+    {
+        if (request != null && request.semantic_candidates != null)
+        {
+            foreach (var candidate in request.semantic_candidates)
+            {
+                if (candidate != null && candidate.id == selectedTarget)
+                {
+                    return candidate.target_role;
+                }
+            }
+        }
+        return selectedTarget == "E5" ? "final_target" : "navigable_detour";
     }
 
     private static string[] ReadAllEventLines(ExperimentLogger logger)
@@ -3910,6 +4280,13 @@ public sealed class GuidanceRuntimeEditModeTests
         var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.That(field, Is.Not.Null, fieldName);
         field.SetValue(target, value);
+    }
+
+    private static T GetPrivateField<T>(object target, string fieldName)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(field, Is.Not.Null, fieldName);
+        return (T)field.GetValue(target);
     }
 
     private static void InvokePrivate(object target, string methodName, params object[] args)

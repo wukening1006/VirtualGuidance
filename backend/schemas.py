@@ -105,6 +105,37 @@ class NavigationTargetRole(str, Enum):
     NAVIGABLE_DETOUR = "navigable_detour"
 
 
+class RouteDecision(str, Enum):
+    """MLLM Draft 允许返回的有限路线决策。"""
+
+    DIRECT_TO_TARGET = "direct_to_target"
+    VISIT_ROUTE_SUBGOAL = "visit_route_subgoal"
+    SEMANTIC_REDIRECT = "semantic_redirect"
+    REGUIDANCE_SAME_TARGET = "reguidance_same_target"
+
+
+class SemanticCandidate(BaseModel):
+    """Unity 冻结并提供给模型的候选语义元数据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    target_role: NavigationTargetRole
+    relative_direction: Literal["forward", "left", "right", "behind"]
+    name: str = ""
+    description: str = ""
+    semantic_role: str = ""
+    tags: list[str] = Field(default_factory=list)
+    related_exhibits: list[str] = Field(default_factory=list)
+
+    @field_validator("tags", "related_exhibits")
+    @classmethod
+    def validate_unique_metadata(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Candidate metadata values must be unique.")
+        return value
+
+
 class AvatarAction(str, Enum):
     POINT_LEFT = "point_left"
     POINT_RIGHT = "point_right"
@@ -226,9 +257,9 @@ class GuidanceRequest(BaseModel):
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     decision_id: str = Field(min_length=1)
+    candidate_set_id: str = Field(min_length=1)
     state_version: int = Field(ge=0)
     risk_snapshot_id: str = Field(min_length=1)
-    target_role: NavigationTargetRole
     condition: Condition
     task_id: TaskId
     physical_space_id: str = Field(min_length=1)
@@ -238,7 +269,12 @@ class GuidanceRequest(BaseModel):
     user_physical_forward: list[float]
     participant_id: str = "P001"
     user_task: str | None = None
-    semantic_next_target: str = Field(min_length=1)
+    final_target: str = Field(min_length=1)
+    preferred_task_target: str = Field(min_length=1)
+    candidate_ids: list[str] = Field(min_length=1)
+    model_candidate_ids: list[str] = Field(min_length=1)
+    allowed_candidate_ids: list[str] = Field(default_factory=list)
+    semantic_candidates: list[SemanticCandidate] = Field(min_length=1)
     user_virtual_position: list[float] | None = None
     user_virtual_forward: list[float] | None = None
 
@@ -274,7 +310,40 @@ class GuidanceRequest(BaseModel):
             raise ValueError("user_physical_position must mirror Unity risk_snapshot.")
         if self.user_physical_forward != self.risk_snapshot.physical_forward:
             raise ValueError("user_physical_forward must mirror Unity risk_snapshot.")
+
+        candidate_ids = set(self.candidate_ids)
+        model_candidate_ids = set(self.model_candidate_ids)
+        allowed_candidate_ids = set(self.allowed_candidate_ids)
+        semantic_candidate_ids = {candidate.id for candidate in self.semantic_candidates}
+        if len(candidate_ids) != len(self.candidate_ids):
+            raise ValueError("candidate_ids must be unique.")
+        if len(model_candidate_ids) != len(self.model_candidate_ids):
+            raise ValueError("model_candidate_ids must be unique.")
+        if len(allowed_candidate_ids) != len(self.allowed_candidate_ids):
+            raise ValueError("allowed_candidate_ids must be unique.")
+        if len(semantic_candidate_ids) != len(self.semantic_candidates):
+            raise ValueError("semantic_candidates ids must be unique.")
+        if not model_candidate_ids.issubset(candidate_ids):
+            raise ValueError("model_candidate_ids must be a subset of candidate_ids.")
+        if not allowed_candidate_ids.issubset(candidate_ids):
+            raise ValueError("allowed_candidate_ids must be a subset of candidate_ids.")
+        if semantic_candidate_ids != model_candidate_ids:
+            raise ValueError("semantic_candidates ids must exactly match model_candidate_ids.")
+        if self.final_target not in candidate_ids or self.preferred_task_target not in candidate_ids:
+            raise ValueError("final_target and preferred_task_target must belong to candidate_ids.")
+
+        policy = condition_policy_for(self.condition)
+        if policy.use_safe_candidate_filter == ConditionCapabilityMode.ENABLED:
+            if self.model_candidate_ids != self.allowed_candidate_ids:
+                raise ValueError("Safe-filter conditions require model_candidate_ids == allowed_candidate_ids.")
+        elif self.model_candidate_ids != self.candidate_ids:
+            raise ValueError("Baseline conditions require model_candidate_ids == candidate_ids.")
         return self
+
+    def candidate_for(self, target_id: str) -> SemanticCandidate | None:
+        """返回冻结模型候选中的目标元数据。"""
+
+        return next((candidate for candidate in self.semantic_candidates if candidate.id == target_id), None)
 
     @property
     def physical_position_xz(self) -> tuple[float, float]:
@@ -303,6 +372,7 @@ class GuidanceResponse(BaseModel):
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     decision_id: str = Field(min_length=1)
+    candidate_set_id: str = Field(min_length=1)
     state_version: int = Field(ge=0)
     risk_snapshot_id: str = Field(min_length=1)
     risk_revision: int = Field(ge=1)
@@ -352,7 +422,7 @@ class Affordance(BaseModel):
 
 class GuideDraft(BaseModel):
     selected_target: str
-    route_decision: str
+    route_decision: RouteDecision
     narration: str
     gaze_cue: str
     gaze_target_id: str
@@ -371,6 +441,7 @@ class GuidanceLogRecord(BaseModel):
     calibration_id: str
     request_id: str
     decision_id: str
+    candidate_set_id: str
     state_version: int
     risk_snapshot_id: str
     risk_revision: int
@@ -386,7 +457,12 @@ class GuidanceLogRecord(BaseModel):
     physical_space: str
     task_id: str
     current_exhibit: str
-    semantic_next_target: str
+    final_target: str
+    preferred_task_target: str
+    candidate_ids: list[str]
+    model_candidate_ids: list[str]
+    allowed_candidate_ids: list[str]
+    semantic_candidates: list[dict[str, Any]]
     selected_target: str
     clearance_forward: float
     clearance_left: float
@@ -426,6 +502,10 @@ def response_from_draft(
 ) -> GuidanceResponse:
     """在不改动 Unity guidance 字段名的前提下附加 verifier 结果。"""
 
+    selected_candidate = request.candidate_for(draft.selected_target)
+    if selected_candidate is None:
+        raise ValueError("selected_target must belong to frozen model candidates.")
+
     return GuidanceResponse(
         task_definition_version=request.task_definition_version,
         guidance_schema_version=request.guidance_schema_version,
@@ -435,10 +515,11 @@ def response_from_draft(
         calibration_id=request.calibration_id,
         request_id=request.request_id,
         decision_id=request.decision_id,
+        candidate_set_id=request.candidate_set_id,
         state_version=request.state_version,
         risk_snapshot_id=request.risk_snapshot_id,
         risk_revision=request.risk_snapshot.risk_revision,
-        target_role=request.target_role,
+        target_role=selected_candidate.target_role,
         selected_target=draft.selected_target,
         route_decision=draft.route_decision,
         narration=draft.narration,

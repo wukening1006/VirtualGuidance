@@ -60,19 +60,18 @@ class GuidancePipeline:
             critical=request.risk_snapshot.critical,
         )
 
-        semantic_next_target = request.semantic_next_target
         affordance = self.affordance.build(request, risk_state)
         draft = self.guide.build(request, risk_state, affordance)
-        if draft.selected_target != semantic_next_target:
+        if draft.selected_target not in request.model_candidate_ids:
             raise HTTPException(
                 status_code=500,
                 detail=(
                     "Deterministic guidance contract violation: "
-                    "selected_target must match semantic_next_target."
+                    "selected_target must belong to model_candidate_ids."
                 ),
             )
         verifier = self.verifier.verify(request.condition, draft, risk_state)
-        self.logger.write(request, risk_state, draft, verifier, semantic_next_target)
+        self.logger.write(request, risk_state, draft, verifier)
         return response_from_draft(request, draft, verifier)
 
 

@@ -45,6 +45,11 @@ def risk_snapshot(risk_id: str, calibration_id: str, position: list[float]) -> d
 
 
 def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
+    safe_filter = condition in {
+        Condition.B5_OURS_WITHOUT_VERIFIER.value,
+        Condition.OURS_FULL.value,
+    }
+    model_candidates = ["E3", "E4"] if safe_filter else ["E5", "E3", "E4"]
     return GuidanceRequest(
         task_definition_version="t2-main-target-v2",
         guidance_schema_version="guidance-schema-v2",
@@ -54,9 +59,9 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
         calibration_id="calibration-agent-test",
         request_id="request-agent-test",
         decision_id="decision-agent-test",
+        candidate_set_id="candidates-agent-test",
         state_version=1,
         risk_snapshot_id="risk-agent-test",
-        target_role="route_subgoal",
         condition=condition,
         task_id="T2_main_target",
         physical_space_id="narrow_room",
@@ -64,7 +69,19 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
         risk_snapshot=risk_snapshot("risk-agent-test", "calibration-agent-test", [1.8, 4.3]),
         user_physical_position=[1.8, 4.3],
         user_physical_forward=[0.0, 1.0],
-        semantic_next_target="E5",
+        final_target="E5",
+        preferred_task_target="E5",
+        candidate_ids=["E5", "E3", "E4"],
+        model_candidate_ids=model_candidates,
+        allowed_candidate_ids=["E3", "E4"],
+        semantic_candidates=[
+            {
+                "id": target_id,
+                "target_role": "final_target" if target_id == "E5" else "navigable_detour",
+                "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
+            }
+            for target_id in model_candidates
+        ],
     )
 
 
@@ -106,7 +123,7 @@ def test_verifier_rejects_unsafe_forward_movement() -> None:
     )
     draft = GuideDraft(
         selected_target="E5",
-        route_decision="unsafe_test",
+        route_decision="direct_to_target",
         narration="Go forward.",
         gaze_cue="look_forward",
         gaze_target_id="E5_GazeTarget",
@@ -131,7 +148,7 @@ def test_verifier_rejects_unsafe_selected_target() -> None:
     )
     draft = GuideDraft(
         selected_target="E4",
-        route_decision="unsafe_target_test",
+        route_decision="semantic_redirect",
         narration="Look right.",
         gaze_cue="look_left",
         gaze_target_id="E4_GazeTarget",
@@ -147,28 +164,8 @@ def test_verifier_rejects_unsafe_selected_target() -> None:
     assert "selected_target" in result.reason
 
 
-def test_b5_stably_outputs_unsafe_forward_without_verifier() -> None:
-    request = GuidanceRequest(
-        task_definition_version="t2-main-target-v2",
-        guidance_schema_version="guidance-schema-v2",
-        candidate_policy_version="t2-candidate-policy-v1",
-        risk_policy_version="unity-risk-policy-v1",
-        session_id="session-b5-test",
-        calibration_id="calibration-b5-test",
-        request_id="request-b5-test",
-        decision_id="decision-b5-test",
-        state_version=1,
-        risk_snapshot_id="risk-b5-test",
-        target_role="route_subgoal",
-        condition=Condition.B5_OURS_WITHOUT_VERIFIER,
-        task_id="T2_main_target",
-        physical_space_id="narrow_room",
-        current_exhibit="E1",
-        risk_snapshot=risk_snapshot("risk-b5-test", "calibration-b5-test", [1.0, 4.3]),
-        user_physical_position=[1.0, 4.3],
-        user_physical_forward=[0.0, 1.0],
-        semantic_next_target="E5",
-    )
+def test_b5_stably_outputs_safe_candidate_with_unsafe_forward_without_verifier() -> None:
+    request = request_for(Condition.B5_OURS_WITHOUT_VERIFIER.value)
     state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
         request.physical_space_id,
         request.physical_position_xz,
@@ -178,5 +175,5 @@ def test_b5_stably_outputs_unsafe_forward_without_verifier() -> None:
 
     draft = GuideMockAgent().build(request, state, affordance)
 
-    assert draft.selected_target == "E5"
+    assert draft.selected_target == "E3"
     assert draft.movement_instruction == MovementInstruction.MOVE_FORWARD_SLOWLY

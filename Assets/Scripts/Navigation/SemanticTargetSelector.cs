@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -14,11 +16,13 @@ public enum CandidateSafetyState
 }
 
 /// <summary>
-/// 将任务的语义下一目标与当前物理安全方向结合，选择本次 guidance 的可执行展品目标。
-/// 候选来自当前展品的 related exhibits，结果提供给 GuidanceCoordinator。
+/// 按 T2 Candidate Policy 从任务、Target Registry、角色和访问历史构建候选集合。
+/// related_exhibits 只附加为模型语义元数据，不参与候选资格判定。
 /// </summary>
 public sealed class SemanticTargetSelector : MonoBehaviour
 {
+    private static readonly string[] T2DetourTargetIds = { "E3", "E4" };
+
     [SerializeField] private NavigationTargetManager navigationTargets;
 
     private void Awake()
@@ -35,19 +39,13 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 优先保留路线目标；其方向危险时依次选择明确安全、再选择未标危险的相关展品。
-    /// </summary>
-    /// <returns>可用于请求的展品 ID；无可接受候选时返回空字符串。</returns>
+    /// <summary>兼容诊断调用：构建完整候选后返回第一个模型可见目标。</summary>
     public string SelectNextTarget(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
     {
         return SelectNextTarget(runtimeState, riskState, ExperimentConditionMatrix.GetPolicy("ours_full"));
     }
 
-    /// <summary>
-    /// 按 Condition Policy 决定是否在实验决策层应用安全候选筛选。
-    /// </summary>
-    /// <returns>策略允许筛选时返回安全候选；否则原样返回路线目标。</returns>
+    /// <summary>兼容诊断调用：按 Condition 构建候选后返回第一个模型可见目标。</summary>
     public string SelectNextTarget(
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
@@ -57,53 +55,95 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         return target != null ? target.TargetId : string.Empty;
     }
 
-    /// <summary>
-    /// 返回带明确 TargetRole 的 Guidance 目标，避免 TurnCueAnchor 与 NavigableDetour 混用。
-    /// </summary>
+    /// <summary>兼容运行期安全探针：返回第一个模型可见候选及其职责。</summary>
     public GuidanceTarget SelectNextGuidanceTarget(
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
         ExperimentConditionPolicy policy)
     {
-        ResolveReferences();
-        if (runtimeState == null)
+        var candidateSet = BuildCandidateSet(runtimeState, riskState, policy);
+        if (candidateSet == null || !candidateSet.HasModelCandidates) return null;
+        var targetId = candidateSet.ModelCandidateIds[0];
+        foreach (var candidate in candidateSet.Candidates)
         {
-            return null;
-        }
-
-        var preferred = runtimeState.nextTargetId;
-        var preferredRole = string.Equals(preferred, runtimeState.finalTargetId, System.StringComparison.Ordinal)
-            ? NavigationTargetRole.FinalTarget
-            : NavigationTargetRole.RouteSubgoal;
-        if (policy == null || policy.UseSafeCandidateFilter != ConditionCapabilityMode.Enabled)
-        {
-            return new GuidanceTarget(preferred, preferredRole);
-        }
-
-        if (navigationTargets == null || riskState == null || string.IsNullOrWhiteSpace(preferred))
-        {
-            return null;
-        }
-
-        if (GetCandidateSafetyState(preferred, riskState) == CandidateSafetyState.Eligible)
-        {
-            return new GuidanceTarget(preferred, preferredRole);
-        }
-
-        var related = navigationTargets.GetRelatedTargetIds(runtimeState.currentExhibitId);
-        // 明确列入 safe_directions 的候选优先于仅未被标记为危险的候选。
-        foreach (var candidate in related)
-        {
-            var role = navigationTargets.GetSafetyTargetRole(candidate);
-            if (navigationTargets.HasTarget(candidate) &&
-                CanUseSafetyTarget(runtimeState, candidate, role) &&
-                GetCandidateSafetyState(candidate, riskState) == CandidateSafetyState.Eligible)
+            if (candidate != null && string.Equals(candidate.TargetId, targetId, StringComparison.Ordinal))
             {
-                return new GuidanceTarget(candidate, role);
+                return new GuidanceTarget(candidate.TargetId, candidate.TargetRole);
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 构建 T2 的 Base、Model 和 Allowed Candidate Set；E3/E4 是唯一临时 Detour，E5 始终为 Final Goal。
+    /// </summary>
+    public NavigationCandidateSet BuildCandidateSet(
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ExperimentConditionPolicy policy)
+    {
+        ResolveReferences();
+        if (runtimeState == null || navigationTargets == null || !runtimeState.IsNavigating ||
+            !string.Equals(runtimeState.taskId, "T2_main_target", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
+        {
+            return new NavigationCandidateSet(null, null, null, null, 0);
+        }
+
+        var candidates = new List<NavigationCandidate>();
+        TryAddCandidate(candidates, runtimeState, runtimeState.finalTargetId, NavigationTargetRole.FinalTarget);
+        foreach (var detourId in T2DetourTargetIds)
+        {
+            TryAddCandidate(candidates, runtimeState, detourId, navigationTargets.GetSafetyTargetRole(detourId));
+        }
+
+        var candidateIds = new List<string>(candidates.Count);
+        var allowedCandidateIds = new List<string>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            candidateIds.Add(candidate.TargetId);
+            if (GetCandidateSafetyState(candidate.TargetId, riskState) == CandidateSafetyState.Eligible)
+            {
+                allowedCandidateIds.Add(candidate.TargetId);
             }
         }
 
-        return null;
+        var useSafeFilter = policy != null &&
+                            policy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled;
+        var modelCandidateIds = useSafeFilter
+            ? allowedCandidateIds
+            : candidateIds;
+        return new NavigationCandidateSet(
+            candidateIds,
+            modelCandidateIds,
+            useSafeFilter ? allowedCandidateIds : Array.Empty<string>(),
+            candidates,
+            navigationTargets.RegistryRevision);
+    }
+
+    /// <summary>重新构建候选并确认冻结 Reservation 的成员、角色和方向仍然一致。</summary>
+    public bool IsReservationCurrent(
+        CandidateSetReservation reservation,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ExperimentConditionPolicy policy)
+    {
+        if (reservation == null || runtimeState == null || riskState == null ||
+            reservation.TaskStateVersion != runtimeState.stateVersion ||
+            reservation.RiskRevision != riskState.risk_revision ||
+            !string.Equals(reservation.CalibrationId, riskState.calibration_id, StringComparison.Ordinal) ||
+            !string.Equals(reservation.Condition, policy != null ? policy.Condition : string.Empty, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var current = BuildCandidateSet(runtimeState, riskState, policy);
+        return current != null &&
+               reservation.RegistryRevision == current.RegistryRevision &&
+               SameValues(reservation.CandidateIds, current.CandidateIds) &&
+               SameValues(reservation.ModelCandidateIds, current.ModelCandidateIds) &&
+               SameValues(reservation.AllowedCandidateIds, current.AllowedCandidateIds) &&
+               SameCandidates(reservation.Candidates, current.Candidates);
     }
 
     /// <summary>
@@ -169,6 +209,60 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
 
         return false;
+    }
+
+    private void TryAddCandidate(
+        List<NavigationCandidate> candidates,
+        GuidanceRuntimeState runtimeState,
+        string targetId,
+        NavigationTargetRole role)
+    {
+        if (string.IsNullOrWhiteSpace(targetId) || !navigationTargets.TryGetTarget(targetId, out var metadata) ||
+            metadata == null || !CanUseSafetyTarget(runtimeState, targetId, role) ||
+            !navigationTargets.TryGetTargetDirection(targetId, out var direction) || !IsNaturalDirection(direction))
+        {
+            return;
+        }
+
+        candidates.Add(new NavigationCandidate(
+            targetId,
+            role,
+            direction,
+            metadata.ExhibitName,
+            metadata.Description,
+            metadata.SemanticRole,
+            metadata.Tags,
+            metadata.RelatedExhibits));
+    }
+
+    private static bool SameCandidates(
+        System.Collections.Generic.IReadOnlyList<NavigationCandidate> left,
+        System.Collections.Generic.IReadOnlyList<NavigationCandidate> right)
+    {
+        if (left == null || right == null || left.Count != right.Count) return false;
+        for (var i = 0; i < left.Count; i++)
+        {
+            if (left[i] == null || right[i] == null ||
+                !string.Equals(left[i].TargetId, right[i].TargetId, StringComparison.Ordinal) ||
+                left[i].TargetRole != right[i].TargetRole ||
+                !string.Equals(left[i].RelativeDirection, right[i].RelativeDirection, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool SameValues(
+        System.Collections.Generic.IReadOnlyList<string> left,
+        System.Collections.Generic.IReadOnlyList<string> right)
+    {
+        if (left == null || right == null || left.Count != right.Count) return false;
+        for (var i = 0; i < left.Count; i++)
+        {
+            if (!string.Equals(left[i], right[i], StringComparison.Ordinal)) return false;
+        }
+        return true;
     }
 
     private static bool IsNaturalDirection(string direction)

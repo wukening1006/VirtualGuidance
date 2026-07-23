@@ -37,8 +37,11 @@ public sealed class GuidanceRuntimeState
     public int decisionStateVersion;
     /// <summary>当前任务中已创建的 Target Reservation 代际。</summary>
     public int guidanceGeneration;
+    /// <summary>当前任务中已创建的 Candidate-Set Reservation 代际。</summary>
+    public int candidateSetGeneration;
 
     [NonSerialized] private TargetReservation activeReservation;
+    [NonSerialized] private CandidateSetReservation activeCandidateSetReservation;
 
     /// <summary>当前任务是否已经到达完成阶段。</summary>
     public bool IsCompleted => phase == GuidanceRuntimePhase.Completed;
@@ -51,6 +54,8 @@ public sealed class GuidanceRuntimeState
         : new GuidanceTarget(guidanceTargetId, guidanceTargetRole);
     /// <summary>当前有效的 Guidance Target Reservation。</summary>
     public TargetReservation ActiveReservation => activeReservation;
+    /// <summary>最近一次 Candidate-Set Reservation 及其不可变生命周期实例。</summary>
+    public CandidateSetReservation ActiveCandidateSetReservation => activeCandidateSetReservation;
 
     /// <summary>清空运行任务并回到 Idle；仅在状态实际变化时递增版本。</summary>
     public void Reset()
@@ -87,7 +92,9 @@ public sealed class GuidanceRuntimeState
         maxConsecutiveDetours = Math.Max(0, detourLimit);
         decisionStateVersion = 0;
         guidanceGeneration = 0;
+        candidateSetGeneration = 0;
         activeReservation = null;
+        activeCandidateSetReservation = null;
         phase = GuidanceRuntimePhase.Navigating;
         stateVersion++;
     }
@@ -178,6 +185,153 @@ public sealed class GuidanceRuntimeState
             decisionId,
             stateVersion,
             guidanceGeneration);
+        return true;
+    }
+
+    /// <summary>在不修改 Current Subgoal 的前提下创建新的 Candidate-Set Reservation。</summary>
+    public bool TryReserveCandidateSet(
+        NavigationCandidateSet candidateSet,
+        string candidateSetId,
+        string requestId,
+        string decisionId,
+        string condition,
+        PhysicalRiskState riskState,
+        out CandidateSetReservation reservation)
+    {
+        reservation = null;
+        if (!IsNavigating || candidateSet == null || !candidateSet.HasModelCandidates || riskState == null ||
+            string.IsNullOrWhiteSpace(candidateSetId) || string.IsNullOrWhiteSpace(requestId) ||
+            string.IsNullOrWhiteSpace(decisionId) || string.IsNullOrWhiteSpace(condition) ||
+            string.IsNullOrWhiteSpace(riskState.calibration_id) ||
+            string.IsNullOrWhiteSpace(riskState.risk_snapshot_id) || riskState.risk_revision < 1)
+        {
+            return false;
+        }
+
+        if (activeCandidateSetReservation != null &&
+            activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Committed)
+        {
+            activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+                CandidateSetReservationPhase.Abandoned);
+        }
+
+        candidateSetGeneration++;
+        activeCandidateSetReservation = new CandidateSetReservation(
+            candidateSetId,
+            requestId,
+            decisionId,
+            taskId,
+            stateVersion,
+            condition,
+            riskState.calibration_id,
+            riskState.risk_snapshot_id,
+            riskState.risk_revision,
+            finalTargetId,
+            candidateSet,
+            candidateSetGeneration,
+            DateTime.UtcNow.ToString("o"));
+        reservation = activeCandidateSetReservation;
+        return true;
+    }
+
+    /// <summary>确认模型选择属于当前冻结 Candidate Set，但仍不修改 Current Subgoal。</summary>
+    public bool TryValidateCandidateSelection(
+        CandidateSetReservation reservation,
+        string selectedTargetId,
+        out NavigationCandidate selectedCandidate)
+    {
+        selectedCandidate = null;
+        if (!MatchesActiveCandidateSetReservation(reservation) ||
+            activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Reserved ||
+            stateVersion != activeCandidateSetReservation.TaskStateVersion ||
+            !activeCandidateSetReservation.ContainsModelCandidate(selectedTargetId) ||
+            !activeCandidateSetReservation.TryGetCandidate(selectedTargetId, out selectedCandidate))
+        {
+            return false;
+        }
+
+        activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+            CandidateSetReservationPhase.Validated);
+        return true;
+    }
+
+    /// <summary>
+    /// 将已验证候选原子提交为 Current Subgoal，并创建提交后的 Arrival Target Reservation。
+    /// </summary>
+    public bool CommitCurrentSubgoal(
+        CandidateSetReservation reservation,
+        NavigationCandidate selectedCandidate,
+        out TargetReservation targetReservation)
+    {
+        targetReservation = null;
+        if (selectedCandidate == null || !MatchesActiveCandidateSetReservation(reservation) ||
+            activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Validated ||
+            stateVersion != activeCandidateSetReservation.TaskStateVersion ||
+            !activeCandidateSetReservation.ContainsModelCandidate(selectedCandidate.TargetId))
+        {
+            return false;
+        }
+
+        if (selectedCandidate.TargetRole == NavigationTargetRole.NavigableDetour)
+        {
+            var sameActiveDetour = string.Equals(activeDetourId, selectedCandidate.TargetId, StringComparison.Ordinal);
+            if (!sameActiveDetour &&
+                (HasVisitedDetour(selectedCandidate.TargetId) || consecutiveDetourCount >= maxConsecutiveDetours))
+            {
+                return false;
+            }
+        }
+        else if (selectedCandidate.TargetRole == NavigationTargetRole.TurnCueAnchor &&
+                 HasCompletedTurnCue(selectedCandidate.TargetId))
+        {
+            return false;
+        }
+
+        if (selectedCandidate.TargetRole == NavigationTargetRole.NavigableDetour &&
+            !string.Equals(activeDetourId, selectedCandidate.TargetId, StringComparison.Ordinal))
+        {
+            activeDetourId = selectedCandidate.TargetId;
+            consecutiveDetourCount++;
+        }
+
+        guidanceTargetId = selectedCandidate.TargetId;
+        guidanceTargetRole = selectedCandidate.TargetRole;
+        stateVersion++;
+        decisionStateVersion = stateVersion;
+        guidanceGeneration++;
+        activeReservation = new TargetReservation(
+            selectedCandidate.TargetId,
+            selectedCandidate.TargetRole,
+            activeCandidateSetReservation.DecisionId,
+            stateVersion,
+            guidanceGeneration);
+        activeReservation.Commit();
+        activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+            CandidateSetReservationPhase.Committed);
+        targetReservation = activeReservation;
+        return true;
+    }
+
+    /// <summary>检查 token 是否仍代表当前 Candidate-Set Reservation。</summary>
+    public bool MatchesActiveCandidateSetReservation(CandidateSetReservation reservation)
+    {
+        return activeCandidateSetReservation != null &&
+               activeCandidateSetReservation.Matches(reservation) &&
+               activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Abandoned;
+    }
+
+    /// <summary>废弃未提交 Candidate Set；Current Subgoal 保持不变。</summary>
+    public bool AbandonCandidateSetReservation()
+    {
+        if (activeCandidateSetReservation == null ||
+            activeCandidateSetReservation.Phase == CandidateSetReservationPhase.Abandoned ||
+            activeCandidateSetReservation.Phase == CandidateSetReservationPhase.Committed)
+        {
+            return false;
+        }
+
+        activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+            CandidateSetReservationPhase.Abandoned);
         return true;
     }
 
@@ -316,12 +470,19 @@ public sealed class GuidanceRuntimeState
     {
         activeReservation?.Complete();
         activeReservation = null;
+        activeCandidateSetReservation = null;
     }
 
     private void AbandonActiveReservationWithoutVersion()
     {
         activeReservation?.Abandon();
         activeReservation = null;
+        if (activeCandidateSetReservation != null &&
+            activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Committed)
+        {
+            activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+                CandidateSetReservationPhase.Abandoned);
+        }
         guidanceTargetId = string.Empty;
         activeDetourId = string.Empty;
     }

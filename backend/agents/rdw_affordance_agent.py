@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.schemas import Affordance, GuidanceRequest, PhysicalRiskState, TaskId
+from backend.schemas import Affordance, GuidanceRequest, PhysicalRiskState
 
 
 TARGET_DIRECTION = {
@@ -34,7 +34,7 @@ class RDWAffordanceAgent:
             # MVP demo 的关键是语义重定向：保留导览意图，同时避开不安全的前进方向。
             return self._build_redirection(request, risk_state)
 
-        semantic_target = infer_semantic_target(request)
+        semantic_target = preferred_model_target(request)
         preferred_direction = target_direction(semantic_target)
         return Affordance(
             intervention_type="direct_visit",
@@ -49,10 +49,11 @@ class RDWAffordanceAgent:
         request: GuidanceRequest,
         risk_state: PhysicalRiskState,
     ) -> Affordance:
-        # 候选展品编码当前展厅布局：E3 在 demo 起点左侧，E4/E7 是右侧替代目标。
-        candidates = [("left", "E3"), ("right", "E4")]
-        if request.task_id == TaskId.T3_COMPARE.value:
-            candidates = [("right", "E7"), ("left", "E3")]
+        candidates = [
+            (target_direction(candidate_id), candidate_id)
+            for candidate_id in request.model_candidate_ids
+            if target_direction(candidate_id) in {"left", "right"}
+        ]
 
         selected = first_matching_direction(candidates, risk_state.safe_directions)
         if selected is None:
@@ -78,10 +79,12 @@ class RDWAffordanceAgent:
         )
 
 
-def infer_semantic_target(request: GuidanceRequest) -> str:
-    """返回 Unity 已选择并写入请求契约的唯一语义目标。"""
+def preferred_model_target(request: GuidanceRequest) -> str:
+    """返回模型候选中优先级最高的任务目标。"""
 
-    return request.semantic_next_target
+    if request.preferred_task_target in request.model_candidate_ids:
+        return request.preferred_task_target
+    return request.model_candidate_ids[0]
 
 
 def target_direction(exhibit_id: str) -> str:

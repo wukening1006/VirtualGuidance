@@ -70,20 +70,41 @@ public sealed class GuidanceTaskController : MonoBehaviour
     }
 
     /// <summary>
-    /// 从当前任务状态生成后端请求上下文；本方法不会隐式启动任务。
+    /// 从当前 Candidate-Set Reservation 生成后端请求上下文；本方法不会隐式启动任务或提交目标。
     /// </summary>
-    /// <param name="semanticNextTargetOverride">安全选择器给出的目标；为空时使用路线下一目标。</param>
+    /// <param name="reservation">已冻结且仍处于 Reserved 的候选预留。</param>
     /// <returns>包含实验条件、任务位置和参与者信息的请求上下文。</returns>
-    public GuidanceRequestContext BuildRequestContext(string semanticNextTargetOverride = null)
+    public GuidanceRequestContext BuildRequestContext(CandidateSetReservation reservation)
     {
+        if (reservation == null || !runtimeState.MatchesActiveCandidateSetReservation(reservation))
+        {
+            return null;
+        }
+
+        var semanticCandidates = new GuidanceSemanticCandidate[reservation.ModelCandidateIds.Count];
+        for (var i = 0; i < semanticCandidates.Length; i++)
+        {
+            reservation.TryGetCandidate(reservation.ModelCandidateIds[i], out var candidate);
+            semanticCandidates[i] = GuidanceSemanticCandidate.From(candidate);
+        }
+
         return new GuidanceRequestContext
         {
+            request_id = reservation.RequestId,
+            decision_id = reservation.DecisionId,
+            candidate_set_id = reservation.CandidateSetId,
+            state_version = reservation.TaskStateVersion,
+            calibration_id = reservation.CalibrationId,
+            risk_snapshot_id = reservation.RiskSnapshotId,
             condition = defaultTask.condition,
             task_id = runtimeState.taskId,
             current_exhibit = runtimeState.currentExhibitId,
-            semantic_next_target = string.IsNullOrWhiteSpace(semanticNextTargetOverride)
-                ? runtimeState.nextTargetId
-                : semanticNextTargetOverride,
+            final_target = runtimeState.finalTargetId,
+            preferred_task_target = runtimeState.nextTargetId,
+            candidate_ids = Copy(reservation.CandidateIds),
+            model_candidate_ids = Copy(reservation.ModelCandidateIds),
+            allowed_candidate_ids = Copy(reservation.AllowedCandidateIds),
+            semantic_candidates = semanticCandidates,
             participant_id = defaultTask.participantId,
             user_task = defaultTask.userTask
         };
@@ -159,6 +180,55 @@ public sealed class GuidanceTaskController : MonoBehaviour
             StateChanged?.Invoke(runtimeState);
         }
         return accepted;
+    }
+
+    /// <summary>冻结 Candidate Set；该操作不修改 Current Subgoal 或任务状态版本。</summary>
+    public bool TryReserveCandidateSet(
+        NavigationCandidateSet candidateSet,
+        string candidateSetId,
+        string requestId,
+        string decisionId,
+        PhysicalRiskState riskState,
+        out CandidateSetReservation reservation)
+    {
+        return runtimeState.TryReserveCandidateSet(
+            candidateSet,
+            candidateSetId,
+            requestId,
+            decisionId,
+            defaultTask.condition,
+            riskState,
+            out reservation);
+    }
+
+    /// <summary>验证模型选择属于活动 Candidate Set，不修改 Current Subgoal。</summary>
+    public bool TryValidateCandidateSelection(
+        CandidateSetReservation reservation,
+        string selectedTargetId,
+        out NavigationCandidate selectedCandidate)
+    {
+        return runtimeState.TryValidateCandidateSelection(reservation, selectedTargetId, out selectedCandidate);
+    }
+
+    /// <summary>原子提交已验证候选并发布唯一一次任务状态变化。</summary>
+    public bool CommitCurrentSubgoal(
+        CandidateSetReservation reservation,
+        NavigationCandidate selectedCandidate,
+        out TargetReservation targetReservation)
+    {
+        var previousVersion = runtimeState.stateVersion;
+        var committed = runtimeState.CommitCurrentSubgoal(reservation, selectedCandidate, out targetReservation);
+        if (committed && runtimeState.stateVersion != previousVersion)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return committed;
+    }
+
+    /// <summary>废弃未提交 Candidate Set；不改变任务版本或 Current Subgoal。</summary>
+    public bool AbandonCandidateSetReservation()
+    {
+        return runtimeState.AbandonCandidateSetReservation();
     }
 
     /// <summary>确认当前目标预留进入 Guidance 执行。</summary>
@@ -241,5 +311,12 @@ public sealed class GuidanceTaskController : MonoBehaviour
         }
 
         return defaultTask.routeTargetIds[index];
+    }
+
+    private static string[] Copy(System.Collections.Generic.IReadOnlyList<string> values)
+    {
+        var result = new string[values != null ? values.Count : 0];
+        for (var i = 0; i < result.Length; i++) result[i] = values[i];
+        return result;
     }
 }

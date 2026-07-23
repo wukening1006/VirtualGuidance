@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance_agent import infer_semantic_target, target_direction
+from backend.agents.rdw_affordance_agent import preferred_model_target, target_direction
 from backend.schemas import (
     Affordance,
     AvatarAction,
@@ -11,6 +11,7 @@ from backend.schemas import (
     GuideDraft,
     MovementInstruction,
     PhysicalRiskState,
+    RouteDecision,
     TaskId,
 )
 
@@ -39,7 +40,7 @@ class GuideMockAgent:
         return self._affordance_guidance(request, affordance)
 
     def _direct_semantic_guidance(self, request: GuidanceRequest, intent: str) -> GuideDraft:
-        target = infer_semantic_target(request)
+        target = preferred_model_target(request)
         direction = target_direction(target)
         return draft_for_direction(
             selected_target=target,
@@ -55,7 +56,7 @@ class GuideMockAgent:
         request: GuidanceRequest,
         risk_state: PhysicalRiskState,
     ) -> GuideDraft:
-        target = infer_semantic_target(request)
+        target = preferred_model_target(request)
         direction = target_direction(target)
         return draft_for_direction(
             selected_target=target,
@@ -74,11 +75,11 @@ class GuideMockAgent:
         request: GuidanceRequest,
         risk_state: PhysicalRiskState,
     ) -> GuideDraft:
-        target = infer_semantic_target(request)
+        target = preferred_model_target(request)
         if risk_state.boundary_risk in {"high", "critical"}:
             return GuideDraft(
                 selected_target=target,
-                route_decision="pause_due_to_risk_label",
+                route_decision=RouteDecision.REGUIDANCE_SAME_TARGET,
                 narration=(
                     "下一个重要展品暂时不适合直接前往，请在原地暂停等待。"
                 ),
@@ -96,11 +97,11 @@ class GuideMockAgent:
         request: GuidanceRequest,
         risk_state: PhysicalRiskState,
     ) -> GuideDraft:
-        target = infer_semantic_target(request)
+        target = preferred_model_target(request)
         if risk_state.boundary_risk in {"high", "critical"}:
             return GuideDraft(
                 selected_target=target,
-                route_decision="scripted_reset_due_to_boundary_risk",
+                route_decision=RouteDecision.REGUIDANCE_SAME_TARGET,
                 narration="请在此停下，继续参观前需要重新校准活动空间。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
@@ -124,9 +125,9 @@ class GuideMockAgent:
             and request.current_exhibit == "E1"
         ):
             return draft_for_direction(
-                selected_target=infer_semantic_target(request),
+                selected_target=preferred_model_target(request),
                 direction="forward",
-                route_decision="unsafe_forward_without_final_verifier",
+                route_decision=RouteDecision.DIRECT_TO_TARGET,
                 narration=(
                     "我们先直行前往重点展品，之后再通过两侧展品补充背景。"
                 ),
@@ -140,11 +141,15 @@ class GuideMockAgent:
         request: GuidanceRequest,
         affordance: Affordance,
     ) -> GuideDraft:
-        target = infer_semantic_target(request)
+        target = (
+            affordance.semantic_anchor
+            if affordance.semantic_anchor in request.model_candidate_ids
+            else preferred_model_target(request)
+        )
         if affordance.intervention_type == "pause_reset":
             return GuideDraft(
                 selected_target=target,
-                route_decision="pause_until_safe_direction_available",
+                route_decision=RouteDecision.REGUIDANCE_SAME_TARGET,
                 narration="请在此暂停片刻，等待可以安全继续参观。",
                 gaze_cue="look_forward",
                 gaze_target_id=f"{target}_GazeTarget",
@@ -169,17 +174,13 @@ class GuideMockAgent:
         )
 
 
-def route_decision_for_target(target: str) -> str:
-    if target == "E5":
-        return "direct_to_main_target"
-    if target == "E7":
-        return "direct_to_comparison_object"
-    return "direct_to_next_semantic_target"
+def route_decision_for_target(target: str) -> RouteDecision:
+    return RouteDecision.DIRECT_TO_TARGET if target == "E5" else RouteDecision.VISIT_ROUTE_SUBGOAL
 
 
-def route_decision_for_affordance(affordance: Affordance, target: str) -> str:
+def route_decision_for_affordance(affordance: Affordance, target: str) -> RouteDecision:
     if affordance.intervention_type == "semantic_redirection":
-        return f"visit_{affordance.preferred_direction}_related_exhibit_before_forward_target"
+        return RouteDecision.SEMANTIC_REDIRECT
     return route_decision_for_target(target)
 
 
@@ -201,7 +202,7 @@ def narration_for_redirection(target: str, direction: str) -> str:
 def draft_for_direction(
     selected_target: str,
     direction: str,
-    route_decision: str,
+    route_decision: RouteDecision,
     narration: str,
     physical_intent: str,
     intervention_type: str,

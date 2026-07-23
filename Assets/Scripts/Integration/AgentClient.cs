@@ -38,6 +38,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         "calibration_id",
         "request_id",
         "decision_id",
+        "candidate_set_id",
         "state_version",
         "risk_snapshot_id",
         "risk_revision",
@@ -204,35 +205,11 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         StartCoroutine(SendGuidanceRequest(request, generation));
     }
 
-    /// <summary>
-    /// 在 Calibration、Physical Space 与 Risk Snapshot 仍匹配时重试上一次请求。
-    /// </summary>
+    /// <summary>拒绝绕过 Coordinator 的直接重试；重试必须创建新的 Candidate-Set Reservation。</summary>
     public void RetryLastRequest()
     {
-        if (requestInFlight)
-        {
-            GuidanceRequestFailed?.Invoke("Guidance retry skipped because a request is already in progress.");
-            return;
-        }
-
-        if (lastRequest == null)
-        {
-            RequestGuidance();
-            return;
-        }
-
-        if (!TryGetCurrentRiskState(out var riskState) || !MatchesCurrentRequestIdentity(lastRequest, riskState))
-        {
-            GuidanceRequestFailed?.Invoke("Guidance retry rejected because calibration, physical space, or risk snapshot changed.");
-            return;
-        }
-
-        // 重试属于同一 decision，但必须使用新的 request_id 以区分每次传输尝试。
-        lastRequest.request_id = Guid.NewGuid().ToString("N");
-        GuidanceRequestBuilt?.Invoke(lastRequest);
-        var generation = ++requestGeneration;
-        requestInFlight = true;
-        StartCoroutine(SendGuidanceRequest(lastRequest, generation));
+        GuidanceRequestFailed?.Invoke(
+            "Direct retry is disabled; GuidanceCoordinator must create a new Candidate-Set Reservation.");
     }
 
     /// <summary>立即废弃并中止当前 guidance 请求；旧响应不会再触发任何业务事件。</summary>
@@ -338,7 +315,11 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
     private GuidanceRequest BuildRequest(GuidanceRequestContext context)
     {
-        if (!TryGetCurrentRiskState(out var riskState) ||
+        if (context == null || string.IsNullOrWhiteSpace(context.request_id) ||
+            string.IsNullOrWhiteSpace(context.decision_id) || string.IsNullOrWhiteSpace(context.candidate_set_id) ||
+            context.candidate_ids == null || context.candidate_ids.Length == 0 ||
+            context.model_candidate_ids == null || context.model_candidate_ids.Length == 0 ||
+            context.semantic_candidates == null || !TryGetCurrentRiskState(out var riskState) ||
             !MatchesOptionalIdentity(context.calibration_id, riskState.calibration_id) ||
             !MatchesOptionalIdentity(context.risk_snapshot_id, riskState.risk_snapshot_id))
         {
@@ -364,18 +345,23 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
                 physicalSpaceCalibration != null
                     ? physicalSpaceCalibration.CalibrationId
                     : riskState != null ? riskState.calibration_id : string.Empty),
-            request_id = Guid.NewGuid().ToString("N"),
-            decision_id = EmptyFallback(context.decision_id, Guid.NewGuid().ToString("N")),
+            request_id = context.request_id,
+            decision_id = context.decision_id,
+            candidate_set_id = context.candidate_set_id,
             state_version = context.state_version,
             risk_snapshot_id = EmptyFallback(
                 context.risk_snapshot_id,
                 riskState.risk_snapshot_id),
-            target_role = EmptyFallback(context.target_role, "route_subgoal"),
             condition = EmptyFallback(context.condition, "ours_full"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
             physical_space_id = EmptyFallback(physicalSpaceManager.CurrentSpaceId, "wide_room"),
             current_exhibit = EmptyFallback(context.current_exhibit, "E1"),
-            semantic_next_target = EmptyFallback(context.semantic_next_target, "E5"),
+            final_target = EmptyFallback(context.final_target, "E5"),
+            preferred_task_target = EmptyFallback(context.preferred_task_target, "E5"),
+            candidate_ids = context.candidate_ids,
+            model_candidate_ids = context.model_candidate_ids,
+            allowed_candidate_ids = context.allowed_candidate_ids ?? Array.Empty<string>(),
+            semantic_candidates = context.semantic_candidates,
             participant_id = EmptyFallback(context.participant_id, "P001"),
             user_task = context.user_task,
             risk_snapshot = GuidanceRiskSnapshot.From(riskState),
@@ -452,6 +438,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             string.IsNullOrWhiteSpace(response.calibration_id) ||
             string.IsNullOrWhiteSpace(response.request_id) ||
             string.IsNullOrWhiteSpace(response.decision_id) ||
+            string.IsNullOrWhiteSpace(response.candidate_set_id) ||
             response.state_version < 0 ||
             response.risk_revision < 1 ||
             string.IsNullOrWhiteSpace(response.risk_snapshot_id) ||
@@ -479,6 +466,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             !string.Equals(response.calibration_id, request.calibration_id, StringComparison.Ordinal) ||
             !string.Equals(response.request_id, request.request_id, StringComparison.Ordinal) ||
             !string.Equals(response.decision_id, request.decision_id, StringComparison.Ordinal) ||
+            !string.Equals(response.candidate_set_id, request.candidate_set_id, StringComparison.Ordinal) ||
             response.state_version != request.state_version ||
             !string.Equals(response.risk_snapshot_id, request.risk_snapshot_id, StringComparison.Ordinal) ||
             request.risk_snapshot == null || response.risk_revision != request.risk_snapshot.risk_revision)
@@ -487,15 +475,16 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             return false;
         }
 
-        if (!string.Equals(response.target_role, request.target_role, StringComparison.Ordinal))
+        if (!Contains(request.model_candidate_ids, response.selected_target))
         {
-            failureReason = "target_role does not match the current request";
+            failureReason = "selected_target is outside model_candidate_ids";
             return false;
         }
 
-        if (!string.Equals(response.selected_target, request.semantic_next_target, StringComparison.Ordinal))
+        if (!TryGetCandidateRole(request.semantic_candidates, response.selected_target, out var expectedRole) ||
+            !string.Equals(response.target_role, expectedRole, StringComparison.Ordinal))
         {
-            failureReason = "selected_target does not match semantic_next_target";
+            failureReason = "target_role does not match the frozen candidate metadata";
             return false;
         }
 
@@ -509,6 +498,37 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
         failureReason = string.Empty;
         return true;
+    }
+
+    private static bool TryGetCandidateRole(
+        GuidanceSemanticCandidate[] candidates,
+        string targetId,
+        out string targetRole)
+    {
+        if (candidates != null)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (candidate != null && string.Equals(candidate.id, targetId, StringComparison.Ordinal))
+                {
+                    targetRole = candidate.target_role;
+                    return !string.IsNullOrWhiteSpace(targetRole);
+                }
+            }
+        }
+
+        targetRole = string.Empty;
+        return false;
+    }
+
+    private static bool Contains(string[] values, string expected)
+    {
+        if (values == null || string.IsNullOrWhiteSpace(expected)) return false;
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static bool IsKnownTargetRole(string value)

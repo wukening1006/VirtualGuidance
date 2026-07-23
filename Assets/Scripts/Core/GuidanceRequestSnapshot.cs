@@ -14,6 +14,8 @@ public sealed class GuidanceRequestSnapshot
     public string requestId { get; private set; }
     /// <summary>请求所属规划决策的唯一 ID。</summary>
     public string decisionId { get; private set; }
+    /// <summary>请求冻结的 Candidate Set ID。</summary>
+    public string candidateSetId { get; private set; }
     /// <summary>请求发出时的任务状态版本。</summary>
     public int stateVersion { get; private set; }
     /// <summary>请求决策使用的风险快照 ID。</summary>
@@ -22,8 +24,8 @@ public sealed class GuidanceRequestSnapshot
     public int riskRevision { get; private set; }
     /// <summary>请求中的当前展品 ID。</summary>
     public string currentExhibitId { get; private set; }
-    /// <summary>请求中的语义下一目标 ID。</summary>
-    public string semanticNextTargetId { get; private set; }
+    /// <summary>请求中的任务优先目标 ID。</summary>
+    public string preferredTaskTargetId { get; private set; }
     /// <summary>请求使用的 physical space ID。</summary>
     public string physicalSpaceId { get; private set; }
     /// <summary>请求发出时由空间、reset 状态及安全方向组成的风险签名。</summary>
@@ -44,13 +46,14 @@ public sealed class GuidanceRequestSnapshot
             calibrationId = request != null ? request.calibration_id : string.Empty,
             requestId = request != null ? request.request_id : string.Empty,
             decisionId = request != null ? request.decision_id : string.Empty,
+            candidateSetId = request != null ? request.candidate_set_id : string.Empty,
             stateVersion = request != null ? request.state_version : runtimeState != null ? runtimeState.stateVersion : 0,
             riskSnapshotId = request != null ? request.risk_snapshot_id : string.Empty,
             riskRevision = request != null && request.risk_snapshot != null
                 ? request.risk_snapshot.risk_revision
                 : riskState != null ? riskState.risk_revision : 0,
             currentExhibitId = request != null ? request.current_exhibit : string.Empty,
-            semanticNextTargetId = request != null ? request.semantic_next_target : string.Empty,
+            preferredTaskTargetId = request != null ? request.preferred_task_target : string.Empty,
             physicalSpaceId = request != null ? request.physical_space_id : string.Empty,
             riskSignature = BuildRiskSignature(riskState)
         };
@@ -67,8 +70,10 @@ public sealed class GuidanceRequestSnapshot
                string.Equals(calibrationId, response.calibration_id, StringComparison.Ordinal) &&
                string.Equals(requestId, response.request_id, StringComparison.Ordinal) &&
                string.Equals(decisionId, response.decision_id, StringComparison.Ordinal) &&
+               string.Equals(candidateSetId, response.candidate_set_id, StringComparison.Ordinal) &&
                stateVersion == response.state_version &&
-               string.Equals(riskSnapshotId, response.risk_snapshot_id, StringComparison.Ordinal);
+               string.Equals(riskSnapshotId, response.risk_snapshot_id, StringComparison.Ordinal) &&
+               riskRevision == response.risk_revision;
     }
 
     /// <summary>

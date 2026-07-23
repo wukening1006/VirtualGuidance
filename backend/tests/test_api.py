@@ -17,6 +17,9 @@ def make_client(tmp_path: Path) -> TestClient:
 
 
 def base_payload(condition: str) -> dict:
+    candidate_ids = ["E5", "E3", "E4"]
+    safe_filter = condition in {"B5_ours_without_verifier", "ours_full"}
+    model_candidate_ids = ["E3", "E4"] if safe_filter else candidate_ids
     payload = {
         "task_definition_version": "t2-main-target-v2",
         "guidance_schema_version": "guidance-schema-v2",
@@ -26,16 +29,28 @@ def base_payload(condition: str) -> dict:
         "calibration_id": "calibration-test-001",
         "request_id": "request-test-001",
         "decision_id": "decision-test-001",
+        "candidate_set_id": "candidates-test-001",
         "state_version": 3,
         "risk_snapshot_id": "risk-test-001",
-        "target_role": "route_subgoal",
         "condition": condition,
         "task_id": "T2_main_target",
         "physical_space_id": "narrow_room",
         "current_exhibit": "E1",
         "user_physical_position": [1.0, 4.3],
         "user_physical_forward": [0.0, 1.0],
-        "semantic_next_target": "E5",
+        "final_target": "E5",
+        "preferred_task_target": "E5",
+        "candidate_ids": candidate_ids,
+        "model_candidate_ids": model_candidate_ids,
+        "allowed_candidate_ids": ["E3", "E4"],
+        "semantic_candidates": [
+            {
+                "id": target_id,
+                "target_role": "final_target" if target_id == "E5" else "navigable_detour",
+                "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
+            }
+            for target_id in model_candidate_ids
+        ],
     }
     payload["risk_snapshot"] = {
         "source": "unity",
@@ -121,6 +136,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "calibration_id",
         "request_id",
         "decision_id",
+        "candidate_set_id",
         "state_version",
         "risk_snapshot_id",
         "risk_revision",
@@ -143,7 +159,8 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert body["risk_revision"] == 7
     assert body["decision_id"] == "decision-test-001"
     assert body["state_version"] == 3
-    assert body["target_role"] == "route_subgoal"
+    assert body["candidate_set_id"] == "candidates-test-001"
+    assert body["target_role"] == "navigable_detour"
     assert_chinese_narration(body)
 
     record = read_log_records(tmp_path)[0]
@@ -167,7 +184,6 @@ def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> No
     payload["user_physical_position"] = [1.8, 4.3]
     payload["risk_snapshot"]["physical_position"] = [1.8, 4.3]
     payload["risk_snapshot"]["safe_directions"] = ["left"]
-    payload["semantic_next_target"] = "E3"
 
     response = client.post("/api/guidance", json=payload)
 
@@ -187,7 +203,7 @@ def test_b5_narrow_room_returns_unsafe_forward_without_verifier(tmp_path: Path) 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["selected_target"] == "E5"
+    assert body["selected_target"] == "E3"
     assert body["movement_instruction"] == "move_forward_slowly"
     assert body["verifier"]["approved"] is True
     assert "not applied" in body["verifier"]["reason"]
@@ -220,7 +236,7 @@ def test_b4_scripted_reset_logs_explicit_reset(tmp_path: Path) -> None:
         "ours_full",
     ],
 )
-def test_all_conditions_preserve_unity_selected_target(condition: str, tmp_path: Path) -> None:
+def test_all_conditions_select_only_from_frozen_model_candidates(condition: str, tmp_path: Path) -> None:
     client = make_client(tmp_path)
     payload = base_payload(condition)
     payload["physical_space_id"] = "wide_room"
@@ -233,23 +249,22 @@ def test_all_conditions_preserve_unity_selected_target(condition: str, tmp_path:
     payload["risk_snapshot"]["risk_level"] = "low"
     payload["risk_snapshot"]["safe_directions"] = ["forward", "left", "right"]
     payload["risk_snapshot"]["unsafe_directions"] = []
-    payload["semantic_next_target"] = "E5"
-
     response = client.post("/api/guidance", json=payload)
 
     assert response.status_code == 200
     body = response.json()
-    assert body["selected_target"] == payload["semantic_next_target"]
+    assert body["selected_target"] in payload["model_candidate_ids"]
     record = read_log_records(tmp_path)[0]
-    assert record["semantic_next_target"] == payload["semantic_next_target"]
-    assert record["raw_guidance"]["selected_target"] == payload["semantic_next_target"]
+    assert record["candidate_set_id"] == payload["candidate_set_id"]
+    assert record["model_candidate_ids"] == payload["model_candidate_ids"]
+    assert record["raw_guidance"]["selected_target"] in payload["model_candidate_ids"]
     assert record["executed_guidance"] is None
 
 
-def test_request_schema_requires_unity_target_and_rejects_unknown_condition(tmp_path: Path) -> None:
+def test_request_schema_requires_candidate_set_and_rejects_unknown_condition(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     missing_target = base_payload("ours_full")
-    missing_target.pop("semantic_next_target")
+    missing_target.pop("candidate_set_id")
 
     missing_response = client.post("/api/guidance", json=missing_target)
     unknown_response = client.post(
@@ -258,7 +273,7 @@ def test_request_schema_requires_unity_target_and_rejects_unknown_condition(tmp_
     )
 
     assert missing_response.status_code == 422
-    assert any(item["loc"][-1] == "semantic_next_target" for item in missing_response.json()["detail"])
+    assert any(item["loc"][-1] == "candidate_set_id" for item in missing_response.json()["detail"])
     assert unknown_response.status_code == 422
     assert any(item["loc"][-1] == "condition" for item in unknown_response.json()["detail"])
 
@@ -355,9 +370,9 @@ def test_pydantic_contract_matches_unity_dto_fields() -> None:
         "calibration_id",
         "request_id",
         "decision_id",
+        "candidate_set_id",
         "state_version",
         "risk_snapshot_id",
-        "target_role",
         "condition",
         "task_id",
         "physical_space_id",
@@ -367,11 +382,17 @@ def test_pydantic_contract_matches_unity_dto_fields() -> None:
         "user_physical_forward",
         "participant_id",
         "user_task",
-        "semantic_next_target",
+        "final_target",
+        "preferred_task_target",
+        "candidate_ids",
+        "model_candidate_ids",
+        "allowed_candidate_ids",
+        "semantic_candidates",
         "user_virtual_position",
         "user_virtual_forward",
     }
-    assert "semantic_next_target" in request_schema["required"]
+    assert "candidate_set_id" in request_schema["required"]
+    assert "model_candidate_ids" in request_schema["required"]
     assert request_schema["additionalProperties"] is False
     assert set(response_schema["required"]) == set(response_schema["properties"])
     assert response_schema["additionalProperties"] is False
@@ -384,7 +405,7 @@ def test_pipeline_rejects_internal_target_mismatch(tmp_path: Path) -> None:
 
     def mismatched_build(request, risk_state, affordance):
         draft = original_build(request, risk_state, affordance)
-        return draft.model_copy(update={"selected_target": "E4"})
+        return draft.model_copy(update={"selected_target": "E2"})
 
     pipeline.guide.build = mismatched_build
 
@@ -393,5 +414,32 @@ def test_pipeline_rejects_internal_target_mismatch(tmp_path: Path) -> None:
     assert response.status_code == 500
     assert response.json()["detail"] == (
         "Deterministic guidance contract violation: "
-        "selected_target must match semantic_next_target."
+        "selected_target must belong to model_candidate_ids."
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.update({"candidate_ids": ["E5", "E3", "E3"]}),
+        lambda payload: payload.update({"model_candidate_ids": ["E2"]}),
+        lambda payload: payload.update({"allowed_candidate_ids": ["E2"]}),
+        lambda payload: payload.update({"semantic_candidates": []}),
+    ],
+)
+def test_api_rejects_malformed_candidate_membership(mutation, tmp_path: Path) -> None:
+    payload = base_payload("ours_full")
+    mutation(payload)
+
+    response = make_client(tmp_path).post("/api/guidance", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_b5_structural_validation_remains_active_without_model_verifier(tmp_path: Path) -> None:
+    payload = base_payload("B5_ours_without_verifier")
+    payload["model_candidate_ids"] = ["E2"]
+
+    response = make_client(tmp_path).post("/api/guidance", json=payload)
+
+    assert response.status_code == 422

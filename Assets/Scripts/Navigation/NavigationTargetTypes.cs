@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 /// <summary>
 /// 区分最终目标、原路线节点、只转向锚点和需要实际到达的安全绕行点。
@@ -31,6 +32,295 @@ public sealed class GuidanceTarget
     {
         TargetId = targetId;
         TargetRole = targetRole;
+    }
+}
+
+/// <summary>
+/// 保存一个已通过 T2 Candidate Policy 的导航候选及其模型语义元数据。
+/// </summary>
+public sealed class NavigationCandidate
+{
+    /// <summary>候选目标 ID。</summary>
+    public string TargetId { get; }
+    /// <summary>候选在当前任务决策中的职责。</summary>
+    public NavigationTargetRole TargetRole { get; }
+    /// <summary>候选相对用户当前 Virtual Forward 的方向。</summary>
+    public string RelativeDirection { get; }
+    /// <summary>候选显示名称。</summary>
+    public string Name { get; }
+    /// <summary>候选语义描述。</summary>
+    public string Description { get; }
+    /// <summary>候选在场景语义中的角色。</summary>
+    public string SemanticRole { get; }
+    /// <summary>候选语义标签的只读副本。</summary>
+    public IReadOnlyList<string> Tags { get; }
+    /// <summary>仅供模型理解的相关展品元数据，不参与候选资格判定。</summary>
+    public IReadOnlyList<string> RelatedExhibits { get; }
+
+    /// <summary>创建一项不可变导航候选。</summary>
+    public NavigationCandidate(
+        string targetId,
+        NavigationTargetRole targetRole,
+        string relativeDirection,
+        string name,
+        string description,
+        string semanticRole,
+        IEnumerable<string> tags,
+        IEnumerable<string> relatedExhibits)
+    {
+        TargetId = targetId ?? string.Empty;
+        TargetRole = targetRole;
+        RelativeDirection = relativeDirection ?? string.Empty;
+        Name = name ?? string.Empty;
+        Description = description ?? string.Empty;
+        SemanticRole = semanticRole ?? string.Empty;
+        Tags = ReadOnlyCopy(tags);
+        RelatedExhibits = ReadOnlyCopy(relatedExhibits);
+    }
+
+    private static IReadOnlyList<string> ReadOnlyCopy(IEnumerable<string> values)
+    {
+        return Array.AsReadOnly(new List<string>(values ?? Array.Empty<string>()).ToArray());
+    }
+}
+
+/// <summary>
+/// 表示一次 T2 Candidate Builder 的不可变输出，不包含请求身份或生命周期状态。
+/// </summary>
+public sealed class NavigationCandidateSet
+{
+    /// <summary>完整基础候选 ID。</summary>
+    public IReadOnlyList<string> CandidateIds { get; }
+    /// <summary>当前 Condition 可交给模型选择的候选 ID。</summary>
+    public IReadOnlyList<string> ModelCandidateIds { get; }
+    /// <summary>应用 Unity RiskSnapshot 后允许执行的候选 ID。</summary>
+    public IReadOnlyList<string> AllowedCandidateIds { get; }
+    /// <summary>完整候选及其语义元数据。</summary>
+    public IReadOnlyList<NavigationCandidate> Candidates { get; }
+    /// <summary>构建候选时的场景 Target Registry 修订号。</summary>
+    public int RegistryRevision { get; }
+
+    /// <summary>创建 Candidate Builder 的冻结输出。</summary>
+    public NavigationCandidateSet(
+        IEnumerable<string> candidateIds,
+        IEnumerable<string> modelCandidateIds,
+        IEnumerable<string> allowedCandidateIds,
+        IEnumerable<NavigationCandidate> candidates,
+        int registryRevision)
+    {
+        CandidateIds = ReadOnlyCopy(candidateIds);
+        ModelCandidateIds = ReadOnlyCopy(modelCandidateIds);
+        AllowedCandidateIds = ReadOnlyCopy(allowedCandidateIds);
+        Candidates = Array.AsReadOnly(new List<NavigationCandidate>(
+            candidates ?? Array.Empty<NavigationCandidate>()).ToArray());
+        RegistryRevision = Math.Max(0, registryRevision);
+    }
+
+    /// <summary>Candidate Builder 是否生成了可供模型选择的候选。</summary>
+    public bool HasModelCandidates => ModelCandidateIds.Count > 0;
+
+    private static IReadOnlyList<string> ReadOnlyCopy(IEnumerable<string> values)
+    {
+        return Array.AsReadOnly(new List<string>(values ?? Array.Empty<string>()).ToArray());
+    }
+}
+
+/// <summary>Candidate-Set Reservation 的不可变生命周期状态。</summary>
+public enum CandidateSetReservationPhase
+{
+    Reserved,
+    Validated,
+    Committed,
+    Abandoned
+}
+
+/// <summary>
+/// 冻结一次模型选点的候选、任务、校准、风险和请求身份；状态转换会创建新实例。
+/// </summary>
+public sealed class CandidateSetReservation
+{
+    /// <summary>冻结候选集合的唯一 ID。</summary>
+    public string CandidateSetId { get; }
+    /// <summary>绑定的单次请求 ID。</summary>
+    public string RequestId { get; }
+    /// <summary>绑定的规划决策 ID。</summary>
+    public string DecisionId { get; }
+    /// <summary>绑定的正式任务 ID。</summary>
+    public string TaskId { get; }
+    /// <summary>预留创建时的任务状态版本。</summary>
+    public int TaskStateVersion { get; }
+    /// <summary>冻结的实验 Condition。</summary>
+    public string Condition { get; }
+    /// <summary>冻结的物理空间校准 ID。</summary>
+    public string CalibrationId { get; }
+    /// <summary>请求携带的 Unity RiskSnapshot ID。</summary>
+    public string RiskSnapshotId { get; }
+    /// <summary>执行相关风险修订号。</summary>
+    public int RiskRevision { get; }
+    /// <summary>T2 不变的最终目标 ID。</summary>
+    public string FinalTargetId { get; }
+    /// <summary>完整基础候选成员。</summary>
+    public IReadOnlyList<string> CandidateIds { get; }
+    /// <summary>本 Condition 可见的模型候选成员。</summary>
+    public IReadOnlyList<string> ModelCandidateIds { get; }
+    /// <summary>Unity 风险层允许执行的候选成员。</summary>
+    public IReadOnlyList<string> AllowedCandidateIds { get; }
+    /// <summary>候选角色、方向和语义元数据的冻结副本。</summary>
+    public IReadOnlyList<NavigationCandidate> Candidates { get; }
+    /// <summary>当前任务内的 Candidate Reservation 代际。</summary>
+    public int Generation { get; }
+    /// <summary>构建候选时的 Target Registry 修订号。</summary>
+    public int RegistryRevision { get; }
+    /// <summary>预留创建的 UTC ISO 8601 时间。</summary>
+    public string CreatedAtUtc { get; }
+    /// <summary>不可变生命周期实例的当前阶段。</summary>
+    public CandidateSetReservationPhase Phase { get; }
+
+    /// <summary>创建一项 Reserved Candidate-Set Reservation。</summary>
+    public CandidateSetReservation(
+        string candidateSetId,
+        string requestId,
+        string decisionId,
+        string taskId,
+        int taskStateVersion,
+        string condition,
+        string calibrationId,
+        string riskSnapshotId,
+        int riskRevision,
+        string finalTargetId,
+        NavigationCandidateSet candidateSet,
+        int generation,
+        string createdAtUtc)
+        : this(
+            candidateSetId,
+            requestId,
+            decisionId,
+            taskId,
+            taskStateVersion,
+            condition,
+            calibrationId,
+            riskSnapshotId,
+            riskRevision,
+            finalTargetId,
+            candidateSet != null ? candidateSet.CandidateIds : null,
+            candidateSet != null ? candidateSet.ModelCandidateIds : null,
+            candidateSet != null ? candidateSet.AllowedCandidateIds : null,
+            candidateSet != null ? candidateSet.Candidates : null,
+            generation,
+            candidateSet != null ? candidateSet.RegistryRevision : 0,
+            createdAtUtc,
+            CandidateSetReservationPhase.Reserved)
+    {
+    }
+
+    private CandidateSetReservation(
+        string candidateSetId,
+        string requestId,
+        string decisionId,
+        string taskId,
+        int taskStateVersion,
+        string condition,
+        string calibrationId,
+        string riskSnapshotId,
+        int riskRevision,
+        string finalTargetId,
+        IEnumerable<string> candidateIds,
+        IEnumerable<string> modelCandidateIds,
+        IEnumerable<string> allowedCandidateIds,
+        IEnumerable<NavigationCandidate> candidates,
+        int generation,
+        int registryRevision,
+        string createdAtUtc,
+        CandidateSetReservationPhase phase)
+    {
+        CandidateSetId = candidateSetId ?? string.Empty;
+        RequestId = requestId ?? string.Empty;
+        DecisionId = decisionId ?? string.Empty;
+        TaskId = taskId ?? string.Empty;
+        TaskStateVersion = Math.Max(0, taskStateVersion);
+        Condition = condition ?? string.Empty;
+        CalibrationId = calibrationId ?? string.Empty;
+        RiskSnapshotId = riskSnapshotId ?? string.Empty;
+        RiskRevision = Math.Max(0, riskRevision);
+        FinalTargetId = finalTargetId ?? string.Empty;
+        CandidateIds = ReadOnlyCopy(candidateIds);
+        ModelCandidateIds = ReadOnlyCopy(modelCandidateIds);
+        AllowedCandidateIds = ReadOnlyCopy(allowedCandidateIds);
+        Candidates = Array.AsReadOnly(new List<NavigationCandidate>(
+            candidates ?? Array.Empty<NavigationCandidate>()).ToArray());
+        Generation = Math.Max(0, generation);
+        RegistryRevision = Math.Max(0, registryRevision);
+        CreatedAtUtc = createdAtUtc ?? string.Empty;
+        Phase = phase;
+    }
+
+    /// <summary>返回同一冻结事实的下一生命周期实例。</summary>
+    public CandidateSetReservation WithPhase(CandidateSetReservationPhase phase)
+    {
+        return new CandidateSetReservation(
+            CandidateSetId,
+            RequestId,
+            DecisionId,
+            TaskId,
+            TaskStateVersion,
+            Condition,
+            CalibrationId,
+            RiskSnapshotId,
+            RiskRevision,
+            FinalTargetId,
+            CandidateIds,
+            ModelCandidateIds,
+            AllowedCandidateIds,
+            Candidates,
+            Generation,
+            RegistryRevision,
+            CreatedAtUtc,
+            phase);
+    }
+
+    /// <summary>检查另一实例是否代表同一次候选预留。</summary>
+    public bool Matches(CandidateSetReservation other)
+    {
+        return other != null &&
+               string.Equals(CandidateSetId, other.CandidateSetId, StringComparison.Ordinal) &&
+               string.Equals(RequestId, other.RequestId, StringComparison.Ordinal) &&
+               string.Equals(DecisionId, other.DecisionId, StringComparison.Ordinal) &&
+               TaskStateVersion == other.TaskStateVersion &&
+               Generation == other.Generation;
+    }
+
+    /// <summary>检查目标是否属于冻结的模型候选集合。</summary>
+    public bool ContainsModelCandidate(string targetId) => Contains(ModelCandidateIds, targetId);
+
+    /// <summary>按 ID 查询冻结的候选元数据。</summary>
+    public bool TryGetCandidate(string targetId, out NavigationCandidate candidate)
+    {
+        foreach (var item in Candidates)
+        {
+            if (item != null && string.Equals(item.TargetId, targetId, StringComparison.Ordinal))
+            {
+                candidate = item;
+                return true;
+            }
+        }
+
+        candidate = null;
+        return false;
+    }
+
+    private static bool Contains(IReadOnlyList<string> values, string expected)
+    {
+        if (values == null || string.IsNullOrWhiteSpace(expected)) return false;
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static IReadOnlyList<string> ReadOnlyCopy(IEnumerable<string> values)
+    {
+        return Array.AsReadOnly(new List<string>(values ?? Array.Empty<string>()).ToArray());
     }
 }
 

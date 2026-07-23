@@ -17,6 +17,11 @@ public sealed class NavigationTargetManager : MonoBehaviour
     [SerializeField, Range(91f, 179f)] private float behindThresholdDegrees = 150f;
 
     private readonly Dictionary<string, ExhibitMetadata> targetsById = new Dictionary<string, ExhibitMetadata>();
+    private string registrySignature = string.Empty;
+    private int registryRevision;
+
+    /// <summary>场景导航 Target Registry 内容发生变化时递增的修订号。</summary>
+    public int RegistryRevision => registryRevision;
 
     private void Awake()
     {
@@ -48,6 +53,13 @@ public sealed class NavigationTargetManager : MonoBehaviour
             {
                 targetsById[exhibit.Id] = exhibit;
             }
+        }
+
+        var nextSignature = BuildRegistrySignature();
+        if (!string.Equals(nextSignature, registrySignature, StringComparison.Ordinal))
+        {
+            registrySignature = nextSignature;
+            registryRevision++;
         }
     }
 
@@ -85,6 +97,15 @@ public sealed class NavigationTargetManager : MonoBehaviour
     public string GetTargetDirection(string targetId)
     {
         return TryGetTargetDirection(targetId, out var direction) ? direction : string.Empty;
+    }
+
+    /// <summary>返回当前注册目标 ID 的稳定排序副本。</summary>
+    public string[] GetRegisteredTargetIds()
+    {
+        EnsureIndex();
+        var ids = new List<string>(targetsById.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        return ids.ToArray();
     }
 
     /// <summary>
@@ -180,6 +201,22 @@ public sealed class NavigationTargetManager : MonoBehaviour
         return TryGetTarget(targetId, out var target) && target != null
             ? target.SafetyTargetRole
             : NavigationTargetRole.NavigableDetour;
+    }
+
+    private string BuildRegistrySignature()
+    {
+        var ids = new List<string>(targetsById.Keys);
+        ids.Sort(StringComparer.Ordinal);
+        var entries = new List<string>(ids.Count);
+        foreach (var id in ids)
+        {
+            var target = targetsById[id];
+            entries.Add(string.Join(
+                "~",
+                id,
+                target != null ? target.SafetyTargetRole.ToString() : string.Empty));
+        }
+        return string.Join("|", entries);
     }
 
     private void EnsureIndex()

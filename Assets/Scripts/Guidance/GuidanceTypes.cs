@@ -139,6 +139,53 @@ public sealed class GuidanceRiskSnapshot
     }
 }
 
+/// <summary>发送给 Backend/MLLM 的候选语义元数据，不参与 Unity Candidate Membership 判定。</summary>
+[Serializable]
+public sealed class GuidanceSemanticCandidate
+{
+    /// <summary>场景目标 ID。</summary>
+    public string id;
+    /// <summary>冻结的导航目标角色。</summary>
+    public string target_role;
+    /// <summary>目标相对用户虚拟朝向的方向。</summary>
+    public string relative_direction;
+    /// <summary>面向参与者的展品名称。</summary>
+    public string name;
+    /// <summary>展品语义描述。</summary>
+    public string description;
+    /// <summary>场景定义的语义角色。</summary>
+    public string semantic_role;
+    /// <summary>供模型理解语义的标签，不参与候选资格判定。</summary>
+    public string[] tags = Array.Empty<string>();
+    /// <summary>供模型理解语义的关联展品，不参与 Candidate Membership。</summary>
+    public string[] related_exhibits = Array.Empty<string>();
+
+    /// <summary>从不可变导航候选创建独立协议副本。</summary>
+    public static GuidanceSemanticCandidate From(NavigationCandidate candidate)
+    {
+        return candidate == null
+            ? null
+            : new GuidanceSemanticCandidate
+            {
+                id = candidate.TargetId,
+                target_role = GuidanceTypeUtility.TargetRoleToProtocol(candidate.TargetRole),
+                relative_direction = candidate.RelativeDirection,
+                name = candidate.Name,
+                description = candidate.Description,
+                semantic_role = candidate.SemanticRole,
+                tags = Copy(candidate.Tags),
+                related_exhibits = Copy(candidate.RelatedExhibits)
+            };
+    }
+
+    private static string[] Copy(System.Collections.Generic.IReadOnlyList<string> values)
+    {
+        var result = new string[values != null ? values.Count : 0];
+        for (var i = 0; i < result.Length; i++) result[i] = values[i];
+        return result;
+    }
+}
+
 /// <summary>
 /// Unity 发送给后端 /api/guidance 的请求数据，字段名必须与后端 schema 保持一致。
 /// </summary>
@@ -169,14 +216,14 @@ public sealed class GuidanceRequest
     /// <summary>本次规划决策的唯一 ID；同一决策内的重试保持不变。</summary>
     public string decision_id;
 
+    /// <summary>本次冻结 Candidate Set 的唯一 ID。</summary>
+    public string candidate_set_id;
+
     /// <summary>请求生成时的任务状态版本。</summary>
     public int state_version;
 
     /// <summary>请求决策使用的 deterministic risk 快照 ID。</summary>
     public string risk_snapshot_id;
-
-    /// <summary>当前 Guidance Target 的协议角色。</summary>
-    public string target_role = "route_subgoal";
 
     /// <summary>
     /// 当前实验条件，例如 ours_full 或 baseline 条件名。
@@ -217,10 +264,23 @@ public sealed class GuidanceRequest
     /// </summary>
     public string user_task;
 
-    /// <summary>
-    /// 语义上的下一目标展品 ID。
-    /// </summary>
-    public string semantic_next_target = "E5";
+    /// <summary>T2 不可被模型修改的最终目标。</summary>
+    public string final_target = "E5";
+
+    /// <summary>任务层优先目标；T2 固定为 E5，但不约束模型必须原样返回。</summary>
+    public string preferred_task_target = "E5";
+
+    /// <summary>Candidate Policy 生成的完整基础候选。</summary>
+    public string[] candidate_ids = Array.Empty<string>();
+
+    /// <summary>当前 Condition 允许模型选择的候选。</summary>
+    public string[] model_candidate_ids = Array.Empty<string>();
+
+    /// <summary>应用 Unity RiskSnapshot 后允许执行的候选；不适用时为空。</summary>
+    public string[] allowed_candidate_ids = Array.Empty<string>();
+
+    /// <summary>模型候选对应的完整语义元数据。</summary>
+    public GuidanceSemanticCandidate[] semantic_candidates = Array.Empty<GuidanceSemanticCandidate>();
 
     /// <summary>
     /// 用户在虚拟展厅中的世界位置数组，单位：米。
@@ -279,6 +339,9 @@ public sealed class GuidanceResponse
 
     /// <summary>对应 GuidanceRequest 的决策 ID。</summary>
     public string decision_id;
+
+    /// <summary>对应 GuidanceRequest 的 Candidate Set ID。</summary>
+    public string candidate_set_id;
 
     /// <summary>对应 GuidanceRequest 的任务状态版本。</summary>
     public int state_version;
@@ -353,14 +416,17 @@ public sealed class GuidanceRequestContext
     /// <summary>协调器分配的决策 ID；为空时 AgentClient 会生成独立决策 ID。</summary>
     public string decision_id;
 
+    /// <summary>协调器分配的 HTTP Request ID。</summary>
+    public string request_id;
+
+    /// <summary>当前冻结 Candidate Set 的唯一 ID。</summary>
+    public string candidate_set_id;
+
     /// <summary>请求对应的任务状态版本。</summary>
     public int state_version;
 
     /// <summary>当前规划决策使用的 Physical Risk 快照 ID。</summary>
     public string risk_snapshot_id;
-
-    /// <summary>协调器选择的 Guidance Target 协议角色。</summary>
-    public string target_role = "route_subgoal";
 
     /// <summary>
     /// 默认实验条件，例如 B1_mllm_only 或 ours_full。
@@ -380,11 +446,23 @@ public sealed class GuidanceRequestContext
     [Tooltip("当前展品 ID，例如 E1。")]
     public string current_exhibit = "E1";
 
-    /// <summary>
-    /// 默认语义下一目标展品 ID。
-    /// </summary>
-    [Tooltip("语义上的下一目标，例如核心 demo 中的 E5。")]
-    public string semantic_next_target = "E5";
+    /// <summary>T2 不可变 Final Goal。</summary>
+    public string final_target = "E5";
+
+    /// <summary>T2 任务优先目标。</summary>
+    public string preferred_task_target = "E5";
+
+    /// <summary>完整基础候选 ID。</summary>
+    public string[] candidate_ids = Array.Empty<string>();
+
+    /// <summary>当前 Condition 的模型候选 ID。</summary>
+    public string[] model_candidate_ids = Array.Empty<string>();
+
+    /// <summary>适用物理筛选时的允许候选 ID。</summary>
+    public string[] allowed_candidate_ids = Array.Empty<string>();
+
+    /// <summary>模型候选对应的语义元数据。</summary>
+    public GuidanceSemanticCandidate[] semantic_candidates = Array.Empty<GuidanceSemanticCandidate>();
 
     /// <summary>
     /// 默认参与者 ID，正式实验可由 session 管理器覆盖。
