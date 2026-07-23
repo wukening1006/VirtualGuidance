@@ -6,13 +6,18 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.agents.guide_mock import GuideMockAgent
 from backend.app import create_app
 from backend.schemas import GuidanceRequest, GuidanceResponse
 
 
 def make_client(tmp_path: Path) -> TestClient:
     config_dir = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
-    app = create_app(config_dir=config_dir, log_dir=tmp_path)
+    app = create_app(
+        config_dir=config_dir,
+        log_dir=tmp_path,
+        draft_generator=GuideMockAgent(),
+    )
     return TestClient(app)
 
 
@@ -432,19 +437,19 @@ def test_guidance_response_schema_rejects_legacy_avatar_action() -> None:
 def test_pipeline_rejects_internal_target_mismatch(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     pipeline = client.app.state.pipeline
-    original_build = pipeline.guide.build
+    original_generate = pipeline.guide.generate
 
-    def mismatched_build(request, risk_state, affordance):
-        draft = original_build(request, risk_state, affordance)
+    async def mismatched_generate(request, risk_state, affordance):
+        draft = await original_generate(request, risk_state, affordance)
         return draft.model_copy(update={"selected_target": "E2"})
 
-    pipeline.guide.build = mismatched_build
+    pipeline.guide.generate = mismatched_generate
 
     response = client.post("/api/guidance", json=base_payload("ours_full"))
 
-    assert response.status_code == 500
+    assert response.status_code == 502
     assert response.json()["detail"] == (
-        "Deterministic guidance contract violation: "
+        "Guidance draft contract violation: "
         "selected_target must belong to model_candidate_ids."
     )
 

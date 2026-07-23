@@ -18,6 +18,16 @@ from backend.schemas import (
 class GuideMockAgent:
     """为每个 condition 生成确定性的、Unity 可执行的 mock guidance。"""
 
+    async def generate(
+        self,
+        request: GuidanceRequest,
+        risk_state: PhysicalRiskState,
+        affordance: Affordance,
+    ) -> GuideDraft:
+        """为自动化测试和显式离线复现提供异步 Generator 接口。"""
+
+        return self.build(request, risk_state, affordance)
+
     def build(
         self,
         request: GuidanceRequest,

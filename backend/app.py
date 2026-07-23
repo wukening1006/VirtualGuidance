@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from backend.agents.guide_llm import GuideDraftGenerator
 from backend.pipeline import GuidancePipeline
 from backend.schemas import (
     GuidanceRequest,
@@ -23,9 +24,14 @@ DEFAULT_LOG_DIR = PROJECT_ROOT / "backend" / "logs"
 def create_app(
     config_dir: Path = CONFIG_DIR,
     log_dir: Path = DEFAULT_LOG_DIR,
+    draft_generator: GuideDraftGenerator | None = None,
 ) -> FastAPI:
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
-    application.state.pipeline = GuidancePipeline(config_dir=config_dir, log_dir=log_dir)
+    application.state.pipeline = GuidancePipeline(
+        config_dir=config_dir,
+        log_dir=log_dir,
+        guide=draft_generator,
+    )
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -38,9 +44,9 @@ def create_app(
         )
 
     @application.post("/api/guidance", response_model=GuidanceResponse)
-    def guidance(request: GuidanceRequest) -> GuidanceResponse:
+    async def guidance(request: GuidanceRequest) -> GuidanceResponse:
         pipeline: GuidancePipeline = application.state.pipeline
-        return pipeline.handle(request)
+        return await pipeline.handle(request)
 
     return application
 
