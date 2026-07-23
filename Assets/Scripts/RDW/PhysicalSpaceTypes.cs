@@ -53,71 +53,117 @@ public sealed class PhysicalSpaceConfig
 }
 
 /// <summary>
-/// 记录一次 deterministic physical risk 计算结果，字段名与 Unity/后端 JSON schema 对齐。
+/// 保存障碍物的只读风险上下文，避免发布快照后被场景配置修改。
 /// </summary>
-[Serializable]
+public sealed class PhysicalRiskObstacleSnapshot
+{
+    /// <summary>障碍物 ID。</summary>
+    public string id { get; }
+    /// <summary>障碍物在 Physical XZ 平面中的圆心，单位：米。</summary>
+    public Vector2 center { get; }
+    /// <summary>障碍物半径，单位：米。</summary>
+    public float radius { get; }
+
+    /// <summary>创建一份障碍物上下文快照。</summary>
+    public PhysicalRiskObstacleSnapshot(string obstacleId, Vector2 obstacleCenter, float obstacleRadius)
+    {
+        id = obstacleId ?? string.Empty;
+        center = obstacleCenter;
+        radius = obstacleRadius;
+    }
+}
+
+/// <summary>
+/// Unity 确定性 RDW 层发布的不可变 Physical Risk 快照。
+/// </summary>
 public sealed class PhysicalRiskState
 {
-    /// <summary>本次 deterministic risk 计算的唯一快照 ID。</summary>
-    public string risk_snapshot_id;
+    /// <summary>本次采样的唯一快照 ID。</summary>
+    public string risk_snapshot_id { get; }
+    /// <summary>执行相关风险发生实质变化时才递增的单调修订号。</summary>
+    public int risk_revision { get; }
+    /// <summary>生成快照时使用的 Physical Space Calibration ID。</summary>
+    public string calibration_id { get; }
+    /// <summary>ISO 8601 UTC 采样时间。</summary>
+    public string sampled_at_utc { get; }
+    /// <summary>生成快照的风险策略版本。</summary>
+    public string risk_policy_version { get; }
+    /// <summary>风险事实生产者，正式运行固定为 unity。</summary>
+    public string source { get; }
+    /// <summary>当前 Physical Tracking Space ID。</summary>
+    public string physical_space { get; }
+    /// <summary>用户在 Physical XZ 平面中的位置，单位：米。</summary>
+    public Vector2 user_physical_position { get; }
+    /// <summary>用户在 Physical XZ 平面中的单位前向方向。</summary>
+    public Vector2 user_physical_forward { get; }
+    /// <summary>Physical Boundary 顶点的只读副本，单位：米。</summary>
+    public IReadOnlyList<Vector2> boundary_context { get; }
+    /// <summary>Physical Obstacles 的只读副本。</summary>
+    public IReadOnlyList<PhysicalRiskObstacleSnapshot> obstacle_context { get; }
+    /// <summary>前方 clearance，单位：米。</summary>
+    public float clearance_forward { get; }
+    /// <summary>左侧 clearance，单位：米。</summary>
+    public float clearance_left { get; }
+    /// <summary>右侧 clearance，单位：米。</summary>
+    public float clearance_right { get; }
+    /// <summary>由最小 clearance 映射出的风险标签。</summary>
+    public string boundary_risk { get; }
+    /// <summary>面向 Reset 决策的风险标签。</summary>
+    public string reset_risk { get; }
+    /// <summary>不可执行方向的只读集合。</summary>
+    public IReadOnlyList<string> unsafe_directions { get; }
+    /// <summary>可执行方向的只读集合。</summary>
+    public IReadOnlyList<string> safe_directions { get; }
+    /// <summary>快照是否达到 Critical 风险。</summary>
+    public bool critical { get; }
+    /// <summary>确定性安全链是否要求 Reset。</summary>
+    public bool reset_required { get; }
 
-    /// <summary>生成本风险快照时使用的 Physical Space Calibration ID。</summary>
-    public string calibration_id;
-
-    /// <summary>
-    /// 当前 physical tracking space 的 ID。
-    /// </summary>
-    public string physical_space;
-
-    /// <summary>
-    /// 用户在 physical XZ 平面中的当前位置，单位：米。
-    /// </summary>
-    public Vector2 user_physical_position;
-
-    /// <summary>
-    /// 用户在 physical XZ 平面中的单位前向方向。
-    /// </summary>
-    public Vector2 user_physical_forward;
-
-    /// <summary>
-    /// 沿用户前方可行走到边界或障碍物前的距离，单位：米。
-    /// </summary>
-    public float clearance_forward;
-
-    /// <summary>
-    /// 沿用户左侧方向可行走到边界或障碍物前的距离，单位：米。
-    /// </summary>
-    public float clearance_left;
-
-    /// <summary>
-    /// 沿用户右侧方向可行走到边界或障碍物前的距离，单位：米。
-    /// </summary>
-    public float clearance_right;
-
-    /// <summary>
-    /// 由最小 clearance 映射出的边界风险标签。
-    /// </summary>
-    public string boundary_risk;
-
-    /// <summary>
-    /// 面向 reset 决策的风险标签，所有方向危险时会提升为 critical。
-    /// </summary>
-    public string reset_risk;
-
-    /// <summary>
-    /// 不应继续引导的方向集合，例如 forward、left、right。
-    /// </summary>
-    public string[] unsafe_directions = Array.Empty<string>();
-
-    /// <summary>
-    /// 可优先用于语义重定向的安全方向集合。
-    /// </summary>
-    public string[] safe_directions = Array.Empty<string>();
-
-    /// <summary>
-    /// 所有自然方向都危险时置为 true，后续流程应 pause 或 explicit reset。
-    /// </summary>
-    public bool reset_required;
+    /// <summary>创建完整、深拷贝且发布后不可修改的风险快照。</summary>
+    public PhysicalRiskState(
+        string riskSnapshotId = "",
+        int riskRevision = 0,
+        string calibrationId = "",
+        string sampledAtUtc = "",
+        string riskPolicyVersion = "",
+        string snapshotSource = "",
+        string physicalSpace = "",
+        Vector2 physicalPosition = default(Vector2),
+        Vector2 physicalForward = default(Vector2),
+        IEnumerable<Vector2> boundaryContext = null,
+        IEnumerable<PhysicalRiskObstacleSnapshot> obstacleContext = null,
+        float clearanceForward = 0f,
+        float clearanceLeft = 0f,
+        float clearanceRight = 0f,
+        string boundaryRisk = "",
+        string resetRisk = "",
+        IEnumerable<string> unsafeDirections = null,
+        IEnumerable<string> safeDirections = null,
+        bool isCritical = false,
+        bool resetRequired = false)
+    {
+        risk_snapshot_id = riskSnapshotId ?? string.Empty;
+        risk_revision = Math.Max(0, riskRevision);
+        calibration_id = calibrationId ?? string.Empty;
+        sampled_at_utc = sampledAtUtc ?? string.Empty;
+        risk_policy_version = riskPolicyVersion ?? string.Empty;
+        source = snapshotSource ?? string.Empty;
+        physical_space = physicalSpace ?? string.Empty;
+        user_physical_position = physicalPosition;
+        user_physical_forward = physicalForward;
+        boundary_context = Array.AsReadOnly(new List<Vector2>(boundaryContext ?? Array.Empty<Vector2>()).ToArray());
+        obstacle_context = Array.AsReadOnly(new List<PhysicalRiskObstacleSnapshot>(
+            obstacleContext ?? Array.Empty<PhysicalRiskObstacleSnapshot>()).ToArray());
+        clearance_forward = clearanceForward;
+        clearance_left = clearanceLeft;
+        clearance_right = clearanceRight;
+        boundary_risk = boundaryRisk ?? string.Empty;
+        reset_risk = resetRisk ?? string.Empty;
+        unsafe_directions = Array.AsReadOnly(new List<string>(unsafeDirections ?? Array.Empty<string>()).ToArray());
+        safe_directions = Array.AsReadOnly(new List<string>(safeDirections ?? Array.Empty<string>()).ToArray());
+        critical = isCritical;
+        reset_required = resetRequired;
+    }
 }
 
 internal static class PhysicalSpaceGeometry

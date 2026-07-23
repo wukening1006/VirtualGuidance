@@ -9,9 +9,8 @@ from fastapi import HTTPException
 
 from backend.agents.guide_mock import GuideMockAgent
 from backend.agents.rdw_affordance_agent import RDWAffordanceAgent
-from backend.agents.rdw_state_agent import RDWStateAgent
 from backend.agents.safety_verifier_agent import SafetyVerifierAgent
-from backend.schemas import GuidanceRequest, GuidanceResponse, response_from_draft
+from backend.schemas import GuidanceRequest, GuidanceResponse, PhysicalRiskState, response_from_draft
 from backend.services.guidance_logger import GuidanceLogger
 
 
@@ -20,7 +19,6 @@ class GuidancePipeline:
 
     def __init__(self, config_dir: Path, log_dir: Path) -> None:
         self.config_dir = config_dir
-        self.rdw_state = RDWStateAgent.from_config_dir(config_dir)
         self.affordance = RDWAffordanceAgent()
         self.guide = GuideMockAgent()
         self.verifier = SafetyVerifierAgent()
@@ -29,21 +27,38 @@ class GuidancePipeline:
 
     @property
     def physical_spaces(self) -> list[str]:
-        return sorted(self.rdw_state.spaces.keys())
+        return sorted(
+            path.stem.removeprefix("physical_")
+            for path in self.config_dir.glob("physical_*.json")
+        )
 
     @property
     def exhibit_count(self) -> int:
         return len(self.scene_semantics.get("exhibits", []))
 
     def handle(self, request: GuidanceRequest) -> GuidanceResponse:
-        try:
-            risk_state = self.rdw_state.evaluate(
-                request.physical_space_id,
-                request.physical_position_xz,
-                request.physical_forward_xz,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 在线风险事实完全来自 Unity；Backend 不根据 boundary/obstacle 重新计算或覆盖结论。
+        risk_state = PhysicalRiskState(
+            physical_space=request.risk_snapshot.physical_space,
+            user_physical_position=request.physical_position_xz,
+            user_physical_forward=request.physical_forward_xz,
+            clearance_forward=request.risk_snapshot.clearance_forward,
+            clearance_left=request.risk_snapshot.clearance_left,
+            clearance_right=request.risk_snapshot.clearance_right,
+            boundary_risk=request.risk_snapshot.risk_level,
+            reset_risk="critical" if request.risk_snapshot.reset_required else request.risk_snapshot.risk_level,
+            unsafe_directions=request.risk_snapshot.unsafe_directions,
+            safe_directions=request.risk_snapshot.safe_directions,
+            reset_required=request.risk_snapshot.reset_required,
+            risk_snapshot_id=request.risk_snapshot.risk_snapshot_id,
+            risk_revision=request.risk_snapshot.risk_revision,
+            calibration_id=request.risk_snapshot.calibration_id,
+            sampled_at_utc=request.risk_snapshot.sampled_at_utc,
+            risk_policy_version=request.risk_snapshot.risk_policy_version,
+            source=request.risk_snapshot.source,
+            risk_level=request.risk_snapshot.risk_level,
+            critical=request.risk_snapshot.critical,
+        )
 
         semantic_next_target = request.semantic_next_target
         affordance = self.affordance.build(request, risk_state)

@@ -751,7 +751,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         lastRuntimeRiskSnapshotId = string.Empty;
     }
 
-    private static bool Contains(string[] values, string expected)
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
     {
         if (values == null || string.IsNullOrWhiteSpace(expected))
         {

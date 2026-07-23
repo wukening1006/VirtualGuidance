@@ -118,9 +118,9 @@ public sealed class RiskDebugPanel : MonoBehaviour
         }
     }
 
-    private static string JoinOrNone(string[] values)
+    private static string JoinOrNone(System.Collections.Generic.IReadOnlyList<string> values)
     {
-        return values == null || values.Length == 0 ? "none" : string.Join(", ", values);
+        return values == null || values.Count == 0 ? "none" : string.Join(", ", values);
     }
 
     private static string EmptyFallback(string value)

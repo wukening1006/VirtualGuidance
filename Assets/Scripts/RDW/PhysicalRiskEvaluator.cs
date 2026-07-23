@@ -31,6 +31,8 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
 
     private float nextEvaluationTime;
     private PhysicalRiskState currentRiskState;
+    private int riskRevision;
+    private string lastExecutionSignature = string.Empty;
 
     /// <summary>
     /// 每次定时或显式风险计算完成后触发，即使风险等级未变化也会重复触发。
@@ -156,11 +158,17 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             return null;
         }
 
-        currentRiskState = Evaluate(physicalSpaceManager.CurrentSpace, userPoseTracker.PhysicalPositionXZ, userPoseTracker.PhysicalForwardXZ);
-        currentRiskState.risk_snapshot_id = Guid.NewGuid().ToString("N");
-        currentRiskState.calibration_id = physicalSpaceCalibration != null
-            ? physicalSpaceCalibration.CalibrationId
-            : string.Empty;
+        var space = physicalSpaceManager.CurrentSpace;
+        var sample = Evaluate(space, userPoseTracker.PhysicalPositionXZ, userPoseTracker.PhysicalForwardXZ);
+        var calibrationId = physicalSpaceCalibration.CalibrationId;
+        var executionSignature = BuildExecutionSignature(sample, space.id, calibrationId);
+        if (riskRevision == 0 || !string.Equals(lastExecutionSignature, executionSignature, StringComparison.Ordinal))
+        {
+            riskRevision++;
+            lastExecutionSignature = executionSignature;
+        }
+
+        currentRiskState = CreateSnapshot(sample, space, calibrationId);
         RiskStateChanged?.Invoke(currentRiskState);
         return currentRiskState;
     }
@@ -222,58 +230,121 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
                clearanceMeters < criticalClearanceMeters;
     }
 
-    private PhysicalRiskState Evaluate(PhysicalSpaceConfig space, Vector2 position, Vector2 forward)
+    private RiskSample Evaluate(PhysicalSpaceConfig space, Vector2 position, Vector2 forward)
     {
         // forward 可能来自模拟输入或 XR 输入，归一化可以保证 clearance 阈值单位始终是米。
         forward = forward.sqrMagnitude > Epsilon ? forward.normalized : Vector2.up;
         var left = new Vector2(-forward.y, forward.x);
         var right = new Vector2(forward.y, -forward.x);
 
-        var state = new PhysicalRiskState
+        var sample = new RiskSample
         {
-            physical_space = space.id,
-            user_physical_position = position,
-            user_physical_forward = forward
+            physicalPosition = position,
+            physicalForward = forward
         };
 
         if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, position))
         {
             // 用户已经离开 tracking boundary 时不再尝试自然导览，直接标记所有方向危险。
-            state.clearance_forward = 0f;
-            state.clearance_left = 0f;
-            state.clearance_right = 0f;
-            state.boundary_risk = "critical";
-            state.reset_risk = "critical";
-            state.unsafe_directions = new[] {"forward", "left", "right"};
-            state.safe_directions = Array.Empty<string>();
-            state.reset_required = true;
-            return state;
+            sample.clearanceForward = 0f;
+            sample.clearanceLeft = 0f;
+            sample.clearanceRight = 0f;
+            sample.boundaryRisk = "critical";
+            sample.resetRisk = "critical";
+            sample.unsafeDirections = new[] {"forward", "left", "right"};
+            sample.safeDirections = Array.Empty<string>();
+            sample.resetRequired = true;
+            return sample;
         }
 
-        state.clearance_forward = ComputeClearance(space, position, forward);
-        state.clearance_left = ComputeClearance(space, position, left);
-        state.clearance_right = ComputeClearance(space, position, right);
+        sample.clearanceForward = ComputeClearance(space, position, forward);
+        sample.clearanceLeft = ComputeClearance(space, position, left);
+        sample.clearanceRight = ComputeClearance(space, position, right);
 
-        var minClearance = Mathf.Min(state.clearance_forward, state.clearance_left, state.clearance_right);
-        state.boundary_risk = ClearanceToRisk(minClearance);
-        state.reset_risk = state.boundary_risk;
+        var minClearance = Mathf.Min(sample.clearanceForward, sample.clearanceLeft, sample.clearanceRight);
+        sample.boundaryRisk = ClearanceToRisk(minClearance);
+        sample.resetRisk = sample.boundaryRisk;
 
         var unsafeDirections = new List<string>();
         var safeDirections = new List<string>();
-        AddDirectionStatus("forward", state.clearance_forward, unsafeDirections, safeDirections);
-        AddDirectionStatus("left", state.clearance_left, unsafeDirections, safeDirections);
-        AddDirectionStatus("right", state.clearance_right, unsafeDirections, safeDirections);
+        AddDirectionStatus("forward", sample.clearanceForward, unsafeDirections, safeDirections);
+        AddDirectionStatus("left", sample.clearanceLeft, unsafeDirections, safeDirections);
+        AddDirectionStatus("right", sample.clearanceRight, unsafeDirections, safeDirections);
 
-        state.unsafe_directions = unsafeDirections.ToArray();
-        state.safe_directions = safeDirections.ToArray();
-        state.reset_required = unsafeDirections.Count == 3;
-        if (state.reset_required)
+        sample.unsafeDirections = unsafeDirections.ToArray();
+        sample.safeDirections = safeDirections.ToArray();
+        sample.resetRequired = unsafeDirections.Count == 3;
+        if (sample.resetRequired)
         {
             // 三个自然方向都不可用时，reset 风险应覆盖普通 boundary risk，驱动 pause/reset 流程。
-            state.reset_risk = "critical";
+            sample.resetRisk = "critical";
         }
 
-        return state;
+        return sample;
+    }
+
+    private PhysicalRiskState CreateSnapshot(RiskSample sample, PhysicalSpaceConfig space, string calibrationId)
+    {
+        var obstacles = new List<PhysicalRiskObstacleSnapshot>();
+        if (space.obstacles != null)
+        {
+            foreach (var obstacle in space.obstacles)
+            {
+                obstacles.Add(new PhysicalRiskObstacleSnapshot(obstacle.id, obstacle.center, obstacle.radius));
+            }
+        }
+
+        var critical = string.Equals(sample.boundaryRisk, "critical", StringComparison.Ordinal) ||
+                       string.Equals(sample.resetRisk, "critical", StringComparison.Ordinal);
+        return new PhysicalRiskState(
+            Guid.NewGuid().ToString("N"),
+            riskRevision,
+            calibrationId,
+            DateTime.UtcNow.ToString("o"),
+            GuidanceProtocolVersions.RiskPolicy,
+            "unity",
+            space.id,
+            sample.physicalPosition,
+            sample.physicalForward,
+            space.boundary,
+            obstacles,
+            sample.clearanceForward,
+            sample.clearanceLeft,
+            sample.clearanceRight,
+            sample.boundaryRisk,
+            sample.resetRisk,
+            sample.unsafeDirections,
+            sample.safeDirections,
+            critical,
+            sample.resetRequired);
+    }
+
+    private static string BuildExecutionSignature(RiskSample sample, string physicalSpaceId, string calibrationId)
+    {
+        return string.Join(
+            "|",
+            GuidanceProtocolVersions.RiskPolicy,
+            calibrationId ?? string.Empty,
+            physicalSpaceId ?? string.Empty,
+            sample.boundaryRisk ?? string.Empty,
+            sample.resetRisk ?? string.Empty,
+            sample.resetRequired ? "reset" : "no_reset",
+            string.Join(",", sample.unsafeDirections ?? Array.Empty<string>()),
+            string.Join(",", sample.safeDirections ?? Array.Empty<string>()));
+    }
+
+    private sealed class RiskSample
+    {
+        public Vector2 physicalPosition;
+        public Vector2 physicalForward;
+        public float clearanceForward;
+        public float clearanceLeft;
+        public float clearanceRight;
+        public string boundaryRisk;
+        public string resetRisk;
+        public string[] unsafeDirections = Array.Empty<string>();
+        public string[] safeDirections = Array.Empty<string>();
+        public bool resetRequired;
     }
 
     private float ComputeClearance(PhysicalSpaceConfig space, Vector2 origin, Vector2 direction)
@@ -369,6 +440,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         }
 
         currentRiskState = null;
+        lastExecutionSignature = string.Empty;
         RiskStateChanged?.Invoke(null);
     }
 

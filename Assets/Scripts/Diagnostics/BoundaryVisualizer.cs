@@ -464,7 +464,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         RefreshPoseAndDirections();
     }
 
-    private static bool Contains(string[] values, string target)
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string target)
     {
         if (values == null)
         {

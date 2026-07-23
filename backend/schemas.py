@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import Enum
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 TASK_DEFINITION_VERSION = "t2-main-target-v2"
@@ -122,6 +124,96 @@ class MovementInstruction(str, Enum):
     RESET_REQUIRED = "reset_required"
 
 
+class RiskBoundaryContext(BaseModel):
+    """Unity 物理边界的严格协议对象。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    points: list[list[float]]
+
+    @field_validator("points")
+    @classmethod
+    def validate_points(cls, value: list[list[float]]) -> list[list[float]]:
+        if any(len(point) != 2 or any(not math.isfinite(item) for item in point) for point in value):
+            raise ValueError("Boundary points must be finite Physical XZ pairs.")
+        return value
+
+
+class RiskObstacleContext(BaseModel):
+    """Unity 单个物理障碍物的严格协议对象。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    center: list[float]
+    radius: float = Field(ge=0)
+
+    @field_validator("center")
+    @classmethod
+    def validate_center(cls, value: list[float]) -> list[float]:
+        if len(value) != 2 or any(not math.isfinite(item) for item in value):
+            raise ValueError("Obstacle center must be a finite Physical XZ pair.")
+        return value
+
+
+class RiskSnapshot(BaseModel):
+    """Unity 生成的在线风险事实；Backend 只做协议、范围和身份校验。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    source: Literal["unity"]
+    risk_snapshot_id: str = Field(min_length=1)
+    risk_revision: int = Field(ge=1)
+    calibration_id: str = Field(min_length=1)
+    sampled_at_utc: str = Field(min_length=1)
+    risk_policy_version: Literal["unity-risk-policy-v1"]
+    physical_space: str = Field(min_length=1)
+    physical_position: list[float]
+    physical_forward: list[float]
+    boundary_context: RiskBoundaryContext
+    obstacle_context: list[RiskObstacleContext]
+    clearance_forward: float = Field(ge=0)
+    clearance_left: float = Field(ge=0)
+    clearance_right: float = Field(ge=0)
+    risk_level: Literal["low", "medium", "high", "critical"]
+    safe_directions: list[str]
+    unsafe_directions: list[str]
+    critical: bool
+    reset_required: bool
+
+    @field_validator("physical_position", "physical_forward")
+    @classmethod
+    def validate_snapshot_vector(cls, value: list[float]) -> list[float]:
+        if len(value) not in (2, 3) or any(not math.isfinite(item) for item in value):
+            raise ValueError("RiskSnapshot vectors must be finite 2D or 3D arrays.")
+        return [float(item) for item in value]
+
+    @field_validator("sampled_at_utc")
+    @classmethod
+    def validate_sampled_at_utc(cls, value: str) -> str:
+        try:
+            sampled_at = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("sampled_at_utc must be an ISO 8601 timestamp.") from exc
+        if sampled_at.tzinfo is None or sampled_at.utcoffset() != timezone.utc.utcoffset(sampled_at):
+            raise ValueError("sampled_at_utc must use UTC.")
+        return value
+
+    @field_validator("safe_directions", "unsafe_directions")
+    @classmethod
+    def validate_directions(cls, value: list[str]) -> list[str]:
+        allowed = {"forward", "left", "right", "behind"}
+        if len(value) != len(set(value)) or any(item not in allowed for item in value):
+            raise ValueError("RiskSnapshot directions must be unique known values.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_direction_partition(self) -> "RiskSnapshot":
+        if set(self.safe_directions).intersection(self.unsafe_directions):
+            raise ValueError("RiskSnapshot safe and unsafe directions must be disjoint.")
+        return self
+
+
 class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
@@ -141,6 +233,7 @@ class GuidanceRequest(BaseModel):
     task_id: TaskId
     physical_space_id: str = Field(min_length=1)
     current_exhibit: str = Field(min_length=1)
+    risk_snapshot: RiskSnapshot
     user_physical_position: list[float]
     user_physical_forward: list[float]
     participant_id: str = "P001"
@@ -162,6 +255,26 @@ class GuidanceRequest(BaseModel):
         if len(value) not in (2, 3):
             raise ValueError("Expected a 2D [x,z] or 3D [x,y,z] vector.")
         return value
+
+    @model_validator(mode="after")
+    def validate_unity_snapshot_identity(self) -> "GuidanceRequest":
+        if self.task_id != TaskId.T2_MAIN_TARGET:
+            return self
+        if self.risk_snapshot.source != "unity":
+            raise ValueError("risk_snapshot.source must be unity.")
+        if self.risk_snapshot.risk_snapshot_id != self.risk_snapshot_id:
+            raise ValueError("risk_snapshot_id must match risk_snapshot.risk_snapshot_id.")
+        if self.risk_snapshot.calibration_id != self.calibration_id:
+            raise ValueError("calibration_id must match risk_snapshot.calibration_id.")
+        if self.risk_snapshot.risk_policy_version != self.risk_policy_version:
+            raise ValueError("risk_policy_version must match risk_snapshot.risk_policy_version.")
+        if self.risk_snapshot.physical_space != self.physical_space_id:
+            raise ValueError("physical_space_id must match risk_snapshot.physical_space.")
+        if self.user_physical_position != self.risk_snapshot.physical_position:
+            raise ValueError("user_physical_position must mirror Unity risk_snapshot.")
+        if self.user_physical_forward != self.risk_snapshot.physical_forward:
+            raise ValueError("user_physical_forward must mirror Unity risk_snapshot.")
+        return self
 
     @property
     def physical_position_xz(self) -> tuple[float, float]:
@@ -192,6 +305,7 @@ class GuidanceResponse(BaseModel):
     decision_id: str = Field(min_length=1)
     state_version: int = Field(ge=0)
     risk_snapshot_id: str = Field(min_length=1)
+    risk_revision: int = Field(ge=1)
     target_role: NavigationTargetRole
     selected_target: str = Field(min_length=1)
     route_decision: str = Field(min_length=1)
@@ -218,6 +332,14 @@ class PhysicalRiskState(BaseModel):
     unsafe_directions: list[str]
     safe_directions: list[str]
     reset_required: bool = False
+    risk_snapshot_id: str = "offline-risk"
+    risk_revision: int = 1
+    calibration_id: str = "offline-calibration"
+    sampled_at_utc: str = "offline"
+    risk_policy_version: str = RISK_POLICY_VERSION
+    source: str = "offline"
+    risk_level: str = "low"
+    critical: bool = False
 
 
 class Affordance(BaseModel):
@@ -251,6 +373,7 @@ class GuidanceLogRecord(BaseModel):
     decision_id: str
     state_version: int
     risk_snapshot_id: str
+    risk_revision: int
     target_role: str
     policy_version: str
     raw_guidance: dict[str, Any]
@@ -314,6 +437,7 @@ def response_from_draft(
         decision_id=request.decision_id,
         state_version=request.state_version,
         risk_snapshot_id=request.risk_snapshot_id,
+        risk_revision=request.risk_snapshot.risk_revision,
         target_role=request.target_role,
         selected_target=draft.selected_target,
         route_decision=draft.route_decision,

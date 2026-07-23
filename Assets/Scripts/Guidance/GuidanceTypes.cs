@@ -16,6 +16,129 @@ public static class GuidanceProtocolVersions
     public const string RiskPolicy = "unity-risk-policy-v1";
 }
 
+/// <summary>序列化 Physical Boundary 顶点的协议对象。</summary>
+[Serializable]
+public sealed class GuidanceRiskBoundaryContext
+{
+    /// <summary>Physical XZ 平面的边界顶点数组，单位：米。</summary>
+    public float[][] points = Array.Empty<float[]>();
+}
+
+/// <summary>序列化单个 Physical Obstacle 的协议对象。</summary>
+[Serializable]
+public sealed class GuidanceRiskObstacleContext
+{
+    /// <summary>障碍物 ID。</summary>
+    public string id;
+    /// <summary>Physical XZ 平面的圆心，单位：米。</summary>
+    public float[] center = Array.Empty<float>();
+    /// <summary>障碍物半径，单位：米。</summary>
+    public float radius;
+}
+
+/// <summary>
+/// GuidanceRequest 携带的 Unity 权威风险快照；由内部只读状态深拷贝生成。
+/// </summary>
+[Serializable]
+public sealed class GuidanceRiskSnapshot
+{
+    /// <summary>风险事实生产者，正式运行固定为 unity。</summary>
+    public string source;
+    /// <summary>本次采样的唯一快照 ID。</summary>
+    public string risk_snapshot_id;
+    /// <summary>执行相关风险发生实质变化时才递增的修订号。</summary>
+    public int risk_revision;
+    /// <summary>生成快照时使用的 Calibration ID。</summary>
+    public string calibration_id;
+    /// <summary>ISO 8601 UTC 采样时间。</summary>
+    public string sampled_at_utc;
+    /// <summary>生成快照的风险策略版本。</summary>
+    public string risk_policy_version;
+    /// <summary>当前 Physical Space ID。</summary>
+    public string physical_space;
+    /// <summary>用户在 Physical XZ 平面中的位置，单位：米。</summary>
+    public float[] physical_position = Array.Empty<float>();
+    /// <summary>用户在 Physical XZ 平面中的单位前向方向。</summary>
+    public float[] physical_forward = Array.Empty<float>();
+    /// <summary>边界原始上下文。</summary>
+    public GuidanceRiskBoundaryContext boundary_context = new GuidanceRiskBoundaryContext();
+    /// <summary>障碍物原始上下文。</summary>
+    public GuidanceRiskObstacleContext[] obstacle_context = Array.Empty<GuidanceRiskObstacleContext>();
+    /// <summary>前方 clearance，单位：米。</summary>
+    public float clearance_forward;
+    /// <summary>左侧 clearance，单位：米。</summary>
+    public float clearance_left;
+    /// <summary>右侧 clearance，单位：米。</summary>
+    public float clearance_right;
+    /// <summary>统一风险等级。</summary>
+    public string risk_level;
+    /// <summary>安全方向。</summary>
+    public string[] safe_directions = Array.Empty<string>();
+    /// <summary>不安全方向。</summary>
+    public string[] unsafe_directions = Array.Empty<string>();
+    /// <summary>是否达到 Critical 风险。</summary>
+    public bool critical;
+    /// <summary>是否需要确定性 Reset。</summary>
+    public bool reset_required;
+
+    /// <summary>从 Unity 内部只读快照创建独立协议副本。</summary>
+    public static GuidanceRiskSnapshot From(PhysicalRiskState state)
+    {
+        if (state == null)
+        {
+            return null;
+        }
+
+        var boundary = new float[state.boundary_context.Count][];
+        for (var i = 0; i < state.boundary_context.Count; i++)
+        {
+            boundary[i] = GuidanceTypeUtility.Vector2ToArray(state.boundary_context[i]);
+        }
+
+        var obstacles = new GuidanceRiskObstacleContext[state.obstacle_context.Count];
+        for (var i = 0; i < state.obstacle_context.Count; i++)
+        {
+            var obstacle = state.obstacle_context[i];
+            obstacles[i] = new GuidanceRiskObstacleContext
+            {
+                id = obstacle.id,
+                center = GuidanceTypeUtility.Vector2ToArray(obstacle.center),
+                radius = obstacle.radius
+            };
+        }
+
+        return new GuidanceRiskSnapshot
+        {
+            source = state.source,
+            risk_snapshot_id = state.risk_snapshot_id,
+            risk_revision = state.risk_revision,
+            calibration_id = state.calibration_id,
+            sampled_at_utc = state.sampled_at_utc,
+            risk_policy_version = state.risk_policy_version,
+            physical_space = state.physical_space,
+            physical_position = GuidanceTypeUtility.Vector2ToArray(state.user_physical_position),
+            physical_forward = GuidanceTypeUtility.Vector2ToArray(state.user_physical_forward),
+            boundary_context = new GuidanceRiskBoundaryContext { points = boundary },
+            obstacle_context = obstacles,
+            clearance_forward = state.clearance_forward,
+            clearance_left = state.clearance_left,
+            clearance_right = state.clearance_right,
+            risk_level = state.boundary_risk,
+            safe_directions = CopyStrings(state.safe_directions),
+            unsafe_directions = CopyStrings(state.unsafe_directions),
+            critical = state.critical,
+            reset_required = state.reset_required
+        };
+    }
+
+    private static string[] CopyStrings(System.Collections.Generic.IReadOnlyList<string> values)
+    {
+        var result = new string[values != null ? values.Count : 0];
+        for (var i = 0; i < result.Length; i++) result[i] = values[i];
+        return result;
+    }
+}
+
 /// <summary>
 /// Unity 发送给后端 /api/guidance 的请求数据，字段名必须与后端 schema 保持一致。
 /// </summary>
@@ -75,14 +198,13 @@ public sealed class GuidanceRequest
     /// </summary>
     public string current_exhibit = "E1";
 
-    /// <summary>
-    /// 用户在 physical XZ 平面中的位置数组，单位：米。
-    /// </summary>
+    /// <summary>Unity 生成的完整权威 Physical Risk 快照。</summary>
+    public GuidanceRiskSnapshot risk_snapshot;
+
+    /// <summary>兼容旧诊断工具的物理位置镜像；必须与 risk_snapshot 一致，单位：米。</summary>
     public float[] user_physical_position = Array.Empty<float>();
 
-    /// <summary>
-    /// 用户在 physical XZ 平面中的朝向数组。
-    /// </summary>
+    /// <summary>兼容旧诊断工具的物理朝向镜像；必须与 risk_snapshot 一致。</summary>
     public float[] user_physical_forward = Array.Empty<float>();
 
     /// <summary>
@@ -163,6 +285,9 @@ public sealed class GuidanceResponse
 
     /// <summary>对应 GuidanceRequest 的风险快照 ID。</summary>
     public string risk_snapshot_id;
+
+    /// <summary>对应风险快照的执行相关修订号。</summary>
+    public int risk_revision;
 
     /// <summary>后端确认的 Guidance Target 协议角色。</summary>
     public string target_role;

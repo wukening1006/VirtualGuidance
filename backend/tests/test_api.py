@@ -17,7 +17,7 @@ def make_client(tmp_path: Path) -> TestClient:
 
 
 def base_payload(condition: str) -> dict:
-    return {
+    payload = {
         "task_definition_version": "t2-main-target-v2",
         "guidance_schema_version": "guidance-schema-v2",
         "candidate_policy_version": "t2-candidate-policy-v1",
@@ -37,6 +37,28 @@ def base_payload(condition: str) -> dict:
         "user_physical_forward": [0.0, 1.0],
         "semantic_next_target": "E5",
     }
+    payload["risk_snapshot"] = {
+        "source": "unity",
+        "risk_snapshot_id": payload["risk_snapshot_id"],
+        "risk_revision": 7,
+        "calibration_id": payload["calibration_id"],
+        "sampled_at_utc": "2026-07-23T08:00:00.0000000Z",
+        "risk_policy_version": payload["risk_policy_version"],
+        "physical_space": payload["physical_space_id"],
+        "physical_position": payload["user_physical_position"],
+        "physical_forward": payload["user_physical_forward"],
+        "boundary_context": {"points": [[0.0, 0.0], [3.6, 0.0], [3.6, 5.0], [0.0, 5.0]]},
+        "obstacle_context": [],
+        "clearance_forward": 0.7,
+        "clearance_left": 1.0,
+        "clearance_right": 1.0,
+        "risk_level": "high",
+        "safe_directions": [],
+        "unsafe_directions": ["forward"],
+        "critical": False,
+        "reset_required": False,
+    }
+    return payload
 
 
 def read_log_records(tmp_path: Path) -> list[dict]:
@@ -101,6 +123,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
         "decision_id",
         "state_version",
         "risk_snapshot_id",
+        "risk_revision",
         "target_role",
         "selected_target",
         "route_decision",
@@ -117,6 +140,7 @@ def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
     assert body["session_id"] == "session-test-001"
     assert body["calibration_id"] == "calibration-test-001"
     assert body["risk_snapshot_id"] == "risk-test-001"
+    assert body["risk_revision"] == 7
     assert body["decision_id"] == "decision-test-001"
     assert body["state_version"] == 3
     assert body["target_role"] == "route_subgoal"
@@ -141,6 +165,8 @@ def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> No
     client = make_client(tmp_path)
     payload = base_payload("ours_full")
     payload["user_physical_position"] = [1.8, 4.3]
+    payload["risk_snapshot"]["physical_position"] = [1.8, 4.3]
+    payload["risk_snapshot"]["safe_directions"] = ["left"]
     payload["semantic_next_target"] = "E3"
 
     response = client.post("/api/guidance", json=payload)
@@ -199,6 +225,14 @@ def test_all_conditions_preserve_unity_selected_target(condition: str, tmp_path:
     payload = base_payload(condition)
     payload["physical_space_id"] = "wide_room"
     payload["user_physical_position"] = [2.5, 2.5]
+    payload["risk_snapshot"]["physical_space"] = "wide_room"
+    payload["risk_snapshot"]["physical_position"] = [2.5, 2.5]
+    payload["risk_snapshot"]["clearance_forward"] = 2.5
+    payload["risk_snapshot"]["clearance_left"] = 2.5
+    payload["risk_snapshot"]["clearance_right"] = 2.5
+    payload["risk_snapshot"]["risk_level"] = "low"
+    payload["risk_snapshot"]["safe_directions"] = ["forward", "left", "right"]
+    payload["risk_snapshot"]["unsafe_directions"] = []
     payload["semantic_next_target"] = "E5"
 
     response = client.post("/api/guidance", json=payload)
@@ -250,6 +284,65 @@ def test_api_rejects_legacy_guidance_schema_version(tmp_path: Path) -> None:
     assert any(item["loc"][-1] == "guidance_schema_version" for item in response.json()["detail"])
 
 
+def test_api_rejects_missing_or_inconsistent_unity_risk_snapshot(tmp_path: Path) -> None:
+    missing = base_payload("ours_full")
+    missing.pop("risk_snapshot")
+    inconsistent = base_payload("ours_full")
+    inconsistent["risk_snapshot"]["risk_snapshot_id"] = "risk-other"
+
+    missing_response = make_client(tmp_path).post("/api/guidance", json=missing)
+    inconsistent_response = make_client(tmp_path).post("/api/guidance", json=inconsistent)
+
+    assert missing_response.status_code == 422
+    assert inconsistent_response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_location"),
+    [
+        (lambda snapshot: snapshot.update({"physical_position": ["NaN", 1.0]}), "physical_position"),
+        (lambda snapshot: snapshot["boundary_context"].update({"unexpected": True}), "unexpected"),
+        (
+            lambda snapshot: snapshot.update(
+                {"obstacle_context": [{"id": "wall", "center": [0.0], "radius": 0.2}]}
+            ),
+            "center",
+        ),
+        (lambda snapshot: snapshot.update({"sampled_at_utc": "2026-07-23T08:00:00"}), "sampled_at_utc"),
+    ],
+)
+def test_api_rejects_malformed_unity_risk_snapshot(
+    mutate,
+    expected_location: str,
+    tmp_path: Path,
+) -> None:
+    payload = base_payload("ours_full")
+    mutate(payload["risk_snapshot"])
+
+    response = make_client(tmp_path).post("/api/guidance", json=payload)
+
+    assert response.status_code == 422
+    assert any(expected_location in item["loc"] for item in response.json()["detail"])
+
+
+def test_pipeline_consumes_unity_risk_without_online_recomputation(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    payload = base_payload("ours_full")
+    payload["user_physical_position"] = [2.5, 2.5]
+    payload["risk_snapshot"]["physical_position"] = [2.5, 2.5]
+    payload["risk_snapshot"]["clearance_forward"] = 0.2
+    payload["risk_snapshot"]["risk_level"] = "critical"
+    payload["risk_snapshot"]["unsafe_directions"] = ["forward"]
+    payload["risk_snapshot"]["critical"] = True
+
+    response = client.post("/api/guidance", json=payload)
+
+    assert response.status_code == 200
+    record = read_log_records(tmp_path)[0]
+    assert record["clearance_forward"] == 0.2
+    assert record["boundary_risk"] == "critical"
+
+
 def test_pydantic_contract_matches_unity_dto_fields() -> None:
     request_schema = GuidanceRequest.model_json_schema()
     response_schema = GuidanceResponse.model_json_schema()
@@ -269,6 +362,7 @@ def test_pydantic_contract_matches_unity_dto_fields() -> None:
         "task_id",
         "physical_space_id",
         "current_exhibit",
+        "risk_snapshot",
         "user_physical_position",
         "user_physical_forward",
         "participant_id",

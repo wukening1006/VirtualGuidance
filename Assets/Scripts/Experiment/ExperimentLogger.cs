@@ -1289,9 +1289,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         return string.Empty;
     }
 
-    private static string Join(string[] values)
+    private static string Join(System.Collections.Generic.IReadOnlyList<string> values)
     {
-        return values == null || values.Length == 0 ? string.Empty : string.Join(",", values);
+        return values == null || values.Count == 0 ? string.Empty : string.Join(",", values);
     }
 
     /// <summary>保存稳定事件名、固定分类和日志等级的目录项。</summary>

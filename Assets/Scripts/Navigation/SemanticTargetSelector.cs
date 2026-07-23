@@ -153,7 +153,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         return Contains(riskState != null ? riskState.safe_directions : null, direction);
     }
 
-    private static bool Contains(string[] values, string value)
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string value)
     {
         if (values == null || string.IsNullOrWhiteSpace(value))
         {

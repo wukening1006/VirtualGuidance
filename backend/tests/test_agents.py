@@ -20,6 +20,30 @@ from backend.schemas import (
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
 
 
+def risk_snapshot(risk_id: str, calibration_id: str, position: list[float]) -> dict:
+    return {
+        "source": "unity",
+        "risk_snapshot_id": risk_id,
+        "risk_revision": 1,
+        "calibration_id": calibration_id,
+        "sampled_at_utc": "2026-07-23T08:00:00Z",
+        "risk_policy_version": "unity-risk-policy-v1",
+        "physical_space": "narrow_room",
+        "physical_position": position,
+        "physical_forward": [0.0, 1.0],
+        "boundary_context": {"points": []},
+        "obstacle_context": [],
+        "clearance_forward": 0.7,
+        "clearance_left": 1.8,
+        "clearance_right": 0.8,
+        "risk_level": "high",
+        "safe_directions": ["left"],
+        "unsafe_directions": ["forward", "right"],
+        "critical": False,
+        "reset_required": False,
+    }
+
+
 def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
     return GuidanceRequest(
         task_definition_version="t2-main-target-v2",
@@ -37,6 +61,7 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
         task_id="T2_main_target",
         physical_space_id="narrow_room",
         current_exhibit="E1",
+        risk_snapshot=risk_snapshot("risk-agent-test", "calibration-agent-test", [1.8, 4.3]),
         user_physical_position=[1.8, 4.3],
         user_physical_forward=[0.0, 1.0],
         semantic_next_target="E5",
@@ -139,6 +164,7 @@ def test_b5_stably_outputs_unsafe_forward_without_verifier() -> None:
         task_id="T2_main_target",
         physical_space_id="narrow_room",
         current_exhibit="E1",
+        risk_snapshot=risk_snapshot("risk-b5-test", "calibration-b5-test", [1.0, 4.3]),
         user_physical_position=[1.0, 4.3],
         user_physical_forward=[0.0, 1.0],
         semantic_next_target="E5",

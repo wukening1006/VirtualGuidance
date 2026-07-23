@@ -43,6 +43,7 @@ class GuidanceLogger:
             decision_id=request.decision_id,
             state_version=request.state_version,
             risk_snapshot_id=request.risk_snapshot_id,
+            risk_revision=request.risk_snapshot.risk_revision,
             target_role=request.target_role,
             policy_version=policy.policy_version,
             raw_guidance=draft.model_dump(mode="json"),

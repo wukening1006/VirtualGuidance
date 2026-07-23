@@ -40,6 +40,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         "decision_id",
         "state_version",
         "risk_snapshot_id",
+        "risk_revision",
         "target_role",
         "selected_target",
         "route_decision",
@@ -344,8 +345,6 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             return null;
         }
 
-        var physicalPosition = userPoseTracker.PhysicalPositionXZ;
-        var physicalForward = userPoseTracker.PhysicalForwardXZ;
         var virtualPosition = userPoseTracker.UserVirtualPosition;
         var virtualForward = userPoseTracker.UserVirtualForward;
 
@@ -379,8 +378,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             semantic_next_target = EmptyFallback(context.semantic_next_target, "E5"),
             participant_id = EmptyFallback(context.participant_id, "P001"),
             user_task = context.user_task,
-            user_physical_position = GuidanceTypeUtility.Vector2ToArray(physicalPosition),
-            user_physical_forward = GuidanceTypeUtility.Vector2ToArray(physicalForward),
+            risk_snapshot = GuidanceRiskSnapshot.From(riskState),
+            user_physical_position = GuidanceTypeUtility.Vector2ToArray(riskState.user_physical_position),
+            user_physical_forward = GuidanceTypeUtility.Vector2ToArray(riskState.user_physical_forward),
             user_virtual_position = GuidanceTypeUtility.Vector3ToArray(virtualPosition),
             user_virtual_forward = GuidanceTypeUtility.Vector3ToArray(virtualForward)
         };
@@ -407,6 +407,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
         return riskState != null &&
                !string.IsNullOrWhiteSpace(riskState.risk_snapshot_id) &&
+               riskState.risk_revision > 0 &&
+               string.Equals(riskState.source, "unity", StringComparison.Ordinal) &&
                string.Equals(riskState.calibration_id, physicalSpaceCalibration.CalibrationId, StringComparison.Ordinal) &&
                string.Equals(riskState.physical_space, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal);
     }
@@ -415,7 +417,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     {
         return request != null &&
                string.Equals(request.calibration_id, riskState.calibration_id, StringComparison.Ordinal) &&
-               string.Equals(request.risk_snapshot_id, riskState.risk_snapshot_id, StringComparison.Ordinal) &&
+               request.risk_snapshot != null &&
+               request.risk_snapshot.risk_revision == riskState.risk_revision &&
                string.Equals(request.physical_space_id, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal);
     }
 
@@ -450,6 +453,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             string.IsNullOrWhiteSpace(response.request_id) ||
             string.IsNullOrWhiteSpace(response.decision_id) ||
             response.state_version < 0 ||
+            response.risk_revision < 1 ||
             string.IsNullOrWhiteSpace(response.risk_snapshot_id) ||
             string.IsNullOrWhiteSpace(response.target_role) ||
             string.IsNullOrWhiteSpace(response.selected_target) ||
@@ -476,7 +480,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             !string.Equals(response.request_id, request.request_id, StringComparison.Ordinal) ||
             !string.Equals(response.decision_id, request.decision_id, StringComparison.Ordinal) ||
             response.state_version != request.state_version ||
-            !string.Equals(response.risk_snapshot_id, request.risk_snapshot_id, StringComparison.Ordinal))
+            !string.Equals(response.risk_snapshot_id, request.risk_snapshot_id, StringComparison.Ordinal) ||
+            request.risk_snapshot == null || response.risk_revision != request.risk_snapshot.risk_revision)
         {
             failureReason = "response identity does not match the current request";
             return false;

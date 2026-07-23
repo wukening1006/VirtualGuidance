@@ -140,7 +140,7 @@ public sealed class RuntimeGuidanceSafetyPolicy
                state == ResetLifecycleState.Completed;
     }
 
-    private static bool Contains(string[] values, string expected)
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
     {
         if (values == null || string.IsNullOrWhiteSpace(expected))
         {

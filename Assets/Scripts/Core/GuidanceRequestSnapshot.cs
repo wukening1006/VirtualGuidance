@@ -18,6 +18,8 @@ public sealed class GuidanceRequestSnapshot
     public int stateVersion { get; private set; }
     /// <summary>请求决策使用的风险快照 ID。</summary>
     public string riskSnapshotId { get; private set; }
+    /// <summary>请求使用的执行风险修订号。</summary>
+    public int riskRevision { get; private set; }
     /// <summary>请求中的当前展品 ID。</summary>
     public string currentExhibitId { get; private set; }
     /// <summary>请求中的语义下一目标 ID。</summary>
@@ -44,6 +46,9 @@ public sealed class GuidanceRequestSnapshot
             decisionId = request != null ? request.decision_id : string.Empty,
             stateVersion = request != null ? request.state_version : runtimeState != null ? runtimeState.stateVersion : 0,
             riskSnapshotId = request != null ? request.risk_snapshot_id : string.Empty,
+            riskRevision = request != null && request.risk_snapshot != null
+                ? request.risk_snapshot.risk_revision
+                : riskState != null ? riskState.risk_revision : 0,
             currentExhibitId = request != null ? request.current_exhibit : string.Empty,
             semanticNextTargetId = request != null ? request.semantic_next_target : string.Empty,
             physicalSpaceId = request != null ? request.physical_space_id : string.Empty,
@@ -77,7 +82,7 @@ public sealed class GuidanceRequestSnapshot
             return false;
         }
 
-        return string.Equals(riskSignature, BuildRiskSignature(riskState), StringComparison.Ordinal);
+        return riskState != null && riskState.risk_revision == riskRevision;
     }
 
     private static string BuildRiskSignature(PhysicalRiskState riskState)
@@ -95,8 +100,8 @@ public sealed class GuidanceRequestSnapshot
             Join(riskState.safe_directions));
     }
 
-    private static string Join(string[] values)
+    private static string Join(System.Collections.Generic.IReadOnlyList<string> values)
     {
-        return values == null || values.Length == 0 ? "none" : string.Join(",", values);
+        return values == null || values.Count == 0 ? "none" : string.Join(",", values);
     }
 }

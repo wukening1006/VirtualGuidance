@@ -1062,7 +1062,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
                string.Equals(state.calibration_id, physicalSpaceCalibration.CalibrationId, StringComparison.Ordinal) &&
                string.Equals(state.physical_space, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal) &&
                !IsCritical(state) &&
-               state.safe_directions != null && state.safe_directions.Length > 0;
+               state.safe_directions != null && state.safe_directions.Count > 0;
     }
 
     private void Subscribe()
