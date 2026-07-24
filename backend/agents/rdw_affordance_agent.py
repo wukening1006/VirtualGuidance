@@ -5,16 +5,7 @@ from __future__ import annotations
 from backend.schemas import Affordance, GuidanceRequest, PhysicalRiskState
 
 
-TARGET_DIRECTION = {
-    "E1": "forward",
-    "E2": "forward",
-    "E3": "left",
-    "E4": "right",
-    "E5": "forward",
-    "E6": "left",
-    "E7": "right",
-    "E8": "forward",
-}
+# Direction authority moved to Unity: use semantic_candidates[].relative_direction
 
 
 class RDWAffordanceAgent:
@@ -35,7 +26,7 @@ class RDWAffordanceAgent:
             return self._build_redirection(request, risk_state)
 
         semantic_target = preferred_model_target(request)
-        preferred_direction = target_direction(semantic_target)
+        preferred_direction = get_unity_direction(request, semantic_target)
         return Affordance(
             intervention_type="direct_visit",
             preferred_direction=preferred_direction,
@@ -50,9 +41,9 @@ class RDWAffordanceAgent:
         risk_state: PhysicalRiskState,
     ) -> Affordance:
         candidates = [
-            (target_direction(candidate_id), candidate_id)
+            (get_unity_direction(request, candidate_id), candidate_id)
             for candidate_id in request.model_candidate_ids
-            if target_direction(candidate_id) in {"left", "right"}
+            if get_unity_direction(request, candidate_id) in {"left", "right"}
         ]
 
         selected = first_matching_direction(candidates, risk_state.safe_directions)
@@ -87,8 +78,12 @@ def preferred_model_target(request: GuidanceRequest) -> str:
     return request.model_candidate_ids[0]
 
 
-def target_direction(exhibit_id: str) -> str:
-    return TARGET_DIRECTION.get(exhibit_id, "forward")
+def get_unity_direction(request: GuidanceRequest, target_id: str) -> str:
+    """从Unity权威的semantic_candidates中获取目标的相对方向。"""
+    candidate = request.candidate_for(target_id)
+    if candidate is None:
+        return "forward"  # fallback for safety
+    return candidate.relative_direction
 
 
 def first_matching_direction(

@@ -131,7 +131,7 @@ def test_verifier_rejects_unsafe_forward_movement() -> None:
         intervention_type="test",
     )
 
-    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state)
+    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state, request)
 
     assert result.approved is False
     assert "movement_instruction" in result.reason
@@ -155,7 +155,7 @@ def test_verifier_rejects_unsafe_selected_target() -> None:
         intervention_type="test",
     )
 
-    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state)
+    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state, request)
 
     assert result.approved is False
     assert "selected_target" in result.reason

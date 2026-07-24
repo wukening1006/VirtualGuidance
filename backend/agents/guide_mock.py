@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance_agent import preferred_model_target, target_direction
+from backend.agents.rdw_affordance_agent import preferred_model_target, get_unity_direction
 from backend.schemas import (
     Affordance,
     Condition,
@@ -50,7 +50,7 @@ class GuideMockAgent:
 
     def _direct_semantic_guidance(self, request: GuidanceRequest, intent: str) -> GuideDraft:
         target = preferred_model_target(request)
-        direction = target_direction(target)
+        direction = get_unity_direction(request, target)
         return draft_for_direction(
             selected_target=target,
             direction=direction,
@@ -66,7 +66,7 @@ class GuideMockAgent:
         risk_state: PhysicalRiskState,
     ) -> GuideDraft:
         target = preferred_model_target(request)
-        direction = target_direction(target)
+        direction = get_unity_direction(request, target)
         return draft_for_direction(
             selected_target=target,
             direction=direction,
@@ -165,7 +165,7 @@ class GuideMockAgent:
                 intervention_type=affordance.intervention_type,
             )
 
-        direction = target_direction(target)
+        direction = get_unity_direction(request, target)
         narration = narration_for_redirection(target, direction)
         if affordance.intervention_type == "direct_visit":
             narration = narration_for_direct_target(request, target)

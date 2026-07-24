@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance_agent import target_direction
+from backend.agents.rdw_affordance_agent import get_unity_direction
 from backend.schemas import (
     Condition,
     ConditionCapabilityMode,
+    GuidanceRequest,
     GuideDraft,
     MovementInstruction,
     PhysicalRiskState,
@@ -32,6 +33,7 @@ class SafetyVerifierAgent:
         condition: str,
         draft: GuideDraft,
         risk_state: PhysicalRiskState,
+        request: GuidanceRequest,
     ) -> VerifierResult:
         policy = condition_policy_for(condition)
         if policy.use_model_verifier != ConditionCapabilityMode.ENABLED:
@@ -63,7 +65,7 @@ class SafetyVerifierAgent:
                 reason=f"movement_instruction points to unsafe {movement_direction} direction.",
             )
 
-        selected_direction = target_direction(draft.selected_target)
+        selected_direction = get_unity_direction(request, draft.selected_target)
         if selected_direction in risk_state.unsafe_directions:
             return VerifierResult(
                 approved=False,

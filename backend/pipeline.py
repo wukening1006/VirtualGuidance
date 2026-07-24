@@ -89,7 +89,7 @@ class GuidancePipeline:
                     "selected_target must belong to model_candidate_ids."
                 ),
             )
-        verifier = self.verifier.verify(request.condition, draft, risk_state)
+        verifier = self.verifier.verify(request.condition, draft, risk_state, request)
         self.logger.write(request, risk_state, draft, verifier)
         return response_from_draft(request, draft, verifier)
 
