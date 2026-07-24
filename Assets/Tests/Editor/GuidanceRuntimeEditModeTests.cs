@@ -4250,6 +4250,60 @@ public sealed class GuidanceRuntimeEditModeTests
         public string session_id;
     }
 
+    [Test]
+    public void AgentClient_SerializesNestedBoundaryPointsForBackendTransport()
+    {
+        var request = new GuidanceRequest
+        {
+            risk_snapshot = new GuidanceRiskSnapshot
+            {
+                boundary_context = new GuidanceRiskBoundaryContext
+                {
+                    points = new[]
+                    {
+                        new[] { 0f, 0f },
+                        new[] { 2f, 0f }
+                    }
+                }
+            }
+        };
+
+        var json = AgentClient.SerializeGuidanceRequest(request);
+        var points = (JArray)JObject.Parse(json)["risk_snapshot"]["boundary_context"]["points"];
+
+        Assert.That(points.Count, Is.EqualTo(2));
+        Assert.That(points[0], Is.TypeOf<JArray>());
+        Assert.That(points[1], Is.TypeOf<JArray>());
+        Assert.That((float)points[0][0], Is.EqualTo(0f));
+        Assert.That((float)points[1][0], Is.EqualTo(2f));
+    }
+
+    [Test]
+    public void AgentClient_FormatsBackendValidationDetailsWithoutUnboundedBody()
+    {
+        var detail = new string('x', 700);
+        var formatted = AgentClient.FormatGuidanceRequestFailure(
+            "HTTP/1.1 422 Unprocessable Entity",
+            "{\"detail\":\"" + detail + "\"}");
+
+        Assert.That(formatted, Does.Contain("HTTP/1.1 422 Unprocessable Entity"));
+        Assert.That(formatted, Does.Contain("backend detail:"));
+        Assert.That(formatted.Length, Is.LessThan(900));
+        Assert.That(formatted, Does.EndWith("..."));
+    }
+
+    [Test]
+    public void AgentClient_FormatsNonJsonBackendErrorBody()
+    {
+        var formatted = AgentClient.FormatGuidanceRequestFailure(
+            "HTTP/1.1 422 Unprocessable Entity",
+            "plain backend failure\r\nline two");
+
+        Assert.That(formatted, Does.Contain("plain backend failure line two"));
+        Assert.That(formatted, Does.Not.Contain("\r"));
+        Assert.That(formatted, Does.Not.Contain("\n"));
+    }
+
     private sealed class RecordingGuidanceRequestClient : IGuidanceRequestClient
     {
         public readonly System.Collections.Generic.List<GuidanceRequestContext> Contexts =

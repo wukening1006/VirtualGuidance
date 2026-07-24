@@ -553,7 +553,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         requestInFlight = true;
         GuidanceRequestStarted?.Invoke("Requesting guidance...");
 
-        var json = JsonUtility.ToJson(request);
+        var json = SerializeGuidanceRequest(request);
         using (var webRequest = new UnityWebRequest(guidanceEndpoint, UnityWebRequest.kHttpVerbPOST))
         {
             activeGuidanceRequest = webRequest;
@@ -575,13 +575,14 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
             requestInFlight = false;
 
+            var responseText = webRequest.downloadHandler != null ? webRequest.downloadHandler.text : string.Empty;
+
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
-                GuidanceRequestFailed?.Invoke($"Guidance request failed: {webRequest.error}");
+                GuidanceRequestFailed?.Invoke(FormatGuidanceRequestFailure(webRequest.error, responseText));
                 yield break;
             }
 
-            var responseText = webRequest.downloadHandler != null ? webRequest.downloadHandler.text : string.Empty;
             if (!TryParseGuidanceResponse(responseText, request, out var response, out var failureReason))
             {
                 GuidanceRequestFailed?.Invoke($"Guidance response rejected: {failureReason}.");
@@ -590,6 +591,54 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
             GuidanceReceived?.Invoke(response);
         }
+    }
+
+    /// <summary>
+    /// 使用支持嵌套数组的 JSON.NET 序列化正式请求，确保边界点不会退化为空对象。
+    /// </summary>
+    public static string SerializeGuidanceRequest(GuidanceRequest request)
+    {
+        if (request == null)
+        {
+            throw new ArgumentNullException(nameof(request));
+        }
+
+        return JsonConvert.SerializeObject(request, Formatting.None);
+    }
+
+    /// <summary>
+    /// 把 HTTP 状态与 Backend 结构化错误合并为限长诊断文本，避免丢失 FastAPI 字段级校验原因。
+    /// </summary>
+    public static string FormatGuidanceRequestFailure(string transportError, string responseBody)
+    {
+        const int MaxDetailLength = 512;
+        var message = $"Guidance request failed: {EmptyFallback(transportError, "unknown transport error")}";
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return message;
+        }
+
+        string detail;
+        try
+        {
+            var responseToken = JToken.Parse(responseBody);
+            detail = responseToken["detail"] != null
+                ? responseToken["detail"].ToString(Formatting.None)
+                : responseToken.ToString(Formatting.None);
+        }
+        catch (JsonException)
+        {
+            detail = responseBody.Trim()
+                .Replace("\r\n", " ")
+                .Replace("\r", " ")
+                .Replace("\n", " ");
+        }
+
+        if (detail.Length > MaxDetailLength)
+        {
+            detail = detail.Substring(0, MaxDetailLength) + "...";
+        }
+        return $"{message}; backend detail: {detail}";
     }
 
     private IEnumerator HealthLoop()

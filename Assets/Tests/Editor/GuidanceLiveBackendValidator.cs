@@ -132,14 +132,20 @@ public static class GuidanceLiveBackendValidator
                         Fail(requestFailure);
                     }
                     break;
+                case ValidationStage.WaitingForRouteResponse:
+                    if (!string.IsNullOrWhiteSpace(requestFailure))
+                    {
+                        Fail(requestFailure);
+                    }
+                    break;
+                case ValidationStage.WaitingForRouteCommit:
+                    WaitForRouteCommit();
+                    break;
                 case ValidationStage.VerifyingApprovedPresentation:
                     VerifyApprovedPresentation();
                     break;
                 case ValidationStage.VerifyingRejectedPresentation:
                     VerifyRejectedPresentation();
-                    break;
-                case ValidationStage.WaitingForE3Arrival:
-                    VerifyArrival("E3", "E5", false);
                     break;
                 case ValidationStage.WaitingForE5Arrival:
                     VerifyArrival("E5", string.Empty, true);
@@ -287,13 +293,29 @@ public static class GuidanceLiveBackendValidator
 
     private static void HandleGuidanceReceived(GuidanceResponse response)
     {
-        if (stage != ValidationStage.WaitingForApprovedResponse)
+        if (stage == ValidationStage.WaitingForApprovedResponse)
+        {
+            liveResponse = response;
+            stage = ValidationStage.VerifyingApprovedPresentation;
+            notBefore = EditorApplication.timeSinceStartup + 0.1d;
+            deadline = EditorApplication.timeSinceStartup + 3d;
+            return;
+        }
+
+        if (stage != ValidationStage.WaitingForRouteResponse)
         {
             return;
         }
 
+        if (response == null || response.verifier == null || !response.verifier.approved ||
+            !string.Equals(response.selected_target, "E5", StringComparison.Ordinal))
+        {
+            Fail("Second session did not return an approved E5 route response.");
+            return;
+        }
+
         liveResponse = response;
-        stage = ValidationStage.VerifyingApprovedPresentation;
+        stage = ValidationStage.WaitingForRouteCommit;
         notBefore = EditorApplication.timeSinceStartup + 0.1d;
         deadline = EditorApplication.timeSinceStartup + 3d;
     }
@@ -305,7 +327,8 @@ public static class GuidanceLiveBackendValidator
 
     private static void HandleRequestFailed(string message)
     {
-        if (stage == ValidationStage.WaitingForApprovedResponse)
+        if (stage == ValidationStage.WaitingForApprovedResponse ||
+            stage == ValidationStage.WaitingForRouteResponse)
         {
             requestFailure = string.IsNullOrWhiteSpace(message) ? "Live backend request failed." : message;
         }
@@ -451,19 +474,47 @@ public static class GuidanceLiveBackendValidator
         guidanceSessionLogPath = experimentLogger.LogPath;
         experimentDashboard.EndSession("validation_rejected");
         experimentDashboard.SetParticipantId("CODEX_VALIDATION_ROUTE");
-        // 路线到达验证使用不启用候选改道的基线条件，固定检查 E1 -> E3 -> E5 原路线。
+        // T2 正式路线固定为 E1 -> E5；E3/E4 只作为运行时可能产生的临时 Detour。
         experimentDashboard.SetConditionIndex(0);
         xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         xrTrackingAdapter.ApplyEditorSimulationPose(new Vector3(1.0f, 1.65f, 2.5f), Quaternion.identity, validationUser.transform);
         agentClient.SetBackendOnlineForTesting(true);
+        requestFailure = string.Empty;
+        liveResponse = null;
+        stage = ValidationStage.WaitingForRouteResponse;
+        deadline = EditorApplication.timeSinceStartup + 12d;
         experimentDashboard.StartSession();
-        agentClient.CancelPendingRequest();
         if (experimentDashboard.RunState != ExperimentRunState.Running)
         {
             Fail("Could not open a second participant session after ending the rejected session.");
             return;
         }
-        StartArrivalCheck("E3", ValidationStage.WaitingForE3Arrival);
+
+        if (taskController.RuntimeState.ActiveReservation != null)
+        {
+            Fail("Second session committed a target before the MLLM response was validated.");
+            return;
+        }
+
+        Record("route_no_early_commit", true, "The second T2 session kept Current Subgoal uncommitted while its MLLM request was in flight.");
+    }
+
+    private static void WaitForRouteCommit()
+    {
+        var reservation = taskController != null ? taskController.RuntimeState.ActiveReservation : null;
+        if (reservation == null)
+        {
+            return;
+        }
+
+        if (!string.Equals(reservation.TargetId, "E5", StringComparison.Ordinal))
+        {
+            Fail($"Second session committed unexpected target {reservation.TargetId} instead of E5.");
+            return;
+        }
+
+        Record("route_atomic_commit", true, "The approved E5 selection became the active reservation only after response validation.");
+        StartArrivalCheck("E5", ValidationStage.WaitingForE5Arrival);
     }
 
     private static void StartArrivalCheck(string targetId, ValidationStage nextStage)
@@ -509,8 +560,8 @@ public static class GuidanceLiveBackendValidator
             $"arrival_{expectedCurrent.ToLowerInvariant()}",
             true,
             expectCompleted
-                ? "Moving the transient user to the real E5 scene anchor completed the E1 -> E3 -> E5 task."
-                : "Moving the transient user to the real E3 scene anchor advanced the task toward E5.");
+                ? "Moving the transient user to the real E5 scene anchor completed the fixed E1 -> E5 T2 task."
+                : "Moving the transient user to the real detour scene anchor advanced the task toward E5.");
 
         if (expectCompleted)
         {
@@ -815,9 +866,10 @@ public static class GuidanceLiveBackendValidator
         Idle,
         WaitingForScene,
         WaitingForApprovedResponse,
+        WaitingForRouteResponse,
+        WaitingForRouteCommit,
         VerifyingApprovedPresentation,
         VerifyingRejectedPresentation,
-        WaitingForE3Arrival,
         WaitingForE5Arrival,
         WaitingForAutomaticEnd,
         VerifyingSessionLog,
