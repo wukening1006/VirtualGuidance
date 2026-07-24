@@ -226,13 +226,13 @@ public static class ExperimentConditionMatrix
         switch (physicalSpaceId)
         {
             case "narrow_room":
-                return new Vector2(1.8f, 4.3f);
+                return new Vector2(1.0f, 2.5f);
             case "obstacle_room":
-                return new Vector2(2.0f, 1.2f);
+                return new Vector2(1.0f, 1.0f);
             case "l_shaped_room":
                 return new Vector2(1.0f, 1.0f);
             default:
-                return new Vector2(1.0f, 2.0f);
+                return new Vector2(2.5f, 2.5f);
         }
     }
 

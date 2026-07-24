@@ -250,4 +250,5 @@ public sealed class XRTrackingAdapter : MonoBehaviour
             ? Mathf.Atan2(horizontal.x, horizontal.y) * Mathf.Rad2Deg
             : 0f;
     }
+
 }

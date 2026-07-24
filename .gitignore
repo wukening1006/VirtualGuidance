@@ -107,6 +107,31 @@ Icon?
 # Local-only files
 # =========================
 *.local
+.vsconfig
+
+# Unity 场景生成物与本地预览
+/Preview_*.png
+/_ImportedDisabled_TextMeshPro/
+/_ImportedDisabled_TextMeshPro.meta
+/Assets/Scenes/Archives/
+/Assets/Scenes/Archives.meta
+/Assets/Prefabs/Exhibits/Archives/
+/Assets/Prefabs/Exhibits/Archives.meta
+/Assets/Materials/BSceneV1/
+/Assets/Materials/BSceneV1.meta
+/Assets/Prefabs/BContent/
+/Assets/Prefabs/BContent.meta
+/Assets/Scenes/prescene/
+/Assets/Scenes/prescene.meta
+/Packages/*.original.deploy-backup.json
+
+# 第三方 Unity 素材包：本地导入，不在仓库中二次分发
+/Assets/Display room/
+/Assets/Display room.meta
+/Assets/Low Poly Factory/
+/Assets/Low Poly Factory.meta
+/Assets/Showroom Environment - gallery/
+/Assets/Showroom Environment - gallery.meta
 
 # =========================
 # Secrets / signing keys

@@ -178,6 +178,14 @@ public sealed class ExperimentDashboard : MonoBehaviour
         ResolveReferences();
         currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
         experimentLogger?.LogCalibrationStarted();
+        if (physicalSpaceCalibration != null)
+        {
+            // 无设备演示时，校准点跟随当前条件的安全模拟起点，避免默认点落在窄空间边界外。
+            physicalSpaceCalibration.SetCalibrationPoint(
+                currentSpec.simulatedPhysicalPosition,
+                currentSpec.simulatedPhysicalYawDegrees);
+        }
+
         if (xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
             physicalSpaceManager == null ||
             !physicalSpaceManager.SetPhysicalSpace(currentSpec.physicalSpaceId) ||
