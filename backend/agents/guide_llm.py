@@ -16,6 +16,8 @@ from backend.schemas import (
     MovementInstruction,
     PhysicalRiskState,
     RouteDecision,
+    gaze_cue_for_direction,
+    movement_for_direction,
 )
 from backend.services.mllm_provider import (
     MLLMConfigurationError,
@@ -29,7 +31,8 @@ MLLM_TEMPERATURE = 0.0
 MLLM_MAX_TOKENS = 512
 MLLM_SYSTEM_PROMPT = (
     "你是博物馆虚拟导览系统的目标选择与话术生成模块。"
-    "只能依据给定上下文，从候选目标中选择一个目标，并严格返回 JSON Schema 要求的四个字段。"
+    "只能依据给定上下文，从候选目标中选择一个目标，并严格返回 JSON Schema 要求的三个字段。"
+    "移动方向与注视方向由系统按物理几何确定性推导，不由你决定，也不要在输出中描述具体转向角度。"
     "不得修改最终目标、风险事实、候选集合、任务状态或触发 Reset。"
 )
 
@@ -43,24 +46,11 @@ MLLM_DRAFT_JSON_SCHEMA: dict[str, Any] = {
             "enum": [item.value for item in RouteDecision],
         },
         "narration": {"type": "string", "minLength": 1, "maxLength": 200},
-        "movement_instruction": {
-            "type": "string",
-            "enum": [
-                MovementInstruction.MOVE_FORWARD_SLOWLY.value,
-                MovementInstruction.TURN_LEFT_SLOWLY.value,
-                MovementInstruction.TURN_RIGHT_SLOWLY.value,
-                MovementInstruction.LOOK_LEFT.value,
-                MovementInstruction.LOOK_RIGHT.value,
-                MovementInstruction.LOOK_FORWARD.value,
-                MovementInstruction.PAUSE_AND_WAIT.value,
-            ],
-        },
     },
     "required": [
         "selected_target",
         "route_decision",
         "narration",
-        "movement_instruction",
     ],
 }
 
@@ -78,14 +68,13 @@ class GuideDraftGenerator(Protocol):
 
 
 class MLLMGuidanceDraft(BaseModel):
-    """模型唯一允许控制的四字段严格输出。"""
+    """模型唯一允许控制的三字段严格输出；方向类字段不在其中。"""
 
     model_config = ConfigDict(extra="forbid")
 
     selected_target: str = Field(min_length=1)
     route_decision: RouteDecision
     narration: str = Field(min_length=1, max_length=200)
-    movement_instruction: MovementInstruction
 
     @classmethod
     def parse_model_json(
@@ -101,11 +90,10 @@ class MLLMGuidanceDraft(BaseModel):
             raise ValueError("MLLM draft content is not valid JSON.") from exc
 
         try:
+            # extra="forbid" 同时挡住模型自行补写 movement_instruction 等方向类字段。
             draft = cls.model_validate(data)
         except ValidationError as exc:
             raise ValueError(f"MLLM draft schema validation failed: {exc}") from exc
-        if draft.movement_instruction == MovementInstruction.RESET_REQUIRED:
-            raise ValueError("MLLM is not allowed to output reset_required.")
         if draft.selected_target not in request.model_candidate_ids:
             raise ValueError(
                 "MLLM selected_target must belong to the frozen model_candidate_ids."
@@ -210,12 +198,12 @@ class MLLMDraftGenerator:
         if candidate is None:
             raise ValueError("Selected target metadata is missing from the frozen Candidate Set.")
 
-        gaze_by_direction = {
-            "forward": "look_forward",
-            "left": "look_left",
-            "right": "look_right",
-            "behind": "look_forward",
-        }
+        # reset 阶段优先于几何推导：所有方向都不可执行时只允许原地等待。
+        movement_instruction = (
+            MovementInstruction.PAUSE_AND_WAIT
+            if risk_state.reset_required
+            else movement_for_direction(candidate.relative_direction)
+        )
         condition = Condition(request.condition)
         uses_affordance = condition in {
             Condition.B5_OURS_WITHOUT_VERIFIER,
@@ -225,9 +213,9 @@ class MLLMDraftGenerator:
             selected_target=model_draft.selected_target,
             route_decision=model_draft.route_decision,
             narration=model_draft.narration,
-            gaze_cue=gaze_by_direction[candidate.relative_direction],
+            gaze_cue=gaze_cue_for_direction(candidate.relative_direction),
             gaze_target_id=f"{model_draft.selected_target}_GazeTarget",
-            movement_instruction=model_draft.movement_instruction,
+            movement_instruction=movement_instruction,
             physical_intent=(
                 affordance.physical_goal
                 if uses_affordance

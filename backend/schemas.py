@@ -147,6 +147,35 @@ class MovementInstruction(str, Enum):
     RESET_REQUIRED = "reset_required"
 
 
+# 方向权威归 Unity：movement 与 gaze 一律由 relative_direction 推导，禁止模型自行填写方向。
+# behind 不构成可执行前进方向，退化为原地等待，避免诱导参观者向身后移动。
+MOVEMENT_BY_DIRECTION: dict[str, MovementInstruction] = {
+    "forward": MovementInstruction.MOVE_FORWARD_SLOWLY,
+    "left": MovementInstruction.TURN_LEFT_SLOWLY,
+    "right": MovementInstruction.TURN_RIGHT_SLOWLY,
+    "behind": MovementInstruction.PAUSE_AND_WAIT,
+}
+
+GAZE_CUE_BY_DIRECTION: dict[str, str] = {
+    "forward": "look_forward",
+    "left": "look_left",
+    "right": "look_right",
+    "behind": "look_forward",
+}
+
+
+def movement_for_direction(direction: str) -> MovementInstruction:
+    """把语义方向映射为唯一可执行的 movement enum；未知方向按原地等待兜底。"""
+
+    return MOVEMENT_BY_DIRECTION.get(direction, MovementInstruction.PAUSE_AND_WAIT)
+
+
+def gaze_cue_for_direction(direction: str) -> str:
+    """把语义方向映射为 Unity 可识别的 gaze cue；未知方向退化为看向前方。"""
+
+    return GAZE_CUE_BY_DIRECTION.get(direction, "look_forward")
+
+
 class RiskBoundaryContext(BaseModel):
     """Unity 物理边界的严格协议对象。"""
 

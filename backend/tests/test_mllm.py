@@ -23,7 +23,12 @@ from backend.agents.guide_llm import (
 )
 from backend.agents.guide_mock import GuideMockAgent
 from backend.app import create_app
-from backend.schemas import Affordance, Condition, GuidanceRequest
+from backend.schemas import (
+    Affordance,
+    Condition,
+    GuidanceRequest,
+    MovementInstruction,
+)
 from backend.services.mllm_provider import (
     MLLMConfigurationError,
     MLLMHTTPError,
@@ -39,7 +44,6 @@ VALID_MODEL_DRAFT = {
     "selected_target": "E3",
     "route_decision": "semantic_redirect",
     "narration": "在前往主要展品前，请先看看左侧展品。",
-    "movement_instruction": "turn_left_slowly",
 }
 
 
@@ -205,19 +209,20 @@ def test_condition_context_snapshots_freeze_six_information_boundaries() -> None
     assert "allowed_candidate_ids" not in contexts[Condition.B3_RISK_LABELS.value]
 
 
-def test_mllm_output_schema_contains_only_four_control_fields() -> None:
+def test_mllm_output_schema_contains_only_three_control_fields() -> None:
     assert set(MLLM_DRAFT_JSON_SCHEMA["properties"]) == {
         "selected_target",
         "route_decision",
         "narration",
-        "movement_instruction",
     }
     assert set(MLLM_DRAFT_JSON_SCHEMA["required"]) == set(
         MLLM_DRAFT_JSON_SCHEMA["properties"]
     )
-    movement_values = MLLM_DRAFT_JSON_SCHEMA["properties"]["movement_instruction"]["enum"]
-    assert "reset_required" not in movement_values
-    assert "avatar_action" not in json.dumps(MLLM_DRAFT_JSON_SCHEMA)
+    # 方向权威归 Unity：模型控制面不得出现任何方向类字段。
+    schema_json = json.dumps(MLLM_DRAFT_JSON_SCHEMA)
+    assert "movement_instruction" not in schema_json
+    assert "gaze_cue" not in schema_json
+    assert "avatar_action" not in schema_json
 
 
 @pytest.mark.parametrize(
@@ -234,12 +239,8 @@ def test_mllm_output_schema_contains_only_four_control_fields() -> None:
             "schema validation failed",
         ),
         (
-            json.dumps({**VALID_MODEL_DRAFT, "movement_instruction": "fly"}),
+            json.dumps({**VALID_MODEL_DRAFT, "movement_instruction": "turn_right_slowly"}),
             "schema validation failed",
-        ),
-        (
-            json.dumps({**VALID_MODEL_DRAFT, "movement_instruction": "reset_required"}),
-            "not allowed to output reset_required",
         ),
         (
             json.dumps({**VALID_MODEL_DRAFT, "selected_target": "E2"}),
@@ -287,7 +288,7 @@ async def test_all_conditions_share_prompt_schema_and_generation_parameters() ->
 
 
 @pytest.mark.anyio
-async def test_generator_deterministically_enriches_model_four_field_draft() -> None:
+async def test_generator_deterministically_enriches_model_three_field_draft() -> None:
     request = request_for(Condition.OURS_FULL.value)
     draft = await MLLMDraftGenerator(RecordingProvider()).generate(
         request,
@@ -298,8 +299,54 @@ async def test_generator_deterministically_enriches_model_four_field_draft() -> 
     assert draft.selected_target == "E3"
     assert draft.gaze_cue == "look_left"
     assert draft.gaze_target_id == "E3_GazeTarget"
+    # E3 的 relative_direction 是 left，movement 必须由该方向唯一推导。
+    assert draft.movement_instruction == MovementInstruction.TURN_LEFT_SLOWLY
     assert draft.physical_intent == "avoid_forward_boundary"
     assert draft.intervention_type == "semantic_redirection"
+
+
+@pytest.mark.anyio
+async def test_movement_follows_selected_target_direction_not_model_text() -> None:
+    """回归：模型选中前方目标时不得再产生与目标方向冲突的转向指令。"""
+
+    request = request_for(Condition.B1_MLLM_ONLY.value, risk_level="low")
+    provider = RecordingProvider(
+        json.dumps(
+            {
+                "selected_target": "E5",
+                "route_decision": "direct_to_target",
+                "narration": "我们现在将直接前往展厅中最重要展品。",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    draft = await MLLMDraftGenerator(provider).generate(
+        request,
+        _unused_risk_state(request),
+        affordance(),
+    )
+
+    assert request.candidate_for("E5").relative_direction == "forward"
+    assert draft.movement_instruction == MovementInstruction.MOVE_FORWARD_SLOWLY
+    assert draft.gaze_cue == "look_forward"
+
+
+@pytest.mark.anyio
+async def test_reset_required_forces_pause_instead_of_geometric_movement() -> None:
+    """reset 阶段优先于几何推导，否则 ours_full 会被自身 Verifier 全量拒绝。"""
+
+    request = request_for(Condition.OURS_FULL.value, risk_level="critical")
+    risk_state = _unused_risk_state(request)
+    assert risk_state.reset_required is True
+
+    draft = await MLLMDraftGenerator(RecordingProvider()).generate(
+        request,
+        risk_state,
+        affordance(),
+    )
+
+    assert draft.movement_instruction == MovementInstruction.PAUSE_AND_WAIT
 
 
 def _unused_risk_state(request: GuidanceRequest):

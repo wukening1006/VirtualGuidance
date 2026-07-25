@@ -12,6 +12,8 @@ from backend.schemas import (
     PhysicalRiskState,
     RouteDecision,
     TaskId,
+    gaze_cue_for_direction,
+    movement_for_direction,
 )
 
 
@@ -215,23 +217,13 @@ def draft_for_direction(
 ) -> GuideDraft:
     """把语义方向映射为 Unity 端可识别的 movement/gaze enum 值。"""
 
-    movement_by_direction = {
-        "forward": MovementInstruction.MOVE_FORWARD_SLOWLY,
-        "left": MovementInstruction.TURN_LEFT_SLOWLY,
-        "right": MovementInstruction.TURN_RIGHT_SLOWLY,
-    }
-    gaze_by_direction = {
-        "forward": "look_forward",
-        "left": "look_left",
-        "right": "look_right",
-    }
     return GuideDraft(
         selected_target=selected_target,
         route_decision=route_decision,
         narration=narration,
-        gaze_cue=gaze_by_direction[direction],
+        gaze_cue=gaze_cue_for_direction(direction),
         gaze_target_id=f"{selected_target}_GazeTarget",
-        movement_instruction=movement_by_direction[direction],
+        movement_instruction=movement_for_direction(direction),
         physical_intent=physical_intent,
         intervention_type=intervention_type,
     )
