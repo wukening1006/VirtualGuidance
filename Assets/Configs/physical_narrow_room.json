@@ -1,0 +1,5 @@
+{
+  "id": "narrow_room",
+  "boundary": [[0, 0], [2, 0], [2, 5], [0, 5]],
+  "obstacles": []
+}

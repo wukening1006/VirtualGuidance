@@ -1,0 +1,125 @@
+# =========================
+# Unity generated folders
+# =========================
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Bb]uildPlayerData/
+
+# =========================
+# Codex local config/cache
+# =========================
+.codex/
+.agents/
+.claude/
+
+# =========================
+# Visual Studio / Rider / VSCode
+# =========================
+.vs/
+.idea/
+
+# VSCode: ignore most local settings, keep useful shared config if needed
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# =========================
+# Auto-generated project files
+# =========================
+*.csproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.csproj.DotSettings
+*.unityproj
+
+# =========================
+# Unity Addressables / cache
+# =========================
+[Aa]ssets/**/StreamingAssets/aa.meta
+[Aa]ssets/**/StreamingAssets/aa/*
+[Aa]ssets/**/AddressableAssetsData/*/*.bin*
+[Aa]ssets/**/AddressableAssetsData/*/*.buildlayout
+[Aa]ssets/**/AddressableAssetsData/*/*/catalog_*.json
+
+# =========================
+# Build outputs
+# =========================
+*.apk
+*.aab
+*.ipa
+*.unitypackage
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserstate
+
+# =========================
+# Logs / crash / temporary files
+# =========================
+*.log
+*.stacktrace
+*.playback
+*.pid
+sysinfo.txt
+crashlytics-build.properties
+
+# =========================
+# OS files
+# =========================
+
+# Windows
+[Tt]humbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.nfs*
+
+# =========================
+# Local-only files
+# =========================
+*.local
+
+# =========================
+# Secrets / signing keys
+# =========================
+*.keystore
+*.jks
+*.p12
+*.pem
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Python 缓存
+__pycache__/
+*.py[cod]

@@ -1,0 +1,11 @@
+{
+  "id": "obstacle_room",
+  "boundary": [[0, 0], [4, 0], [4, 4], [0, 4]],
+  "obstacles": [
+    {
+      "id": "obstacle_01",
+      "center": [2.0, 2.2],
+      "radius": 0.45
+    }
+  ]
+}
