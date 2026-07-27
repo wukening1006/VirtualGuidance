@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 import math
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -215,7 +216,13 @@ class RiskSnapshot(BaseModel):
     @classmethod
     def validate_sampled_at_utc(cls, value: str) -> str:
         try:
-            sampled_at = datetime.fromisoformat(value)
+            normalized_value = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+            normalized_value = re.sub(
+                r"(\.\d{6})\d+(?=[+-]\d{2}:\d{2}$)",
+                r"\1",
+                normalized_value,
+            )
+            sampled_at = datetime.fromisoformat(normalized_value)
         except ValueError as exc:
             raise ValueError("sampled_at_utc must be an ISO 8601 timestamp.") from exc
         if sampled_at.tzinfo is None or sampled_at.utcoffset() != timezone.utc.utcoffset(sampled_at):
