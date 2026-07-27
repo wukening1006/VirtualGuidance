@@ -1,0 +1,11 @@
+Gallery Layout V2 Baseline
+Captured: 2026-07-27T14:56:12.1881460+08:00
+
+E1_Visual: position=(0.00,0.00,2.00), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E2_Visual: position=(0.00,0.00,4.20), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E3_Visual: position=(-2.70,0.00,4.80), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E4_Visual: position=(2.70,0.00,4.80), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E5_Visual: position=(0.00,0.00,7.80), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E6_Visual: position=(-2.90,0.00,8.20), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E7_Visual: position=(2.90,0.00,8.20), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>
+E8_Visual: position=(0.00,0.00,10.60), yaw=0.00, scale=(1.00,1.00,1.00), rendererBounds=(1.42,1.81,1.31), colliderBounds=(1.42,2.83,1.31), viewPoint=<missing>, gazeTarget=<missing>

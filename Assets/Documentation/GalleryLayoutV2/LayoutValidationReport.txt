@@ -1,0 +1,51 @@
+Gallery Layout V2 Validation
+Generated: 2026-07-27T15:39:02.1916858+08:00
+Result: PASS
+Errors: 0
+Warnings: 0
+
+[Errors]
+
+[Warnings]
+
+[Measurements]
+E1: position=(0.00,0.00,2.20), yaw=180.00, target=1.80x1.00x1.50, showcase=1.79x1.00x1.49, content=1.79x1.00x1.49
+E2: position=(0.00,0.00,5.42), yaw=180.00, target=1.80x1.10x1.60, showcase=1.79x1.09x1.59, content=1.79x1.09x1.59
+E3: position=(-4.35,0.00,3.80), yaw=90.00, target=1.80x1.10x1.50, showcase=1.79x1.09x1.49, content=1.79x1.09x1.49
+E4: position=(4.35,0.00,3.80), yaw=270.00, target=1.80x1.10x1.50, showcase=1.79x1.09x1.49, content=1.79x1.09x1.49
+E5: position=(0.00,0.00,8.83), yaw=180.00, target=2.40x1.40x1.70, showcase=2.39x1.39x1.69, content=2.39x1.39x1.69
+E6: position=(-4.35,0.00,10.50), yaw=90.00, target=2.40x1.30x1.70, showcase=2.39x1.29x1.69, content=2.39x1.29x1.69
+E7: position=(4.35,0.00,10.50), yaw=270.00, target=2.40x1.30x1.70, showcase=2.39x1.29x1.69, content=2.39x1.29x1.69
+E8: position=(0.00,0.00,12.45), yaw=180.00, target=3.00x1.50x1.80, showcase=2.99x1.49x1.79, content=2.99x1.49x1.79
+E1-E2 clearance=2.17m
+E1-E3 clearance=2.91m
+E1-E4 clearance=2.91m
+E1-E5 clearance=5.43m
+E1-E6 clearance=7.17m
+E1-E7 clearance=7.17m
+E1-E8 clearance=9.00m
+E2-E3 clearance=2.90m
+E2-E4 clearance=2.90m
+E2-E5 clearance=2.16m
+E2-E6 clearance=4.35m
+E2-E7 clearance=4.35m
+E2-E8 clearance=5.73m
+E3-E4 clearance=7.60m
+E3-E5 clearance=4.30m
+E3-E6 clearance=4.60m
+E3-E7 clearance=8.80m
+E3-E8 clearance=7.37m
+E4-E5 clearance=4.30m
+E4-E6 clearance=8.80m
+E4-E7 clearance=4.60m
+E4-E8 clearance=7.37m
+E5-E6 clearance=2.50m
+E5-E7 clearance=2.50m
+E5-E8 clearance=2.17m
+E6-E7 clearance=7.40m
+E6-E8 clearance=2.20m
+E7-E8 clearance=2.20m
+E1-E2 main_aisle=2.17m
+E2-E5 main_aisle=2.16m
+E5-E8 main_aisle=2.17m
+floor=12.00x14.00m center=(0.00,7.00)
