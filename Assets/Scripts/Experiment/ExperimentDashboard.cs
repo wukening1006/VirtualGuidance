@@ -598,7 +598,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if ((runState == ExperimentRunState.Running || runState == ExperimentRunState.Paused) &&
             state != null && state.phase == GuidanceRuntimePhase.PausedForReset)
         {
-            EnterSafetyHold("task requested physical safety reset");
+            runtimeInterventionActive = false;
+            participantUiController?.ShowAutomaticReset();
+            lastStatusMessage = "Automatic safety reset in progress";
+            WriteStatus();
             return;
         }
 
@@ -627,9 +630,20 @@ public sealed class ExperimentDashboard : MonoBehaviour
             physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid,
             userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero,
             userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward);
-        if ((runState == ExperimentRunState.Running || runState == ExperimentRunState.Paused || runState == ExperimentRunState.Completing) && IsCritical(state))
+        if (!IsCritical(state) || !IsSessionActiveState())
         {
-            EnterSafetyHold("critical physical risk");
+            return;
+        }
+
+        // Running/Paused 的原始风险由 Coordinator 统一决策；这里只保留缺失协调器和完成阶段兜底。
+        if (guidanceCoordinator == null)
+        {
+            EnterSafetyHold("critical physical risk without an active coordinator", false);
+        }
+        else if (runState == ExperimentRunState.Completing &&
+                 guidanceCoordinator.RequestPhase != GuidanceRequestPhase.Executing)
+        {
+            EnterSafetyHold("critical physical risk while completing without active guidance", false);
         }
     }
 
@@ -651,13 +665,26 @@ public sealed class ExperimentDashboard : MonoBehaviour
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
             "safe direction reached");
-        if (runState != ExperimentRunState.SafetyHold)
+        if (taskController != null &&
+            taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
         {
+            if (guidanceCoordinator != null)
+            {
+                // 自动 Reset 必须由 Coordinator 使用最新 Physical Pose 统一复验。
+                guidanceCoordinator.ReevaluateAfterReset();
+            }
+            else if (IsSessionActiveState())
+            {
+                EnterSafetyHold("reset completed without an active coordinator", false);
+            }
             return;
         }
 
-        // Reset 完成只表示朝向达标；必须基于最新 Physical Pose 重算风险后才能恢复任务。
-        ResumeSessionWithRisk(riskEvaluator?.EvaluateNow());
+        if (runState == ExperimentRunState.SafetyHold)
+        {
+            // 研究员暂停中的手动 Reset 保留原有显式恢复语义。
+            ResumeSessionWithRisk(riskEvaluator?.EvaluateNow());
+        }
     }
 
     private void HandleBackendOnlineChanged(bool online)
@@ -736,23 +763,56 @@ public sealed class ExperimentDashboard : MonoBehaviour
             riskEvaluator?.CurrentRiskState,
             intervention != null ? intervention.Reason : "runtime safety intervention",
             intervention != null ? intervention.Decision : RuntimeGuidanceSafetyDecision.HardStop,
-            intervention != null && intervention.StartReset);
-        if (intervention != null &&
-            intervention.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+            intervention != null && intervention.StartReset,
+            intervention != null ? intervention.ResetAttempt : 0,
+            intervention != null && intervention.SafeCandidateAvailable,
+            xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive,
+            physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid);
+        if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+        {
+            if (intervention.Response != null)
+            {
+                LogTargetAbandoned(interventionTrace, intervention.Reason);
+            }
+            activeGuidanceTrace = LogTraceContext.Empty;
+            participantUiController?.ShowRuntimeIntervention();
+            return;
+        }
+
+        if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.PauseReset)
         {
             LogTargetAbandoned(interventionTrace, intervention.Reason);
+            if (intervention.ResetAttempt > 1)
+            {
+                experimentLogger?.LogStatus(
+                    "pause_reset_retry",
+                    interventionTrace,
+                    taskController?.RuntimeState,
+                    riskEvaluator?.CurrentRiskState,
+                    $"automatic reset retry {intervention.ResetAttempt}");
+            }
             activeGuidanceTrace = LogTraceContext.Empty;
+            runtimeInterventionActive = false;
+            participantUiController?.ShowAutomaticReset();
+            lastStatusMessage = $"Automatic reset attempt {intervention.ResetAttempt}";
+            WriteStatus();
             return;
         }
 
         activeGuidanceTrace = interventionTrace;
         runtimeInterventionActive = true;
         participantUiController?.ShowRuntimeIntervention();
+        experimentLogger?.LogStatus(
+            "hard_stop",
+            interventionTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            intervention != null ? intervention.Reason : "runtime safety intervention");
         if (IsSessionActiveState())
         {
             EnterSafetyHold(
                 intervention != null ? intervention.Reason : "runtime safety intervention",
-                intervention != null && intervention.StartReset);
+                false);
         }
     }
 
@@ -763,6 +823,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
             response,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState);
+        if (runState == ExperimentRunState.Running)
+        {
+            participantUiController?.ShowGuidance();
+        }
     }
 
     private void HandleGuidanceExpired(string reason)
@@ -799,7 +863,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private void HandleReplanning(GuidanceRuntimeState state)
     {
         experimentLogger?.LogStatus(
-            "replanning",
+            "replanning_started",
             activeGuidanceTrace,
             state,
             riskEvaluator?.CurrentRiskState,

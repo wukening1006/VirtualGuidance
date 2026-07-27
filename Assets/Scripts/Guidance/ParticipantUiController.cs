@@ -50,6 +50,8 @@ public sealed class ParticipantUiController : MonoBehaviour
     public void ShowUnsafeDirection() => ShowSafetyMessage("请停止前进");
     /// <summary>显示不暴露实验条件或内部风险原因的统一 Runtime Intervention 提示。</summary>
     public void ShowRuntimeIntervention() => ShowSafetyMessage("请停止移动，等待安全引导");
+    /// <summary>显示自动安全转向正在执行，不要求研究员介入。</summary>
+    public void ShowAutomaticReset() => ShowSafetyMessage("请停止移动并按安全提示原地转向");
     public void ShowSystemUnavailable() => ShowSafetyMessage("系统暂时无法继续，请保持原地");
     public void ShowCompleted() => ShowSafetyMessage("任务已完成，请保持原地");
     public void ShowEnded() => ShowSafetyMessage("实验已结束，请等待研究员");

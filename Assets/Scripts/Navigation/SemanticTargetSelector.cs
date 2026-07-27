@@ -80,10 +80,15 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     public NavigationCandidateSet BuildCandidateSet(
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
-        ExperimentConditionPolicy policy)
+        ExperimentConditionPolicy policy,
+        bool allowPausedForReset = false)
     {
         ResolveReferences();
-        if (runtimeState == null || navigationTargets == null || !runtimeState.IsNavigating ||
+        var canInspectCandidates = runtimeState != null &&
+                                   (runtimeState.IsNavigating ||
+                                    (allowPausedForReset &&
+                                     runtimeState.phase == GuidanceRuntimePhase.PausedForReset));
+        if (!canInspectCandidates || navigationTargets == null ||
             !string.Equals(runtimeState.taskId, "T2_main_target", StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
         {

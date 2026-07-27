@@ -317,7 +317,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         LogTargetEvent("detour_completed", trace, target, runtimeState, riskState, "detour completed");
     }
 
-    /// <summary>记录 Hard Runtime Safety 阻止的原始 Guidance 与干预原因。</summary>
+    /// <summary>记录运行期安全决策、原始 Guidance 与干预原因。</summary>
     public void LogRuntimeIntervention(
         LogTraceContext trace,
         GuidanceResponse response,
@@ -325,7 +325,11 @@ public sealed class ExperimentLogger : MonoBehaviour
         PhysicalRiskState riskState,
         string reason,
         RuntimeGuidanceSafetyDecision decision,
-        bool startReset)
+        bool startReset,
+        int resetAttempt = 0,
+        bool safeCandidateAvailable = false,
+        bool? trackingValid = null,
+        bool? calibrationValid = null)
     {
         Write(
             "runtime_intervention",
@@ -339,7 +343,11 @@ public sealed class ExperimentLogger : MonoBehaviour
             "rejected",
             runtimeIntervention: true,
             interventionDecision: decision,
-            startReset: startReset);
+            startReset: startReset,
+            resetAttempt: resetAttempt,
+            safeCandidateAvailable: safeCandidateAvailable,
+            trackingValid: trackingValid,
+            calibrationValid: calibrationValid);
     }
 
     /// <summary>记录通过运行时验证并实际开始执行的 Guidance。</summary>
@@ -474,7 +482,11 @@ public sealed class ExperimentLogger : MonoBehaviour
         string targetRoleOverride = "",
         bool emitUnityConsole = true,
         RuntimeGuidanceSafetyDecision interventionDecision = RuntimeGuidanceSafetyDecision.Continue,
-        bool startReset = false)
+        bool startReset = false,
+        int resetAttempt = 0,
+        bool safeCandidateAvailable = false,
+        bool? trackingValid = null,
+        bool? calibrationValid = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -486,7 +498,11 @@ public sealed class ExperimentLogger : MonoBehaviour
         var condition = FirstNonEmpty(request?.condition, spec?.condition, session?.condition);
         var participantId = FirstNonEmpty(request?.participant_id, spec?.participantId, session?.participantId);
         var taskId = FirstNonEmpty(runtimeState?.taskId, request?.task_id, spec?.taskId, session?.taskId);
-        var physicalSpaceId = FirstNonEmpty(request?.physical_space_id, spec?.physicalSpaceId, session?.physicalSpaceId);
+        var physicalSpaceId = FirstNonEmpty(
+            riskState?.physical_space,
+            request?.physical_space_id,
+            spec?.physicalSpaceId,
+            session?.physicalSpaceId);
         var currentExhibit = FirstNonEmpty(runtimeState?.currentExhibitId, request?.current_exhibit, spec?.startExhibitId);
         var preferredTaskTarget = FirstNonEmpty(runtimeState?.nextTargetId, request?.preferred_task_target, spec?.semanticNextTargetId);
         var requestId = FirstNonEmpty(request?.request_id, response?.request_id, trace.RequestId);
@@ -562,6 +578,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["physical_space_id"] = physicalSpaceId,
                 ["current_exhibit"] = currentExhibit,
                 ["preferred_task_target"] = preferredTaskTarget,
+                ["final_target"] = FirstNonEmpty(runtimeState?.finalTargetId, request?.final_target),
                 ["runtime_phase"] = runtimeState != null ? runtimeState.phase.ToString() : string.Empty,
                 ["run_state"] = runState.ToString().ToLowerInvariant(),
                 ["target_role"] = targetRole,
@@ -596,10 +613,12 @@ public sealed class ExperimentLogger : MonoBehaviour
             }
             if (runtimeIntervention)
             {
-                data["intervention_type"] = interventionDecision == RuntimeGuidanceSafetyDecision.SoftReroute
-                    ? "soft_reroute"
-                    : "hard_stop";
+                data["intervention_type"] = SafetyDecisionLabel(interventionDecision);
                 data["start_reset"] = startReset;
+                data["reset_attempt"] = Math.Max(0, resetAttempt);
+                data["safe_candidate_available"] = safeCandidateAvailable;
+                if (trackingValid.HasValue) data["tracking_valid"] = trackingValid.Value;
+                if (calibrationValid.HasValue) data["calibration_valid"] = calibrationValid.Value;
             }
 
             if (descriptor.Level == LogType.Error)
@@ -725,7 +744,9 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "gain_cancelled":
             case "gain_aborted":
             case "reset_started":
+            case "pause_reset_retry":
             case "reset_cancelled":
+            case "hard_stop":
             case "safety_hold":
             case "target_abandoned":
             case "request_failed":
@@ -763,12 +784,14 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "guidance_cancelled": return new EventDescriptor("guidance.cancelled", "Guidance", level);
             case "guidance_expired": return new EventDescriptor("guidance.expired", "Guidance", level);
             case "guidance_executed": return new EventDescriptor("guidance.executed", "Guidance", level);
-            case "runtime_intervention": return new EventDescriptor("safety.runtime_intervention", "Safety", level);
+            case "runtime_intervention": return new EventDescriptor("safety.decision", "Safety", level);
             case "risk_changed": return new EventDescriptor("safety.risk_changed", "Safety", level);
             case "safety_hold": return new EventDescriptor("safety.hold", "Safety", level);
-            case "reset_started": return new EventDescriptor("safety.reset_started", "Safety", level);
-            case "reset_completed": return new EventDescriptor("safety.reset_completed", "Safety", level);
+            case "reset_started": return new EventDescriptor("safety.pause_reset_started", "Safety", level);
+            case "reset_completed": return new EventDescriptor("safety.pause_reset_completed", "Safety", level);
+            case "pause_reset_retry": return new EventDescriptor("safety.pause_reset_retry", "Safety", level);
             case "reset_cancelled": return new EventDescriptor("safety.reset_cancelled", "Safety", level);
+            case "hard_stop": return new EventDescriptor("safety.hard_stop", "Safety", level);
             case "backend_online": return new EventDescriptor("network.backend_online", "Network", level);
             case "backend_unavailable": return new EventDescriptor("network.backend_unavailable", "Network", level);
             case "request_failed": return new EventDescriptor("network.request_failed", "Network", level);
@@ -780,7 +803,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "target_completed": return new EventDescriptor("task.target_completed", "Task", level);
             case "detour_selected": return new EventDescriptor("task.detour_selected", "Task", level);
             case "detour_completed": return new EventDescriptor("task.detour_completed", "Task", level);
-            case "replanning": return new EventDescriptor("task.replanning", "Task", level);
+            case "replanning":
+            case "replanning_started": return new EventDescriptor("task.replanning_started", "Task", level);
             case "turn_requested": return new EventDescriptor("rdw.turn_requested", "RDW", level);
             case "user_turn_started": return new EventDescriptor("rdw.user_turn_started", "RDW", level);
             case "user_turn_completed": return new EventDescriptor("rdw.user_turn_completed", "RDW", level);
@@ -891,6 +915,17 @@ public sealed class ExperimentLogger : MonoBehaviour
         catch (Exception exception)
         {
             ReportStorageError("telemetry_serialize", exception);
+        }
+    }
+
+    private static string SafetyDecisionLabel(RuntimeGuidanceSafetyDecision decision)
+    {
+        switch (decision)
+        {
+            case RuntimeGuidanceSafetyDecision.SoftReroute: return "soft_reroute";
+            case RuntimeGuidanceSafetyDecision.PauseReset: return "pause_reset";
+            case RuntimeGuidanceSafetyDecision.HardStop: return "hard_stop";
+            default: return "continue";
         }
     }
 

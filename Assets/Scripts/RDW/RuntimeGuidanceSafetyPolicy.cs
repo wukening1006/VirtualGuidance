@@ -9,6 +9,8 @@ public enum RuntimeGuidanceSafetyDecision
     Continue,
     /// <summary>停止当前导览，并基于最新风险重新规划。</summary>
     SoftReroute,
+    /// <summary>暂无安全语义候选，暂停任务并执行可恢复的安全转向。</summary>
+    PauseReset,
     /// <summary>立即停止全部导览行为并进入安全保持。</summary>
     HardStop
 }
@@ -84,7 +86,7 @@ public sealed class RuntimeGuidanceSafetyInput
 }
 
 /// <summary>
-/// 依据当前导览、物理风险与 Reset 事实返回 Continue、SoftReroute 或 HardStop。
+/// 依据当前导览、物理风险与 Reset 事实返回唯一安全动作。
 /// 本策略不访问 GameObject、不发请求，也不修改任务状态。
 /// </summary>
 public sealed class RuntimeGuidanceSafetyPolicy
@@ -104,28 +106,37 @@ public sealed class RuntimeGuidanceSafetyPolicy
             !input.TrackingValid ||
             !input.CalibrationValid ||
             !input.PhysicalSpaceMatches ||
-            IsResetActive(input.ResetState) ||
             !input.PlannedDirectionAvailable ||
-            !IsNaturalDirection(input.PlannedDirection) ||
-            input.LatestRisk.reset_required ||
-            input.PlannedDirectionCritical)
+            !IsNaturalDirection(input.PlannedDirection))
         {
             return RuntimeGuidanceSafetyDecision.HardStop;
         }
 
-        if (!Contains(input.LatestRisk.unsafe_directions, input.PlannedDirection))
+        // Reset 期间由恢复链路统一复验，普通策略不能恢复旧 Guidance 或重复启动 Reset。
+        if (IsResetActive(input.ResetState))
         {
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
-        if (input.ConsecutiveUnsafeSamples < UnsafeSamplesRequiredForReroute)
+        var plannedDirectionUnsafe = input.PlannedDirectionCritical ||
+                                     input.LatestRisk.reset_required ||
+                                     Contains(input.LatestRisk.unsafe_directions, input.PlannedDirection);
+        if (!plannedDirectionUnsafe)
+        {
+            return RuntimeGuidanceSafetyDecision.Continue;
+        }
+
+        // Critical 与 reset_required 立即处置；普通 unsafe 仍要求两个不同风险快照防抖。
+        if (!input.PlannedDirectionCritical &&
+            !input.LatestRisk.reset_required &&
+            input.ConsecutiveUnsafeSamples < UnsafeSamplesRequiredForReroute)
         {
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
         return input.SafeCandidateAvailable
             ? RuntimeGuidanceSafetyDecision.SoftReroute
-            : RuntimeGuidanceSafetyDecision.HardStop;
+            : RuntimeGuidanceSafetyDecision.PauseReset;
     }
 
     private static bool IsNaturalDirection(string direction)
