@@ -768,6 +768,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            EnsureT2Exhibits(root.transform, targets);
             AlignVirtualUserToT2Route(virtualUser.transform, targets);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
@@ -880,6 +881,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            EnsureT2Exhibits(root.transform, targets);
             AlignVirtualUserToT2Route(virtualUser.transform, targets);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
@@ -2886,6 +2888,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            EnsureT2Exhibits(root.transform, targets);
             Assert.That(targets.TryGetTarget("E1", out var current), Is.True);
             Assert.That(targets.TryGetTarget("E3", out var detour), Is.True);
             Assert.That(targets.TryGetTarget("E5", out var routeTarget), Is.True);
@@ -2964,6 +2967,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            EnsureT2Exhibits(root.transform, targets);
             Assert.That(targets.TryGetTarget("E1", out var current), Is.True);
             Assert.That(targets.TryGetTarget("E5", out var finalMetadata), Is.True);
             var currentPosition = current.ViewPoint != null ? current.ViewPoint.position : current.transform.position;
@@ -3873,6 +3877,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
+            EnsureT2Exhibits(root.transform, targets);
             AlignVirtualUserToT2Route(virtualUser.transform, targets);
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
@@ -4094,6 +4099,7 @@ public sealed class GuidanceRuntimeEditModeTests
         var targets = root.AddComponent<NavigationTargetManager>();
         targets.Configure(pose);
         targets.RebuildIndex();
+        EnsureT2Exhibits(root.transform, targets);
         AlignVirtualUserToT2Route(virtualUser.transform, targets);
         var selector = root.AddComponent<SemanticTargetSelector>();
         selector.Configure(targets);
@@ -4120,6 +4126,28 @@ public sealed class GuidanceRuntimeEditModeTests
         {
             virtualUser.forward = forward.normalized;
         }
+    }
+
+    private static void EnsureT2Exhibits(Transform parent, NavigationTargetManager targets)
+    {
+        if (!targets.HasTarget("E1"))
+        {
+            CreateExhibit(parent, "E1", Vector3.zero, "introduction", new[] { "E3", "E4", "E5" });
+        }
+        if (!targets.HasTarget("E3"))
+        {
+            CreateExhibit(parent, "E3", new Vector3(-2f, 0f, 2f), "route_subgoal", new[] { "E5" });
+        }
+        if (!targets.HasTarget("E4"))
+        {
+            CreateExhibit(parent, "E4", new Vector3(2f, 0f, 2f), "route_subgoal", new[] { "E5" });
+        }
+        if (!targets.HasTarget("E5"))
+        {
+            CreateExhibit(parent, "E5", new Vector3(0f, 0f, 4f), "main_target", null);
+        }
+
+        targets.RebuildIndex();
     }
 
     private static void ConfigureSingleCandidate(
