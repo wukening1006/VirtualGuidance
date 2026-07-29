@@ -1,4 +1,4 @@
-"""测试六条件 MLLM Context、严格 Draft Parser 与 vLLM HTTP 合同。"""
+"""测试六条件 MLLM Context、严格 Draft Parser 与正式模型 HTTP 合同。"""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ from backend.services.mllm_provider import (
     MLLMHTTPError,
     MLLMResponseError,
     MLLMTimeoutError,
+    QwenOpenAICompatibleProvider,
+    QwenProviderSettings,
     VLLMOpenAICompatibleProvider,
     VLLMProviderSettings,
 )
@@ -160,10 +162,39 @@ def provider_settings(**overrides: Any) -> VLLMProviderSettings:
     return VLLMProviderSettings(**values)
 
 
+def qwen_settings(**overrides: Any) -> QwenProviderSettings:
+    values = {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen3.5-omni-flash",
+        "api_key": "test-qwen-key",
+        "timeout_seconds": 10.0,
+    }
+    values.update(overrides)
+    return QwenProviderSettings(**values)
+
+
 def completion_response(content: str) -> httpx.Response:
     return httpx.Response(
         200,
         json={"choices": [{"message": {"role": "assistant", "content": content}}]},
+    )
+
+
+def qwen_stream_response(*content_parts: str) -> httpx.Response:
+    events = [
+        f"data: {json.dumps({'choices': [{'delta': {'content': part}}]})}"
+        for part in content_parts
+    ]
+    events.extend(
+        [
+            'data: {"choices": [], "usage": {"total_tokens": 10}}',
+            "data: [DONE]",
+        ]
+    )
+    return httpx.Response(
+        200,
+        headers={"Content-Type": "text/event-stream"},
+        content="\n\n".join(events).encode("utf-8"),
     )
 
 
@@ -256,6 +287,20 @@ def test_guide_draft_parser_rejects_invalid_contracts(
 
     with pytest.raises(ValueError, match=expected_message):
         MLLMGuidanceDraft.parse_model_json(content, request)
+
+
+def test_invalid_json_error_includes_bounded_single_line_preview() -> None:
+    request = request_for(Condition.OURS_FULL.value)
+    content = "not-json\n" + ("x" * 300)
+
+    with pytest.raises(ValueError) as error:
+        MLLMGuidanceDraft.parse_model_json(content, request)
+
+    message = str(error.value)
+    assert "content preview='not-json " in message
+    assert "\n" not in message
+    assert "..." in message
+    assert len(message) < 340
 
 
 class RecordingProvider:
@@ -389,6 +434,173 @@ async def test_vllm_provider_sends_openai_compatible_structured_payload() -> Non
 
 
 @pytest.mark.anyio
+async def test_qwen_provider_sends_streaming_json_object_payload() -> None:
+    captured: dict[str, Any] = {}
+    expected_content = json.dumps(VALID_MODEL_DRAFT, ensure_ascii=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["payload"] = json.loads(request.content)
+        midpoint = len(expected_content) // 2
+        return qwen_stream_response(
+            expected_content[:midpoint],
+            expected_content[midpoint:],
+        )
+
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+    content = await provider.complete_json(
+        messages=[{"role": "system", "content": "Return JSON."}],
+        json_schema=MLLM_DRAFT_JSON_SCHEMA,
+        temperature=0.0,
+        max_tokens=MLLM_MAX_TOKENS,
+    )
+
+    assert json.loads(content) == VALID_MODEL_DRAFT
+    assert captured["url"] == (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    )
+    assert captured["authorization"] == "Bearer test-qwen-key"
+    payload = captured["payload"]
+    assert payload["model"] == "qwen3.5-omni-flash"
+    assert payload["temperature"] == 0.0
+    assert payload["modalities"] == ["text"]
+    assert payload["stream"] is True
+    assert payload["enable_thinking"] is False
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "max_tokens" not in payload
+    assert payload["messages"][0]["content"].startswith("Return JSON.")
+    assert "不要输出 Markdown" in payload["messages"][0]["content"]
+    assert json.dumps(
+        MLLM_DRAFT_JSON_SCHEMA,
+        ensure_ascii=False,
+        sort_keys=True,
+    ) in payload["messages"][0]["content"]
+
+
+@pytest.mark.anyio
+async def test_qwen_provider_unwraps_complete_json_code_fence() -> None:
+    expected_content = json.dumps(VALID_MODEL_DRAFT, ensure_ascii=False)
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(),
+        transport=httpx.MockTransport(
+            lambda request: qwen_stream_response(
+                "```json\n",
+                expected_content,
+                "\n```",
+            )
+        ),
+    )
+
+    content = await provider.complete_json(
+        messages=[],
+        json_schema=MLLM_DRAFT_JSON_SCHEMA,
+        temperature=0.0,
+        max_tokens=MLLM_MAX_TOKENS,
+    )
+
+    assert json.loads(content) == VALID_MODEL_DRAFT
+
+
+@pytest.mark.parametrize(
+    "wrapped_content",
+    [
+        "```json\n{json}",
+        "{json}\n```",
+    ],
+)
+def test_qwen_provider_unwraps_single_boundary_fence_when_json_is_valid(
+    wrapped_content: str,
+) -> None:
+    expected_content = json.dumps(VALID_MODEL_DRAFT, ensure_ascii=False)
+
+    content = QwenOpenAICompatibleProvider._unwrap_json_code_fence(
+        wrapped_content.format(json=expected_content)
+    )
+
+    assert json.loads(content) == VALID_MODEL_DRAFT
+
+
+def test_qwen_provider_does_not_extract_json_from_explanatory_text() -> None:
+    content = '模型输出如下： {"selected_target": "E3"}'
+
+    assert QwenOpenAICompatibleProvider._unwrap_json_code_fence(content) == content
+
+
+@pytest.mark.anyio
+async def test_qwen_provider_rejects_invalid_sse_json() -> None:
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=b"data: not-json\n\n",
+            )
+        ),
+    )
+
+    with pytest.raises(MLLMResponseError, match="invalid JSON"):
+        await provider.complete_json(
+            messages=[], json_schema={}, temperature=0.0, max_tokens=1
+        )
+
+
+@pytest.mark.anyio
+async def test_qwen_provider_rejects_stream_without_content() -> None:
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(),
+        transport=httpx.MockTransport(
+            lambda request: qwen_stream_response()
+        ),
+    )
+
+    with pytest.raises(MLLMResponseError, match="missing choices"):
+        await provider.complete_json(
+            messages=[], json_schema={}, temperature=0.0, max_tokens=1
+        )
+
+
+@pytest.mark.anyio
+async def test_qwen_provider_maps_http_error() -> None:
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(429, json={"error": "rate limited"})
+        ),
+    )
+
+    with pytest.raises(MLLMHTTPError, match="HTTP 429"):
+        await provider.complete_json(
+            messages=[], json_schema={}, temperature=0.0, max_tokens=1
+        )
+
+
+@pytest.mark.anyio
+async def test_qwen_provider_maps_timeout_without_retry() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        raise httpx.ReadTimeout("slow Qwen API", request=request)
+
+    provider = QwenOpenAICompatibleProvider(
+        qwen_settings(timeout_seconds=0.5),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(MLLMTimeoutError, match="0.5 seconds"):
+        await provider.complete_json(
+            messages=[], json_schema={}, temperature=0.0, max_tokens=1
+        )
+    assert call_count == 1
+
+
+@pytest.mark.anyio
 async def test_vllm_provider_rejects_invalid_http_json() -> None:
     provider = VLLMOpenAICompatibleProvider(
         provider_settings(),
@@ -512,6 +724,32 @@ def test_vllm_settings_read_only_runtime_environment() -> None:
 def test_vllm_settings_reject_missing_or_invalid_values(env: dict[str, str]) -> None:
     with pytest.raises(MLLMConfigurationError):
         VLLMProviderSettings.from_env(env)
+
+
+def test_qwen_settings_require_api_key() -> None:
+    with pytest.raises(MLLMConfigurationError, match="MLLM_API_KEY"):
+        QwenProviderSettings.from_env(
+            {
+                "MLLM_BASE_URL": (
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                ),
+                "MLLM_MODEL": "qwen3.5-omni-flash",
+            }
+        )
+
+
+def test_factory_selects_qwen_openai_compatible_provider() -> None:
+    generator = create_draft_generator_from_env(
+        {
+            "MLLM_PROVIDER": "qwen_openai_compatible",
+            "MLLM_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "MLLM_MODEL": "qwen3.5-omni-flash",
+            "MLLM_API_KEY": "test-qwen-key",
+        }
+    )
+
+    assert isinstance(generator, MLLMDraftGenerator)
+    assert isinstance(generator.provider, QwenOpenAICompatibleProvider)
 
 
 def test_factory_allows_only_explicit_offline_mock() -> None:

@@ -22,6 +22,8 @@ from backend.schemas import (
 from backend.services.mllm_provider import (
     MLLMConfigurationError,
     MLLMProvider,
+    QwenOpenAICompatibleProvider,
+    QwenProviderSettings,
     VLLMOpenAICompatibleProvider,
     VLLMProviderSettings,
 )
@@ -87,7 +89,12 @@ class MLLMGuidanceDraft(BaseModel):
         try:
             data = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise ValueError("MLLM draft content is not valid JSON.") from exc
+            preview = " ".join(content.strip().split())
+            if len(preview) > 240:
+                preview = f"{preview[:237]}..."
+            raise ValueError(
+                f"MLLM draft content is not valid JSON; content preview={preview!r}."
+            ) from exc
 
         try:
             # extra="forbid" 同时挡住模型自行补写 movement_instruction 等方向类字段。
@@ -228,7 +235,7 @@ class MLLMDraftGenerator:
 def create_draft_generator_from_env(
     env: Mapping[str, str] | None = None,
 ) -> GuideDraftGenerator:
-    """显式选择 vLLM 或离线 Mock；缺失配置时禁止静默降级。"""
+    """显式选择正式模型或离线 Mock；缺失配置时禁止静默降级。"""
 
     runtime_env = os.environ if env is None else env
     provider_name = runtime_env.get("MLLM_PROVIDER", "").strip().lower()
@@ -236,11 +243,15 @@ def create_draft_generator_from_env(
         from backend.agents.guide_mock import GuideMockAgent
 
         return GuideMockAgent()
-    if provider_name not in {"vllm", "vllm_openai_compatible"}:
-        raise MLLMConfigurationError(
-            "MLLM_PROVIDER must be vllm_openai_compatible for formal sessions "
-            "or mock for explicit offline tests."
-        )
+    if provider_name in {"qwen", "qwen_openai_compatible"}:
+        settings = QwenProviderSettings.from_env(runtime_env)
+        return MLLMDraftGenerator(QwenOpenAICompatibleProvider(settings))
+    if provider_name in {"vllm", "vllm_openai_compatible"}:
+        settings = VLLMProviderSettings.from_env(runtime_env)
+        return MLLMDraftGenerator(VLLMOpenAICompatibleProvider(settings))
 
-    settings = VLLMProviderSettings.from_env(runtime_env)
-    return MLLMDraftGenerator(VLLMOpenAICompatibleProvider(settings))
+    raise MLLMConfigurationError(
+        "MLLM_PROVIDER must be qwen_openai_compatible or "
+        "vllm_openai_compatible for formal sessions, or mock for explicit "
+        "offline tests."
+    )
