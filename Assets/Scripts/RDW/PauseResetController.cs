@@ -23,19 +23,51 @@ public enum ResetLifecycleState
 /// </summary>
 public sealed class ResetEventInfo
 {
+    /// <summary>协调层选择并冻结的恢复航向计划。</summary>
+    public RecoveryHeadingPlan RecoveryPlan { get; }
     /// <summary>本次 Reset 选择的相对方向。</summary>
     public string SafeDirection { get; }
+    /// <summary>相对恢复开始朝向的有符号偏航角，单位：度；负值为左转。</summary>
+    public float RelativeYawDegrees { get; }
+    /// <summary>参与者需要完成的大致转角，单位：度。</summary>
+    public float ApproximateTurnDegrees => Mathf.Abs(RelativeYawDegrees);
     /// <summary>本次 Reset 固定的 Physical Room 目标朝向。</summary>
     public Vector2 SafePhysicalForward { get; }
     /// <summary>触发本次 Reset 的原因。</summary>
     public string Reason { get; }
 
-    /// <summary>创建一条不可变 Reset 事件。</summary>
+    /// <summary>使用协调层冻结的恢复计划创建不可变 Reset 事件。</summary>
+    public ResetEventInfo(RecoveryHeadingPlan recoveryPlan, string reason)
+    {
+        RecoveryPlan = recoveryPlan;
+        RelativeYawDegrees = recoveryPlan != null && recoveryPlan.IsSuccess
+            ? recoveryPlan.RelativeYawDegrees
+            : 0f;
+        SafeDirection = DirectionForYaw(RelativeYawDegrees);
+        SafePhysicalForward = recoveryPlan != null && recoveryPlan.IsSuccess
+            ? recoveryPlan.SafePhysicalForward
+            : Vector2.up;
+        Reason = reason ?? string.Empty;
+    }
+
+    /// <summary>兼容旧日志与测试边界；生产恢复事件应直接传入 RecoveryHeadingPlan。</summary>
     public ResetEventInfo(string safeDirection, Vector2 safePhysicalForward, string reason)
     {
+        RecoveryPlan = null;
         SafeDirection = safeDirection ?? string.Empty;
+        RelativeYawDegrees = string.Equals(SafeDirection, "left", StringComparison.Ordinal)
+            ? -90f
+            : string.Equals(SafeDirection, "right", StringComparison.Ordinal) ? 90f : 0f;
         SafePhysicalForward = safePhysicalForward;
         Reason = reason ?? string.Empty;
+    }
+
+    /// <summary>把连续恢复偏航映射为仅供 UI 与兼容日志使用的方向标签。</summary>
+    public static string DirectionForYaw(float relativeYawDegrees)
+    {
+        if (relativeYawDegrees < -5f) return "left";
+        if (relativeYawDegrees > 5f) return "right";
+        return "forward";
     }
 }
 
@@ -48,8 +80,6 @@ public sealed class PauseResetController : MonoBehaviour
     [Header("Reset 依赖")]
     [Tooltip("Reset 开始时需要清除的 Guidance 表现。")]
     [SerializeField] private GuidanceExecutor guidanceExecutor;
-    [Tooltip("向参与者显示中性安全提示的面板。")]
-    [SerializeField] private RejectionPanel rejectionPanel;
     [Tooltip("Reset 开始时需要中止的 Rotation Gain。")]
     [SerializeField] private RotationGainController rotationGainController;
     [Tooltip("提供校准后的 Physical Room Forward，用于检测用户安全转向。")]
@@ -107,13 +137,12 @@ public sealed class PauseResetController : MonoBehaviour
     /// </summary>
     public void Configure(
         GuidanceExecutor executor,
-        RejectionPanel panel,
+        RejectionPanel legacyPanel,
         RotationGainController gainController = null,
         UserPoseTracker poseTracker = null,
         PhysicalRiskEvaluator evaluator = null)
     {
         if (executor != null) guidanceExecutor = executor;
-        if (panel != null) rejectionPanel = panel;
         if (gainController != null) rotationGainController = gainController;
         if (poseTracker != null) userPoseTracker = poseTracker;
         if (evaluator != null) riskEvaluator = evaluator;
@@ -140,8 +169,7 @@ public sealed class PauseResetController : MonoBehaviour
         {
             activePlan = plan;
             safePhysicalForward = plan.SafePhysicalForward;
-            safeDirection = ToDisplayDirection(plan.RelativeYawDegrees);
-            rejectionPanel?.Show(BuildInstruction(safeDirection));
+            safeDirection = ResetEventInfo.DirectionForYaw(plan.RelativeYawDegrees);
             ResetStarted?.Invoke(CreateEventInfo());
             return true;
         }
@@ -150,8 +178,7 @@ public sealed class PauseResetController : MonoBehaviour
         TransitionTo(ResetLifecycleState.Required);
         activePlan = plan;
         safePhysicalForward = plan.SafePhysicalForward;
-        safeDirection = ToDisplayDirection(plan.RelativeYawDegrees);
-        rejectionPanel?.Show(BuildInstruction(safeDirection));
+        safeDirection = ResetEventInfo.DirectionForYaw(plan.RelativeYawDegrees);
         TransitionTo(ResetLifecycleState.TurningToSafeDirection);
         ResetStarted?.Invoke(CreateEventInfo());
         return true;
@@ -192,7 +219,6 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         TransitionTo(ResetLifecycleState.Completed);
-        rejectionPanel?.Show("安全转向已完成，正在重新评估空间风险。");
         ResetCompleted?.Invoke(CreateEventInfo());
     }
 
@@ -209,7 +235,6 @@ public sealed class PauseResetController : MonoBehaviour
 
         IsPaused = false;
         activePlan = null;
-        rejectionPanel?.Hide();
         TransitionTo(ResetLifecycleState.Inactive);
         return true;
     }
@@ -225,13 +250,12 @@ public sealed class PauseResetController : MonoBehaviour
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_cancelled" : reason;
         IsPaused = false;
         activePlan = null;
-        rejectionPanel?.Hide();
         TransitionTo(ResetLifecycleState.Cancelled);
     }
 
     private ResetEventInfo CreateEventInfo()
     {
-        return new ResetEventInfo(safeDirection, safePhysicalForward, resetReason);
+        return new ResetEventInfo(activePlan, resetReason);
     }
 
     private void TransitionTo(ResetLifecycleState nextState)
@@ -301,17 +325,4 @@ public sealed class PauseResetController : MonoBehaviour
         return false;
     }
 
-    private static string ToDisplayDirection(float relativeYawDegrees)
-    {
-        if (relativeYawDegrees < -5f) return "left";
-        if (relativeYawDegrees > 5f) return "right";
-        return "forward";
-    }
-
-    private static string BuildInstruction(string direction)
-    {
-        if (direction == "left") return "请停止移动并原地缓慢向左转向安全方向。";
-        if (direction == "right") return "请停止移动并原地缓慢向右转向安全方向。";
-        return "请停止移动并保持当前安全朝向。";
-    }
 }

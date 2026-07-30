@@ -15,6 +15,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
     [SerializeField] private int physicalSpaceIndex = 1;
     [SerializeField, Min(1f)] private float completionCountdownSeconds = 10f;
 
+    [Header("自动恢复")]
+    [Tooltip("Tracking 暂时丢失后允许系统自动恢复的最长时间，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float trackingRecoveryTimeoutSeconds = 5f;
+
     [Header("Dependencies")]
     [SerializeField] private PhysicalSpaceManager physicalSpaceManager;
     [SerializeField] private UserPoseTracker userPoseTracker;
@@ -36,6 +40,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private ExperimentRunState runState = ExperimentRunState.Preparing;
     private ExperimentRunState stateBeforeSafetyHold = ExperimentRunState.Running;
     private Coroutine completionRoutine;
+    private Coroutine runtimePrerequisiteRecoveryRoutine;
+    private bool runtimePrerequisiteRecoveryPending;
     private float completionSecondsRemaining;
     private string lastStatusMessage = "Initializing";
     private float nextReadinessRefreshTime;
@@ -66,6 +72,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         Unsubscribe();
         StopCompletionCountdown();
+        StopRuntimePrerequisiteRecovery();
     }
 
     private void Update()
@@ -286,13 +293,28 @@ public sealed class ExperimentDashboard : MonoBehaviour
         taskController.StartTask();
 
         var risk = riskEvaluator.EvaluateNow();
-        if (IsCritical(risk))
+        if (runState != ExperimentRunState.Starting)
         {
-            EnterSafetyHold("critical risk at session start");
             return;
         }
 
         TransitionTo(ExperimentRunState.Running, "Session running");
+        if (IsCritical(risk))
+        {
+            if (guidanceCoordinator.BeginAutomaticRecovery(
+                    risk,
+                    "Critical physical risk at session start; selecting a safe recovery heading."))
+            {
+                return;
+            }
+
+            if (IsSessionActiveState())
+            {
+                EndSession("unrecoverable_critical_risk_at_session_start");
+            }
+            return;
+        }
+
         participantUiController?.ShowGuidance();
         guidanceCoordinator.RequestNextGuidance();
     }
@@ -336,7 +358,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
             physicalSpaceCalibration == null || !physicalSpaceCalibration.IsCalibrationValid)
         {
-            EnterSafetyHold("tracking or calibration is not ready", false);
+            RejectResearcherResume("tracking or calibration is not ready");
             return;
         }
 
@@ -350,14 +372,14 @@ public sealed class ExperimentDashboard : MonoBehaviour
                                      stateBeforeSafetyHold == ExperimentRunState.Paused;
         if (!IsSafeForResume(risk))
         {
-            EnterSafetyHold("physical risk is not safe for resume", false);
+            RejectResearcherResume("physical risk is not safe for resume");
             return;
         }
 
         if (pauseResetController != null &&
             pauseResetController.State == ResetLifecycleState.Cancelled)
         {
-            EnterSafetyHold("reset turn was interrupted and must restart");
+            RejectResearcherResume("reset turn was interrupted");
             return;
         }
 
@@ -365,7 +387,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             pauseResetController.State == ResetLifecycleState.Completed &&
             !pauseResetController.ResumeAfterReset())
         {
-            EnterSafetyHold("reset turn has not completed", false);
+            RejectResearcherResume("reset turn has not completed");
             return;
         }
         if (restoreResearcherPause)
@@ -428,6 +450,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         var terminalTrace = activeGuidanceTrace;
+        StopRuntimePrerequisiteRecovery();
         StopCompletionCountdown();
         LogTargetAbandoned(terminalTrace, "session ended");
         FreezeExperimentBehavior();
@@ -547,6 +570,20 @@ public sealed class ExperimentDashboard : MonoBehaviour
         activeGuidanceTrace = LogTraceContext.Empty;
     }
 
+    private void RejectResearcherResume(string reason)
+    {
+        lastStatusMessage = string.IsNullOrWhiteSpace(reason) ? "Resume rejected" : reason;
+        if (runState == ExperimentRunState.Paused)
+        {
+            participantUiController?.ShowResearcherPaused();
+        }
+        else
+        {
+            participantUiController?.ShowRuntimeIntervention();
+        }
+        WriteStatus();
+    }
+
     private void EnterError(string reason)
     {
         var terminalTrace = activeGuidanceTrace;
@@ -595,7 +632,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             state,
             riskEvaluator?.CurrentRiskState,
             "task state changed");
-        if ((runState == ExperimentRunState.Running || runState == ExperimentRunState.Paused) &&
+        if (runState == ExperimentRunState.Running &&
             state != null && state.phase == GuidanceRuntimePhase.PausedForReset)
         {
             runtimeInterventionActive = false;
@@ -635,20 +672,34 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        // Running/Paused 的原始风险由 Coordinator 统一决策；这里只保留缺失协调器和完成阶段兜底。
+        if (runState == ExperimentRunState.Paused)
+        {
+            // 研究员暂停保持独立语义，不转换为自动恢复或 SafetyHold。
+            return;
+        }
+
         if (guidanceCoordinator == null)
         {
-            EnterSafetyHold("critical physical risk without an active coordinator", false);
+            EndSession("critical_risk_without_guidance_coordinator");
         }
-        else if (runState == ExperimentRunState.Completing &&
-                 guidanceCoordinator.RequestPhase != GuidanceRequestPhase.Executing)
+        else if (runState == ExperimentRunState.Completing)
         {
-            EnterSafetyHold("critical physical risk while completing without active guidance", false);
+            EndSession("critical_risk_during_completion");
+        }
+        else if (!guidanceCoordinator.IsAutomaticRecoveryActive)
+        {
+            guidanceCoordinator.BeginAutomaticRecovery(
+                state,
+                "Critical physical risk without an executable guidance action.");
         }
     }
 
     private void HandleResetStarted(ResetEventInfo info)
     {
+        if (runState != ExperimentRunState.Paused)
+        {
+            participantUiController?.ShowRecoveryStarted(info);
+        }
         experimentLogger?.LogStatus(
             "reset_started",
             activeGuidanceTrace,
@@ -659,6 +710,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleResetCompleted(ResetEventInfo _)
     {
+        if (runState != ExperimentRunState.Paused)
+        {
+            participantUiController?.ShowRecoveryReplanning();
+        }
         experimentLogger?.LogStatus(
             "reset_completed",
             activeGuidanceTrace,
@@ -675,7 +730,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             }
             else if (IsSessionActiveState())
             {
-                EnterSafetyHold("reset completed without an active coordinator", false);
+                EndSession("reset_completed_without_guidance_coordinator");
             }
             return;
         }
@@ -801,7 +856,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         activeGuidanceTrace = interventionTrace;
         runtimeInterventionActive = true;
-        participantUiController?.ShowRuntimeIntervention();
         experimentLogger?.LogStatus(
             "hard_stop",
             interventionTrace,
@@ -810,9 +864,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
             intervention != null ? intervention.Reason : "runtime safety intervention");
         if (IsSessionActiveState())
         {
-            EnterSafetyHold(
-                intervention != null ? intervention.Reason : "runtime safety intervention",
-                false);
+            EndSession(intervention != null && !string.IsNullOrWhiteSpace(intervention.Reason)
+                ? $"automatic_safety_termination: {intervention.Reason}"
+                : "automatic_safety_termination");
         }
     }
 
@@ -937,18 +991,29 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleCalibrationStateChanged(PhysicalCalibrationState state)
     {
-        if (state != PhysicalCalibrationState.Calibrated)
+        if (state == PhysicalCalibrationState.Calibrated)
         {
-            experimentLogger?.LogCalibrationInvalidated(
-                physicalSpaceCalibration != null ? physicalSpaceCalibration.CalibrationId : string.Empty,
-                $"calibration state: {state}");
-
-            if (IsSessionActiveState())
-            {
-                rotationGainController?.AbortGain("tracking_invalid");
-                EnterSafetyHold($"calibration state: {state}", false);
-            }
+            CompleteRuntimePrerequisiteRecovery();
+            return;
         }
+
+        experimentLogger?.LogCalibrationInvalidated(
+            physicalSpaceCalibration != null ? physicalSpaceCalibration.CalibrationId : string.Empty,
+            $"calibration state: {state}");
+
+        if (!IsSessionActiveState())
+        {
+            return;
+        }
+
+        rotationGainController?.AbortGain("tracking_invalid");
+        if (state == PhysicalCalibrationState.TemporarilyTrackingLost)
+        {
+            BeginRuntimePrerequisiteRecovery("temporary tracking loss");
+            return;
+        }
+
+        EndSession($"automatic_safety_termination: calibration state {state}");
     }
 
     private void HandleTrackingStateChanged(bool trackingActive)
@@ -966,11 +1031,122 @@ public sealed class ExperimentDashboard : MonoBehaviour
             trackingActive ? "tracking recovered" : "tracking lost");
         if (trackingActive)
         {
+            CompleteRuntimePrerequisiteRecovery();
             return;
         }
 
         rotationGainController?.AbortGain("tracking_invalid");
-        EnterSafetyHold("XR tracking lost", false);
+        BeginRuntimePrerequisiteRecovery("XR tracking lost");
+    }
+
+    private void BeginRuntimePrerequisiteRecovery(string reason)
+    {
+        if (!IsSessionActiveState())
+        {
+            return;
+        }
+
+        if (!runtimePrerequisiteRecoveryPending)
+        {
+            runtimePrerequisiteRecoveryPending = true;
+            FreezeExperimentBehavior();
+            experimentLogger?.LogStatus(
+                "runtime_prerequisite_recovery_started",
+                activeGuidanceTrace,
+                taskController?.RuntimeState,
+                riskEvaluator?.CurrentRiskState,
+                reason);
+            if (isActiveAndEnabled)
+            {
+                runtimePrerequisiteRecoveryRoutine = StartCoroutine(RuntimePrerequisiteRecoveryTimeoutRoutine());
+            }
+        }
+
+        if (runState == ExperimentRunState.Paused)
+        {
+            participantUiController?.ShowResearcherPaused();
+        }
+        else
+        {
+            participantUiController?.ShowTrackingRecovery();
+        }
+        lastStatusMessage = reason;
+        WriteStatus();
+    }
+
+    private void CompleteRuntimePrerequisiteRecovery()
+    {
+        if (!runtimePrerequisiteRecoveryPending ||
+            xrTrackingAdapter == null || !xrTrackingAdapter.IsTrackingActive ||
+            physicalSpaceCalibration == null || !physicalSpaceCalibration.IsCalibrationValid)
+        {
+            return;
+        }
+
+        StopRuntimePrerequisiteRecovery();
+        experimentLogger?.LogStatus(
+            "runtime_prerequisite_recovered",
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            "tracking and calibration recovered");
+        if (runState == ExperimentRunState.Paused)
+        {
+            participantUiController?.ShowResearcherPaused();
+            return;
+        }
+
+        if (runState == ExperimentRunState.Completing)
+        {
+            participantUiController?.ShowCompleted();
+            return;
+        }
+
+        if (guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive)
+        {
+            var plan = pauseResetController != null ? pauseResetController.ActivePlan : null;
+            participantUiController?.ShowRecoveryStarted(new ResetEventInfo(plan, "tracking recovered"));
+            return;
+        }
+
+        participantUiController?.ShowRecoveryReplanning();
+        guidanceCoordinator?.RequestNextGuidance();
+    }
+
+    private IEnumerator RuntimePrerequisiteRecoveryTimeoutRoutine()
+    {
+        var deadline = Time.unscaledTime + Mathf.Max(0.1f, trackingRecoveryTimeoutSeconds);
+        while (Time.unscaledTime < deadline && IsSessionActiveState())
+        {
+            yield return null;
+        }
+
+        runtimePrerequisiteRecoveryRoutine = null;
+        if (!IsSessionActiveState())
+        {
+            yield break;
+        }
+
+        if (xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive &&
+            physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid)
+        {
+            CompleteRuntimePrerequisiteRecovery();
+            yield break;
+        }
+
+        EndSession("automatic_safety_termination: tracking recovery timeout");
+    }
+
+    private void StopRuntimePrerequisiteRecovery()
+    {
+        runtimePrerequisiteRecoveryPending = false;
+        if (runtimePrerequisiteRecoveryRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(runtimePrerequisiteRecoveryRoutine);
+        runtimePrerequisiteRecoveryRoutine = null;
     }
 
     private void HandleResetStateChanged(ResetLifecycleState state)
@@ -986,6 +1162,21 @@ public sealed class ExperimentDashboard : MonoBehaviour
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
             "reset cancelled");
+    }
+
+    private void HandleRecoveryStateChanged(GuidanceRecoveryState state)
+    {
+        if (runState == ExperimentRunState.Paused)
+        {
+            return;
+        }
+
+        if (state == GuidanceRecoveryState.Stabilizing ||
+            state == GuidanceRecoveryState.Revalidating ||
+            state == GuidanceRecoveryState.Replanning)
+        {
+            participantUiController?.ShowRecoveryReplanning();
+        }
     }
 
     private static string GainEventName(RotationGainEventType eventType, string reason)
@@ -1171,6 +1362,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.TargetReached += HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
             guidanceCoordinator.DetourCompleted += HandleDetourCompleted;
+            guidanceCoordinator.RecoveryStateChanged -= HandleRecoveryStateChanged;
+            guidanceCoordinator.RecoveryStateChanged += HandleRecoveryStateChanged;
         }
 
         if (riskEvaluator != null)
@@ -1229,6 +1422,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
             guidanceCoordinator.TargetReached -= HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
+            guidanceCoordinator.RecoveryStateChanged -= HandleRecoveryStateChanged;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         if (pauseResetController != null)

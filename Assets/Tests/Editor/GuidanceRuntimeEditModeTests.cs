@@ -105,7 +105,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void ExperimentDashboard_RuntimeInterventionEntersRecoverableSafetyHold()
+    public void ExperimentDashboard_HardRuntimeInterventionTerminatesAutomatically()
     {
         var root = new GameObject("ExperimentDashboardUnsafeGuidanceTest");
         root.SetActive(false);
@@ -145,8 +145,8 @@ public sealed class GuidanceRuntimeEditModeTests
             taskState.PauseForReset();
             InvokePrivate(dashboard, "HandleTaskStateChanged", taskState);
 
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
-            Assert.That(safetyText.text, Is.EqualTo("请停止移动，等待安全引导"));
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Ended));
+            Assert.That(safetyText.text, Is.EqualTo("实验已结束，请等待研究员"));
         }
         finally
         {
@@ -403,7 +403,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void ExperimentDashboard_TrackingLossPreemptsGainAndReset()
+    public void ExperimentDashboard_TrackingLossAbortsGainButPreservesFrozenReset()
     {
         var root = new GameObject("ExperimentDashboardTrackingPreemptionTest");
         root.SetActive(false);
@@ -427,9 +427,9 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("tracking_invalid"));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
-            Assert.That(reset.IsActive, Is.False);
-            Assert.That(reset.IsPaused, Is.False);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(reset.IsActive, Is.True);
+            Assert.That(reset.IsPaused, Is.True);
         }
         finally
         {
@@ -438,7 +438,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void ExperimentDashboard_InterruptedResetRestartsAfterSafeTrackingRecovery()
+    public void ExperimentDashboard_CancelledResetIsNotRestartedByResearcherResume()
     {
         var root = new GameObject("ExperimentDashboardInterruptedResetRecoveryTest");
         root.SetActive(false);
@@ -473,8 +473,8 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
-            Assert.That(reset.IsActive, Is.True);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+            Assert.That(reset.IsActive, Is.False);
         }
         finally
         {
@@ -1548,8 +1548,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(narrationText.text, Is.Empty);
             Assert.That(movementText.text, Is.Empty);
             Assert.That(gazeText.text, Is.Empty);
-            Assert.That(rejectionRoot.activeSelf, Is.True);
-            Assert.That(rejectionText.text, Does.Contain("安全"));
+            Assert.That(rejectionRoot.activeSelf, Is.False);
+            Assert.That(rejectionText.text, Is.Empty);
             Assert.That(gain.IsActive, Is.False);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
 
@@ -1751,7 +1751,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void ExperimentDashboard_TrackingLossEntersSafetyHoldAndNeedsStableFreshRisk()
+    public void ExperimentDashboard_TrackingLossWaitsForStableFreshRiskWithoutSafetyHold()
     {
         var root = new GameObject("ExperimentDashboardTrackingLossTest");
         root.SetActive(false);
@@ -1775,20 +1775,20 @@ public sealed class GuidanceRuntimeEditModeTests
 
             tracking.ReportTrackingUnavailable();
 
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(GetPrivateField<bool>(dashboard, "runtimePrerequisiteRecoveryPending"), Is.True);
             Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(risk.CurrentRiskState, Is.Null);
 
             tracking.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity);
-            dashboard.ResumeSession();
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
+            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(GetPrivateField<bool>(dashboard, "runtimePrerequisiteRecoveryPending"), Is.True);
 
             tracking.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity);
             Assert.That(risk.CurrentRiskState, Is.Not.Null);
             Assert.That(risk.CurrentRiskState.calibration_id, Is.EqualTo(calibration.CalibrationId));
-            dashboard.ResumeSession();
-
             Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(GetPrivateField<bool>(dashboard, "runtimePrerequisiteRecoveryPending"), Is.False);
         }
         finally
         {

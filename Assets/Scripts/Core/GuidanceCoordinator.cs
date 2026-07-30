@@ -176,6 +176,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public GuidanceRecoveryState RecoveryState => recoveryState;
     /// <summary>当前恢复流程冻结的具体物理朝向计划。</summary>
     public RecoveryHeadingPlan FrozenRecoveryPlan => frozenRecoveryPlan;
+    /// <summary>当前是否正在执行自动物理朝向恢复。</summary>
+    public bool IsAutomaticRecoveryActive => IsResetRecoveryActive;
     /// <summary>当前是否因没有可执行语义候选而等待下一份事实重规划。</summary>
     public bool IsHoldingForReplan => holdForReplan;
 
@@ -975,9 +977,16 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        // Tracking 短暂丢失由会话层按配置时限等待；恢复计划保持冻结，不在此处误判为不可恢复。
+        if (riskEvaluator != null &&
+            (!riskEvaluator.IsTrackingValid || !riskEvaluator.IsCalibrationValid))
+        {
+            return;
+        }
+
         if (!HasTrustedRecoveryFacts(riskState))
         {
-            TriggerRecoveryHardStop("Automatic recovery lost trusted tracking, calibration, or boundary facts.");
+            TriggerRecoveryHardStop("Automatic recovery lost trusted boundary or risk identity facts.");
             return;
         }
 
@@ -1115,6 +1124,38 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn);
+    }
+
+    /// <summary>
+    /// 在尚无活动 Guidance 时根据最新物理事实启动自动朝向恢复；不可恢复时自动终止任务。
+    /// </summary>
+    /// <param name="riskState">当前可信物理风险快照。</param>
+    /// <param name="reason">触发恢复的诊断原因。</param>
+    /// <returns>已处于或成功进入自动恢复状态时返回 true。</returns>
+    public bool BeginAutomaticRecovery(PhysicalRiskState riskState, string reason)
+    {
+        if (IsResetRecoveryActive)
+        {
+            return true;
+        }
+
+        if (taskController == null || !taskController.RuntimeState.IsNavigating)
+        {
+            TriggerRecoveryHardStop("Automatic recovery requires an active navigating task.");
+            return false;
+        }
+
+        if (!CanStartAutomaticReset(riskState))
+        {
+            TriggerRecoveryHardStop(
+                HasTrustedRecoveryFacts(riskState)
+                    ? "No acceptable physical recovery heading is available."
+                    : "Automatic recovery has no trusted tracking, calibration, or boundary facts.");
+            return false;
+        }
+
+        TriggerPauseReset(null, riskState, reason);
+        return IsResetRecoveryActive;
     }
 
     private GuidanceTarget FindRuntimeSafetyCandidate(

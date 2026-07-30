@@ -52,6 +52,34 @@ public sealed class ParticipantUiController : MonoBehaviour
     public void ShowRuntimeIntervention() => ShowSafetyMessage("请停止移动，等待安全引导");
     /// <summary>显示自动安全转向正在执行，不要求研究员介入。</summary>
     public void ShowAutomaticReset() => ShowSafetyMessage("请停止移动并按安全提示原地转向");
+    /// <summary>显示 Tracking 或临时校准状态正在自动恢复。</summary>
+    public void ShowTrackingRecovery() => ShowSafetyMessage("请停止移动，正在恢复定位");
+    /// <summary>根据冻结恢复计划显示明确的原地转向方向和大致角度。</summary>
+    public void ShowRecoveryStarted(ResetEventInfo info)
+    {
+        if (info == null)
+        {
+            ShowAutomaticReset();
+            return;
+        }
+
+        var approximateDegrees = Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5);
+        if (string.Equals(info.SafeDirection, "left", System.StringComparison.Ordinal))
+        {
+            ShowSafetyMessage($"请停止移动，原地缓慢向左转约 {approximateDegrees}°");
+        }
+        else if (string.Equals(info.SafeDirection, "right", System.StringComparison.Ordinal))
+        {
+            ShowSafetyMessage($"请停止移动，原地缓慢向右转约 {approximateDegrees}°");
+        }
+        else
+        {
+            ShowSafetyMessage("请停止移动并保持当前安全朝向");
+        }
+    }
+
+    /// <summary>显示安全朝向已到达，系统正在复验并重新规划。</summary>
+    public void ShowRecoveryReplanning() => ShowSafetyMessage("请保持朝向，正在重新规划");
     public void ShowSystemUnavailable() => ShowSafetyMessage("系统暂时无法继续，请保持原地");
     public void ShowCompleted() => ShowSafetyMessage("任务已完成，请保持原地");
     public void ShowEnded() => ShowSafetyMessage("实验已结束，请等待研究员");
