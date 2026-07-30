@@ -13,12 +13,21 @@ public sealed class NavigationTargetManager : MonoBehaviour
     [SerializeField] private UserPoseTracker userPoseTracker;
     [Tooltip("Forward 方向允许的半角，单位：度。")]
     [SerializeField, Range(1f, 89f)] private float forwardHalfAngleDegrees = 30f;
+    [Tooltip("目标进入 Forward 标签所需的半角，单位：度。")]
+    [SerializeField, Range(1f, 89f)] private float forwardEnterHalfAngleDegrees = 25f;
+    [Tooltip("目标退出 Forward 标签所需的半角，单位：度；必须大于进入阈值。")]
+    [SerializeField, Range(1f, 89f)] private float forwardExitHalfAngleDegrees = 35f;
     [Tooltip("超过该绝对角度后归类为 Behind，单位：度。")]
     [SerializeField, Range(91f, 179f)] private float behindThresholdDegrees = 150f;
 
     private readonly Dictionary<string, ExhibitMetadata> targetsById = new Dictionary<string, ExhibitMetadata>();
+    private readonly Dictionary<string, BearingLabel> displayLabelsByTarget = new Dictionary<string, BearingLabel>();
     private string registrySignature = string.Empty;
     private int registryRevision;
+    private int poseRevision;
+    private Vector3 lastVirtualPosition;
+    private Vector3 lastVirtualForward = Vector3.forward;
+    private bool hasPoseSample;
 
     /// <summary>场景导航 Target Registry 内容发生变化时递增的修订号。</summary>
     public int RegistryRevision => registryRevision;
@@ -47,6 +56,7 @@ public sealed class NavigationTargetManager : MonoBehaviour
     public void RebuildIndex()
     {
         targetsById.Clear();
+        displayLabelsByTarget.Clear();
         foreach (var exhibit in FindObjectsOfType<ExhibitMetadata>())
         {
             if (exhibit != null && !string.IsNullOrWhiteSpace(exhibit.Id))
@@ -96,7 +106,9 @@ public sealed class NavigationTargetManager : MonoBehaviour
     /// <returns>供 RDW 风险标签匹配使用的英文方向值。</returns>
     public string GetTargetDirection(string targetId)
     {
-        return TryGetTargetDirection(targetId, out var direction) ? direction : string.Empty;
+        return TryGetTargetBearing(targetId, out var bearing)
+            ? BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel)
+            : string.Empty;
     }
 
     /// <summary>返回当前注册目标 ID 的稳定排序副本。</summary>
@@ -115,35 +127,22 @@ public sealed class NavigationTargetManager : MonoBehaviour
     public bool TryGetTargetDirection(string targetId, out string direction)
     {
         direction = string.Empty;
-        if (!TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees))
+        if (!TryGetTargetBearing(targetId, out var bearing))
         {
             return false;
         }
 
-        var absoluteAngle = Mathf.Abs(relativeYawDegrees);
-        if (absoluteAngle <= forwardHalfAngleDegrees)
-        {
-            direction = "forward";
-        }
-        else if (absoluteAngle >= behindThresholdDegrees)
-        {
-            direction = "behind";
-        }
-        else
-        {
-            direction = relativeYawDegrees < 0f ? "left" : "right";
-        }
-
+        direction = BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel);
         return true;
     }
 
     /// <summary>
-    /// 尝试计算目标相对用户当前 Virtual Forward 的有符号水平偏航，单位：度。
+    /// 尝试读取目标的连续偏航、水平距离、显示标签和虚拟位姿修订号。
     /// </summary>
     /// <returns>目标、用户位姿与水平目标向量均有效时返回 true。</returns>
-    public bool TryGetTargetRelativeYawDegrees(string targetId, out float relativeYawDegrees)
+    public bool TryGetTargetBearing(string targetId, out TargetBearing bearing)
     {
-        relativeYawDegrees = 0f;
+        bearing = null;
         if (!TryGetTarget(targetId, out var target) || target == null)
         {
             return false;
@@ -164,8 +163,31 @@ public sealed class NavigationTargetManager : MonoBehaviour
             return false;
         }
 
-        relativeYawDegrees = Vector3.SignedAngle(userForward.normalized, toTarget.normalized, Vector3.up);
+        UpdatePoseRevision(userPosition, userForward);
+        var relativeYawDegrees = Vector3.SignedAngle(userForward.normalized, toTarget.normalized, Vector3.up);
+        var previousLabel = displayLabelsByTarget.TryGetValue(targetId, out var cachedLabel)
+            ? cachedLabel
+            : ClassifyBearingLabel(relativeYawDegrees, BearingLabel.Forward, false);
+        var displayLabel = ClassifyBearingLabel(relativeYawDegrees, previousLabel, true);
+        displayLabelsByTarget[targetId] = displayLabel;
+        bearing = new TargetBearing(
+            targetId,
+            relativeYawDegrees,
+            toTarget.magnitude,
+            displayLabel,
+            poseRevision);
         return true;
+    }
+
+    /// <summary>
+    /// 尝试计算目标相对用户当前 Virtual Forward 的有符号水平偏航，单位：度。
+    /// </summary>
+    /// <returns>目标、用户位姿与水平目标向量均有效时返回 true。</returns>
+    public bool TryGetTargetRelativeYawDegrees(string targetId, out float relativeYawDegrees)
+    {
+        var result = TryGetTargetBearing(targetId, out var bearing);
+        relativeYawDegrees = result ? bearing.RelativeYawDegrees : 0f;
+        return result;
     }
 
     /// <summary>
@@ -181,18 +203,35 @@ public sealed class NavigationTargetManager : MonoBehaviour
         }
 
         var angle = Vector3.SignedAngle(forward.normalized, toTarget.normalized, Vector3.up);
-        var absoluteAngle = Mathf.Abs(angle);
-        if (absoluteAngle <= forwardHalfAngleDegrees)
+        return BearingLabelProtocolMapper.ToProtocol(
+            ClassifyBearingLabel(angle, BearingLabel.Forward, false));
+    }
+
+    /// <summary>
+    /// 使用 Forward 进入/退出滞回阈值生成显示标签，避免头部抖动造成标签反复切换。
+    /// </summary>
+    public BearingLabel ClassifyBearingLabel(
+        float relativeYawDegrees,
+        BearingLabel previousLabel,
+        bool useHysteresis)
+    {
+        var absoluteAngle = Mathf.Abs(Mathf.DeltaAngle(0f, relativeYawDegrees));
+        var forwardThreshold = useHysteresis && previousLabel == BearingLabel.Forward
+            ? Mathf.Max(forwardEnterHalfAngleDegrees, forwardExitHalfAngleDegrees)
+            : useHysteresis
+                ? Mathf.Min(forwardEnterHalfAngleDegrees, forwardExitHalfAngleDegrees)
+                : forwardHalfAngleDegrees;
+        if (absoluteAngle <= forwardThreshold)
         {
-            return "forward";
+            return BearingLabel.Forward;
         }
 
         if (absoluteAngle >= behindThresholdDegrees)
         {
-            return "behind";
+            return BearingLabel.Behind;
         }
 
-        return angle < 0f ? "left" : "right";
+        return relativeYawDegrees < 0f ? BearingLabel.Left : BearingLabel.Right;
     }
 
     /// <summary>返回安全候选在场景元数据中声明的 TargetRole。</summary>
@@ -232,6 +271,20 @@ public sealed class NavigationTargetManager : MonoBehaviour
         if (userPoseTracker == null)
         {
             userPoseTracker = FindObjectOfType<UserPoseTracker>();
+        }
+    }
+
+    private void UpdatePoseRevision(Vector3 position, Vector3 forward)
+    {
+        var normalizedForward = forward.normalized;
+        if (!hasPoseSample ||
+            (position - lastVirtualPosition).sqrMagnitude > 0.000001f ||
+            Vector3.Angle(lastVirtualForward, normalizedForward) > 0.01f)
+        {
+            poseRevision++;
+            lastVirtualPosition = position;
+            lastVirtualForward = normalizedForward;
+            hasPoseSample = true;
         }
     }
 }

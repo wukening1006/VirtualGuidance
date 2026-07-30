@@ -74,6 +74,51 @@ public sealed class PhysicalRiskObstacleSnapshot
 }
 
 /// <summary>
+/// 表示某个 Physical Heading 的移动安全等级。
+/// </summary>
+public enum HeadingSafety
+{
+    /// <summary>净空低于 Critical 阈值，禁止转入或移动。</summary>
+    Critical,
+    /// <summary>净空低于最低恢复阈值，禁止转入或移动。</summary>
+    Unsafe,
+    /// <summary>净空处于滞回区间，禁止移动但允许继续规划。</summary>
+    Unknown,
+    /// <summary>净空达到安全阈值，允许作为移动方向。</summary>
+    Safe
+}
+
+/// <summary>
+/// 保存相对当前 Physical Forward 的单个朝向采样事实。
+/// </summary>
+public readonly struct HeadingSample
+{
+    /// <summary>相对当前 Physical Forward 的有符号偏航角，单位：度。</summary>
+    public float RelativeYawDegrees { get; }
+    /// <summary>该采样在 Physical XZ 平面中的单位前向。</summary>
+    public Vector2 PhysicalForward { get; }
+    /// <summary>考虑用户半径和边界余量后的走廊净空，单位：米。</summary>
+    public float ClearanceMeters { get; }
+    /// <summary>该朝向的安全等级。</summary>
+    public HeadingSafety Safety { get; }
+
+    /// <summary>创建一项不可变 Heading Profile 采样。</summary>
+    public HeadingSample(
+        float relativeYawDegrees,
+        Vector2 physicalForward,
+        float clearanceMeters,
+        HeadingSafety safety)
+    {
+        RelativeYawDegrees = relativeYawDegrees;
+        PhysicalForward = physicalForward.sqrMagnitude > 0.0001f
+            ? physicalForward.normalized
+            : Vector2.up;
+        ClearanceMeters = Math.Max(0f, clearanceMeters);
+        Safety = safety;
+    }
+}
+
+/// <summary>
 /// Unity 确定性 RDW 层发布的不可变 Physical Risk 快照。
 /// </summary>
 public sealed class PhysicalRiskState
@@ -118,6 +163,8 @@ public sealed class PhysicalRiskState
     public bool critical { get; }
     /// <summary>确定性安全链是否要求 Reset。</summary>
     public bool reset_required { get; }
+    /// <summary>多角度 Physical Heading Profile 的只读副本。</summary>
+    public IReadOnlyList<HeadingSample> heading_profile { get; }
 
     /// <summary>创建完整、深拷贝且发布后不可修改的风险快照。</summary>
     public PhysicalRiskState(
@@ -140,7 +187,8 @@ public sealed class PhysicalRiskState
         IEnumerable<string> unsafeDirections = null,
         IEnumerable<string> safeDirections = null,
         bool isCritical = false,
-        bool resetRequired = false)
+        bool resetRequired = false,
+        IEnumerable<HeadingSample> headingProfile = null)
     {
         risk_snapshot_id = riskSnapshotId ?? string.Empty;
         risk_revision = Math.Max(0, riskRevision);
@@ -163,6 +211,31 @@ public sealed class PhysicalRiskState
         safe_directions = Array.AsReadOnly(new List<string>(safeDirections ?? Array.Empty<string>()).ToArray());
         critical = isCritical;
         reset_required = resetRequired;
+        heading_profile = Array.AsReadOnly(new List<HeadingSample>(
+            headingProfile ?? Array.Empty<HeadingSample>()).ToArray());
+    }
+
+    /// <summary>
+    /// 按相对偏航查询最近的 Heading Profile 采样。
+    /// </summary>
+    /// <returns>Profile 包含至少一项时返回 true。</returns>
+    public bool TryGetNearestHeading(float relativeYawDegrees, out HeadingSample sample)
+    {
+        sample = default;
+        var bestDelta = float.PositiveInfinity;
+        var found = false;
+        foreach (var item in heading_profile)
+        {
+            var delta = Mathf.Abs(Mathf.DeltaAngle(relativeYawDegrees, item.RelativeYawDegrees));
+            if (delta < bestDelta)
+            {
+                bestDelta = delta;
+                sample = item;
+                found = true;
+            }
+        }
+
+        return found;
     }
 }
 

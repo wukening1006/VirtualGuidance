@@ -2,6 +2,71 @@ using System;
 using System.Collections.Generic;
 
 /// <summary>
+/// 仅用于界面和兼容协议的目标方位标签；连续偏航角才是规划事实。
+/// </summary>
+public enum BearingLabel
+{
+    /// <summary>目标位于当前朝向前方。</summary>
+    Forward,
+    /// <summary>目标位于当前朝向左侧。</summary>
+    Left,
+    /// <summary>目标位于当前朝向右侧。</summary>
+    Right,
+    /// <summary>目标位于当前朝向后方。</summary>
+    Behind
+}
+
+/// <summary>
+/// 保存目标相对最新虚拟位姿的连续方位事实。
+/// </summary>
+public sealed class TargetBearing
+{
+    /// <summary>目标 ID。</summary>
+    public string TargetId { get; }
+    /// <summary>相对用户当前 Virtual Forward 的有符号偏航角，单位：度，范围 [-180, 180]。</summary>
+    public float RelativeYawDegrees { get; }
+    /// <summary>用户到目标锚点的水平距离，单位：米。</summary>
+    public float DistanceMeters { get; }
+    /// <summary>仅用于 UI 和兼容协议的离散标签。</summary>
+    public BearingLabel DisplayLabel { get; }
+    /// <summary>生成该事实时的虚拟位姿修订号。</summary>
+    public int PoseRevision { get; }
+
+    /// <summary>创建一项不可变目标方位事实。</summary>
+    public TargetBearing(
+        string targetId,
+        float relativeYawDegrees,
+        float distanceMeters,
+        BearingLabel displayLabel,
+        int poseRevision)
+    {
+        TargetId = targetId ?? string.Empty;
+        RelativeYawDegrees = relativeYawDegrees;
+        DistanceMeters = Math.Max(0f, distanceMeters);
+        DisplayLabel = displayLabel;
+        PoseRevision = Math.Max(0, poseRevision);
+    }
+}
+
+/// <summary>
+/// 统一管理内部方位标签与旧版方向字符串之间的协议映射。
+/// </summary>
+public static class BearingLabelProtocolMapper
+{
+    /// <summary>将内部方位标签映射为旧版 forward/left/right/behind 字符串。</summary>
+    public static string ToProtocol(BearingLabel label)
+    {
+        switch (label)
+        {
+            case BearingLabel.Left: return "left";
+            case BearingLabel.Right: return "right";
+            case BearingLabel.Behind: return "behind";
+            default: return "forward";
+        }
+    }
+}
+
+/// <summary>
 /// 区分最终目标、原路线节点、只转向锚点和需要实际到达的安全绕行点。
 /// </summary>
 public enum NavigationTargetRole
