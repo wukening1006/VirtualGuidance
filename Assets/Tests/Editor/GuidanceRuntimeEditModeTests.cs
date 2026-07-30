@@ -382,7 +382,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var task = CreateRouteTask(root);
             task.PauseForReset();
             var reset = root.AddComponent<PauseResetController>();
-            reset.PauseForReset("critical risk");
+            Assert.That(reset.PauseForReset("critical risk", SafeRecoveryPlan()), Is.True);
             var dashboard = root.AddComponent<ExperimentDashboard>();
             SetPrivateField(dashboard, "taskController", task);
             SetPrivateField(dashboard, "pauseResetController", reset);
@@ -414,7 +414,7 @@ public sealed class GuidanceRuntimeEditModeTests
             gain.SetGainEnabled(true);
             var reset = root.AddComponent<PauseResetController>();
             reset.Configure(null, null, gain);
-            reset.PauseForReset("critical risk");
+            Assert.That(reset.PauseForReset("critical risk", SafeRecoveryPlan()), Is.True);
             gain.BeginPendingTurn(1, 30f, "decision-tracking-loss");
             Assert.That(gain.IsActive, Is.True);
             Assert.That(reset.IsActive, Is.True);
@@ -954,6 +954,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var selectedTarget = request.model_candidate_ids[0];
             coordinator.HandleGuidanceResponse(ResponseForRequest(request, selectedTarget));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            SetPrivateField(coordinator, "semanticTargetSelector", (SemanticTargetSelector)null);
 
             var currentRisk = riskEvaluator.CurrentRiskState;
             var resetRequiredRisk = new PhysicalRiskState(
@@ -973,7 +974,12 @@ public sealed class GuidanceRuntimeEditModeTests
                 unsafeDirections: new[] { "forward", "left", "right" },
                 safeDirections: System.Array.Empty<string>(),
                 isCritical: true,
-                resetRequired: true);
+                resetRequired: true,
+                headingProfile: new[]
+                {
+                    new HeadingSample(0f, Vector2.up, 0.2f, HeadingSafety.Critical),
+                    new HeadingSample(60f, new Vector2(0.866f, 0.5f), 1.4f, HeadingSafety.Safe)
+                });
 
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", resetRequiredRisk);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", resetRequiredRisk);
@@ -984,6 +990,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
 
+            SetPrivateField(coordinator, "semanticTargetSelector", selector);
             pauseReset.ProcessPhysicalForward(pauseReset.SafePhysicalForward);
             coordinator.ReevaluateAfterReset();
 
@@ -1003,7 +1010,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void GuidanceCoordinator_AutomaticResetRetriesOnceThenHardStops()
+    public void GuidanceCoordinator_PhysicalRecoveryDoesNotRetryForSemanticPlanning()
     {
         var root = new GameObject("GuidanceAutomaticResetBudgetTest");
         root.SetActive(false);
@@ -1036,8 +1043,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 pauseReset,
                 null,
                 null);
-            SetPrivateField(coordinator, "semanticTargetSelector", (SemanticTargetSelector)null);
-
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
             var pauseResetDecisions = 0;
             var hardStopDecisions = 0;
             coordinator.RuntimeIntervention += info =>
@@ -1051,19 +1058,13 @@ public sealed class GuidanceRuntimeEditModeTests
             pauseReset.ProcessPhysicalForward(pauseReset.SafePhysicalForward);
             coordinator.ReevaluateAfterReset();
 
-            Assert.That(pauseResetDecisions, Is.EqualTo(2));
-            Assert.That(coordinator.AutomaticResetAttempts, Is.EqualTo(2));
-            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
-
-            pauseReset.ProcessPhysicalForward(pauseReset.SafePhysicalForward);
-            coordinator.ReevaluateAfterReset();
-            coordinator.ReevaluateAfterReset();
-
-            Assert.That(hardStopDecisions, Is.EqualTo(1));
-            Assert.That(coordinator.AutomaticResetAttempts, Is.EqualTo(2));
-            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
-            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
-            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+            Assert.That(pauseResetDecisions, Is.EqualTo(1));
+            Assert.That(hardStopDecisions, Is.Zero);
+            Assert.That(coordinator.AutomaticResetAttempts, Is.Zero);
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
         }
         finally
         {
@@ -1541,7 +1542,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gazeText.text, Is.EqualTo("请看向前方"));
             Assert.That(gain.IsActive, Is.True);
 
-            pauseReset.PauseForReset("All directions unsafe.");
+            Assert.That(pauseReset.PauseForReset("All directions unsafe.", SafeRecoveryPlan()), Is.True);
 
             Assert.That(pauseReset.IsPaused, Is.True);
             Assert.That(narrationText.text, Is.Empty);
@@ -4216,6 +4217,13 @@ public sealed class GuidanceRuntimeEditModeTests
     private static float YawOf(Vector2 forward)
     {
         return Mathf.Atan2(forward.x, forward.y) * Mathf.Rad2Deg;
+    }
+
+    private static RecoveryHeadingPlan SafeRecoveryPlan()
+    {
+        return new RecoveryHeadingPlan(
+            new HeadingSample(0f, Vector2.up, 2f, HeadingSafety.Safe),
+            2f);
     }
 
     private static ExhibitMetadata CreateExhibit(

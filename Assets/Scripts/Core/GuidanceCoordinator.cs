@@ -63,13 +63,34 @@ public sealed class RuntimeInterventionInfo
 }
 
 /// <summary>
+/// 表示自动物理朝向恢复的显式生命周期。
+/// </summary>
+public enum GuidanceRecoveryState
+{
+    /// <summary>当前没有自动恢复。</summary>
+    Inactive,
+    /// <summary>正在停止 Guidance、Gain 与在途请求。</summary>
+    StoppingGuidance,
+    /// <summary>正在从 Heading Profile 选择安全朝向。</summary>
+    SelectingHeading,
+    /// <summary>等待参与者原地转向冻结朝向。</summary>
+    WaitingForUserTurn,
+    /// <summary>参与者已到达目标朝向，正在等待稳定。</summary>
+    Stabilizing,
+    /// <summary>正在使用最新物理事实复验冻结朝向。</summary>
+    Revalidating,
+    /// <summary>物理恢复已完成，正在恢复任务并重新规划。</summary>
+    Replanning,
+    /// <summary>物理状态已明确不可恢复，流程终止。</summary>
+    Terminated
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
 public sealed class GuidanceCoordinator : MonoBehaviour
 {
-    private const int MaxAutomaticResetAttempts = 2;
-
     [SerializeField] private AgentClient agentClient;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
     [SerializeField] private GuidanceTaskController taskController;
@@ -107,6 +128,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private bool recoveryDecisionPending;
     private int automaticResetAttempts;
     private string resetAbandonedTargetId = string.Empty;
+    private readonly RecoveryHeadingPlanner recoveryHeadingPlanner = new RecoveryHeadingPlanner();
+    private RecoveryHeadingPlan frozenRecoveryPlan;
+    private GuidanceRecoveryState recoveryState = GuidanceRecoveryState.Inactive;
+    private bool holdForReplan;
+    private string holdRiskSnapshotId = string.Empty;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -127,6 +153,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceTarget> TargetReached;
     /// <summary>NavigableDetour 完成且准备返回原路线时触发。</summary>
     public event Action<GuidanceTarget> DetourCompleted;
+    /// <summary>自动物理恢复状态发生变化时触发。</summary>
+    public event Action<GuidanceRecoveryState> RecoveryStateChanged;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -144,6 +172,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         : null;
     /// <summary>当前会话已真正启动的自动 Reset 次数。</summary>
     public int AutomaticResetAttempts => automaticResetAttempts;
+    /// <summary>当前自动物理恢复状态。</summary>
+    public GuidanceRecoveryState RecoveryState => recoveryState;
+    /// <summary>当前恢复流程冻结的具体物理朝向计划。</summary>
+    public RecoveryHeadingPlan FrozenRecoveryPlan => frozenRecoveryPlan;
+    /// <summary>当前是否因没有可执行语义候选而等待下一份事实重规划。</summary>
+    public bool IsHoldingForReplan => holdForReplan;
 
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
 
@@ -157,6 +191,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindArrival();
         BindRotationGain();
         BindRuntimeSafety();
+        BindRecoveryController();
         BindMotionDetector();
         ConfigureTurnCueTracker();
     }
@@ -167,6 +202,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindArrival();
         UnbindRotationGain();
         UnbindRuntimeSafety();
+        UnbindRecoveryController();
         UnbindMotionDetector();
     }
 
@@ -191,6 +227,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindArrival();
         UnbindRotationGain();
         UnbindRuntimeSafety();
+        UnbindRecoveryController();
         UnbindMotionDetector();
 
         if (client != null)
@@ -214,6 +251,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindArrival();
         BindRotationGain();
         BindRuntimeSafety();
+        BindRecoveryController();
         BindMotionDetector();
         ConfigureTurnCueTracker();
     }
@@ -231,6 +269,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// </summary>
     public void RequestNextGuidance()
     {
+        holdForReplan = false;
+        holdRiskSnapshotId = string.Empty;
         if (requestClient == null)
         {
             requestClient = agentClient;
@@ -567,7 +607,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
-    /// ResetCompleted 且风险重算安全后恢复原任务，发布 Replanning 并请求下一段 Guidance。
+    /// ResetCompleted 且物理复验安全后恢复原任务，发布 Replanning 并请求下一段 Guidance。
     /// </summary>
     /// <returns>任务从 PausedForReset 恢复并进入导航时返回 true。</returns>
     public bool ResumeAfterResetAndReplan()
@@ -594,13 +634,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         automaticResetAttempts = 0;
         resetAbandonedTargetId = string.Empty;
+        frozenRecoveryPlan = null;
+        TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
         Replanning?.Invoke(state);
         RequestNextGuidance();
         return true;
     }
 
     /// <summary>
-    /// Reset 完成后基于最新 Physical Pose 统一复验；成功时自动恢复并重规划，失败时有限重试或 HardStop。
+    /// Reset 完成后基于最新 Physical Pose 统一复验；不以语义候选存在作为恢复完成条件。
     /// </summary>
     public void ReevaluateAfterReset()
     {
@@ -614,6 +656,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryDecisionPending = true;
         try
         {
+            TransitionRecoveryTo(GuidanceRecoveryState.Revalidating);
             // EvaluateNow 会同步发布 RiskStateChanged；Reset 抑制门保证该事件只更新事实与日志。
             var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
             if (!HasTrustedRecoveryFacts(riskState))
@@ -623,17 +666,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
-            var safeCandidate = FindRuntimeSafetyCandidate(
-                riskState,
-                resetAbandonedTargetId,
-                true);
-            if (safeCandidate != null)
+            // 兼容由 Dashboard 或旧场景直接启动的 Reset：桥层已经持有同一冻结物理朝向。
+            if (frozenRecoveryPlan == null && pauseResetController.ActivePlan != null)
             {
-                CompleteResetAndReplan();
-                return;
+                frozenRecoveryPlan = pauseResetController.ActivePlan;
             }
 
-            if (CanStartAutomaticReset(riskState))
+            if (recoveryHeadingPlanner.IsFrozenHeadingCritical(frozenRecoveryPlan, riskState.heading_profile))
             {
                 if (!pauseResetController.ResumeAfterReset())
                 {
@@ -644,14 +683,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 TriggerPauseReset(
                     null,
                     riskState,
-                    "Reset completed without an eligible safety candidate; retrying automatic reset.");
+                    "Frozen recovery heading became critical; selecting a new physical heading.");
                 return;
             }
 
-            TriggerRecoveryHardStop(
-                automaticResetAttempts >= MaxAutomaticResetAttempts
-                    ? "Automatic reset recovery budget was exhausted without an eligible safety candidate."
-                    : "Automatic reset could not find a meaningful safe turning direction.");
+            CompleteResetAndReplan();
         }
         finally
         {
@@ -661,6 +697,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void CompleteResetAndReplan()
     {
+        TransitionRecoveryTo(GuidanceRecoveryState.Replanning);
         if (!pauseResetController.ResumeAfterReset())
         {
             TriggerRecoveryHardStop("Reset completed but could not be released.");
@@ -679,18 +716,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         resetAbandonedTargetId = string.Empty;
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
             null,
-            "Reset produced an eligible safety candidate; replanning with the latest risk state.",
+            "Physical heading recovery completed; replanning with the latest facts.",
             RuntimeGuidanceSafetyDecision.SoftReroute,
             false,
             0,
-            true));
+            false));
+        frozenRecoveryPlan = null;
+        TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
         Replanning?.Invoke(state);
         RequestNextGuidance();
     }
 
     private void TriggerRecoveryHardStop(string reason)
     {
+        TransitionRecoveryTo(GuidanceRecoveryState.Terminated);
         pauseResetController?.CancelReset(reason);
+        taskController?.EndTask();
         TriggerRuntimeIntervention(null, reason);
     }
 
@@ -787,8 +828,27 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleRuntimeRiskStateChanged(PhysicalRiskState riskState)
     {
-        if (IsResetRecoveryActive || runtimeReplanPending)
+        if (IsResetRecoveryActive)
         {
+            HandleActiveRecoveryRiskChanged(riskState);
+            return;
+        }
+
+        if (runtimeReplanPending)
+        {
+            return;
+        }
+
+        if (holdForReplan)
+        {
+            if (riskState == null ||
+                string.Equals(holdRiskSnapshotId, riskState.risk_snapshot_id, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            holdRiskSnapshotId = riskState.risk_snapshot_id ?? string.Empty;
+            RequestNextGuidance();
             return;
         }
 
@@ -864,6 +924,92 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
+    private void BindRecoveryController()
+    {
+        if (pauseResetController == null)
+        {
+            return;
+        }
+
+        pauseResetController.StateChanged -= HandleResetStateChanged;
+        pauseResetController.StateChanged += HandleResetStateChanged;
+        pauseResetController.ResetCompleted -= HandleResetCompleted;
+        pauseResetController.ResetCompleted += HandleResetCompleted;
+    }
+
+    private void UnbindRecoveryController()
+    {
+        if (pauseResetController == null)
+        {
+            return;
+        }
+
+        pauseResetController.StateChanged -= HandleResetStateChanged;
+        pauseResetController.ResetCompleted -= HandleResetCompleted;
+    }
+
+    private void HandleResetStateChanged(ResetLifecycleState state)
+    {
+        if (state == ResetLifecycleState.Completed)
+        {
+            TransitionRecoveryTo(GuidanceRecoveryState.Stabilizing);
+        }
+        else if (state == ResetLifecycleState.Cancelled &&
+                 recoveryState != GuidanceRecoveryState.Terminated)
+        {
+            TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
+        }
+    }
+
+    private void HandleResetCompleted(ResetEventInfo _)
+    {
+        ReevaluateAfterReset();
+    }
+
+    private void HandleActiveRecoveryRiskChanged(PhysicalRiskState riskState)
+    {
+        if (recoveryDecisionPending ||
+            recoveryState != GuidanceRecoveryState.WaitingForUserTurn ||
+            frozenRecoveryPlan == null)
+        {
+            return;
+        }
+
+        if (!HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerRecoveryHardStop("Automatic recovery lost trusted tracking, calibration, or boundary facts.");
+            return;
+        }
+
+        if (!recoveryHeadingPlanner.IsFrozenHeadingCritical(frozenRecoveryPlan, riskState.heading_profile))
+        {
+            return;
+        }
+
+        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading);
+        var replacement = recoveryHeadingPlanner.Plan(
+            riskState.heading_profile,
+            TryGetRecoverySemanticYaw(null),
+            frozenRecoveryPlan);
+        if (!replacement.IsSuccess)
+        {
+            TriggerRecoveryHardStop(RecoveryFailureReason(replacement.Failure));
+            return;
+        }
+
+        frozenRecoveryPlan = replacement;
+        automaticResetAttempts++;
+        if (!pauseResetController.PauseForReset(
+                "Frozen recovery heading became critical; using a newly selected physical heading.",
+                replacement))
+        {
+            TriggerRecoveryHardStop("Automatic recovery controller rejected the replacement heading plan.");
+            return;
+        }
+
+        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn);
+    }
+
     private void TriggerSoftReroute(
         GuidanceTarget safeCandidate,
         string reason = "Active planned direction remained unsafe for two consecutive risk samples.")
@@ -914,19 +1060,20 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (IsResetRecoveryActive || automaticResetAttempts >= MaxAutomaticResetAttempts)
+        if (IsResetRecoveryActive)
         {
             return;
         }
 
         var resolvedReason = string.IsNullOrWhiteSpace(reason)
-            ? "No eligible safety candidate is available; starting automatic reset."
+            ? "Planned movement is physically unsafe; starting automatic heading recovery."
             : reason;
         if (string.IsNullOrWhiteSpace(resetAbandonedTargetId) && response != null)
         {
             resetAbandonedTargetId = response.selected_target ?? string.Empty;
         }
 
+        TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance);
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         handlingGainTermination = true;
@@ -939,9 +1086,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Cancelled);
-        taskController.PauseForReset();
+        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading);
+        var semanticYaw = TryGetRecoverySemanticYaw(response);
+        var nextPlan = recoveryHeadingPlanner.Plan(
+            riskState != null ? riskState.heading_profile : null,
+            semanticYaw,
+            frozenRecoveryPlan);
+        if (!nextPlan.IsSuccess)
+        {
+            TriggerRecoveryHardStop(RecoveryFailureReason(nextPlan.Failure));
+            return;
+        }
 
+        taskController.PauseForReset();
         automaticResetAttempts++;
+        frozenRecoveryPlan = nextPlan;
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
             response,
             resolvedReason,
@@ -949,7 +1108,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             true,
             automaticResetAttempts,
             false));
-        pauseResetController.PauseForReset(resolvedReason, riskState);
+        if (!pauseResetController.PauseForReset(resolvedReason, frozenRecoveryPlan))
+        {
+            TriggerRecoveryHardStop("Automatic recovery controller rejected the frozen heading plan.");
+            return;
+        }
+
+        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn);
     }
 
     private GuidanceTarget FindRuntimeSafetyCandidate(
@@ -1020,20 +1185,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (CanStartAutomaticReset(riskState))
-        {
-            TriggerPauseReset(
-                null,
-                riskState,
-                "Pending guidance candidates became unsafe; starting automatic reset.");
-            return;
-        }
-
-        TriggerRuntimeIntervention(
-            null,
-            IsUserInsidePhysicalBoundary(riskState)
-                ? "Pending guidance has no eligible candidate or meaningful reset direction."
-                : "The user is outside the physical boundary.");
+        EnterHoldAndReplan(
+            riskState,
+            "Pending guidance candidates are not currently executable; holding for replanning.");
     }
 
     private bool HasCurrentFrozenSafetyCandidate(
@@ -1066,20 +1220,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleUnavailableCandidatePlanning(PhysicalRiskState riskState)
     {
-        if (CanStartAutomaticReset(riskState))
+        if (!HasTrustedRecoveryFacts(riskState))
         {
-            TriggerPauseReset(
+            TriggerRuntimeIntervention(
                 null,
-                riskState,
-                "No eligible navigation candidate is currently available; starting automatic reset.");
+                "Guidance planning safety facts are unavailable or invalid.");
             return;
         }
 
-        TriggerRuntimeIntervention(
-            null,
-            HasTrustedRecoveryFacts(riskState)
-                ? "No eligible navigation candidate or meaningful reset direction is available."
-                : "Guidance planning safety facts are unavailable or invalid.");
+        EnterHoldAndReplan(
+            riskState,
+            "No semantic candidate is currently executable; holding while the task remains active.");
     }
 
     private bool HasTrustedRecoveryFacts(PhysicalRiskState riskState)
@@ -1099,16 +1250,77 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private bool CanStartAutomaticReset(PhysicalRiskState riskState)
     {
-        if (automaticResetAttempts >= MaxAutomaticResetAttempts || !HasTrustedRecoveryFacts(riskState))
+        if (!HasTrustedRecoveryFacts(riskState))
         {
             return false;
         }
 
-        var maximumClearance = Mathf.Max(
-            riskState.clearance_forward,
-            riskState.clearance_left,
-            riskState.clearance_right);
-        return !riskEvaluator.IsCriticalClearance(maximumClearance);
+        return recoveryHeadingPlanner.Plan(riskState.heading_profile).IsSuccess;
+    }
+
+    private void EnterHoldAndReplan(PhysicalRiskState riskState, string reason)
+    {
+        requestClient?.CancelPendingRequest();
+        guidanceExecutor?.Clear();
+        handlingGainTermination = true;
+        rotationGainController?.AbortGain("hold_and_replan");
+        handlingGainTermination = false;
+        arrivalDetector?.WatchReservation(null);
+        AbandonReservations();
+        activeSnapshot = null;
+        activeResponse = null;
+        turnCueCompletionTracker.Cancel();
+        ResetRuntimeSafetySampling();
+        if (requestPhase == GuidanceRequestPhase.Requested ||
+            requestPhase == GuidanceRequestPhase.Received ||
+            requestPhase == GuidanceRequestPhase.Verified ||
+            requestPhase == GuidanceRequestPhase.Executing)
+        {
+            SetRequestPhase(GuidanceRequestPhase.Cancelled);
+        }
+
+        holdForReplan = true;
+        holdRiskSnapshotId = riskState != null ? riskState.risk_snapshot_id ?? string.Empty : string.Empty;
+        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+            null,
+            reason,
+            RuntimeGuidanceSafetyDecision.SoftReroute,
+            false,
+            0,
+            false));
+        Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
+    }
+
+    private float? TryGetRecoverySemanticYaw(GuidanceResponse response)
+    {
+        var targetId = response != null ? response.selected_target : resetAbandonedTargetId;
+        if (string.IsNullOrWhiteSpace(targetId) && taskController != null)
+        {
+            targetId = taskController.RuntimeState.nextTargetId;
+        }
+
+        return navigationTargets != null &&
+               navigationTargets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees)
+            ? relativeYawDegrees
+            : (float?)null;
+    }
+
+    private static string RecoveryFailureReason(RecoveryHeadingFailure failure)
+    {
+        return failure == RecoveryHeadingFailure.NoAcceptableHeading
+            ? "No acceptable physical recovery heading is available."
+            : "Automatic recovery has no valid Heading Profile.";
+    }
+
+    private void TransitionRecoveryTo(GuidanceRecoveryState nextState)
+    {
+        if (recoveryState == nextState)
+        {
+            return;
+        }
+
+        recoveryState = nextState;
+        RecoveryStateChanged?.Invoke(recoveryState);
     }
 
     private bool HasFiniteNaturalDirectionClearances(PhysicalRiskState riskState)

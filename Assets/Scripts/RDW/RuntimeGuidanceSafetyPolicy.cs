@@ -9,7 +9,7 @@ public enum RuntimeGuidanceSafetyDecision
     Continue,
     /// <summary>停止当前导览，并基于最新风险重新规划。</summary>
     SoftReroute,
-    /// <summary>暂无安全语义候选，暂停任务并执行可恢复的安全转向。</summary>
+    /// <summary>当前物理动作不安全且无法语义绕行，执行自动安全朝向恢复。</summary>
     PauseReset,
     /// <summary>立即停止全部导览行为并进入安全保持。</summary>
     HardStop

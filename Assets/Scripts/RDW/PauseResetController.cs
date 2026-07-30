@@ -40,8 +40,8 @@ public sealed class ResetEventInfo
 }
 
 /// <summary>
-/// 执行 Turn-to-Safe-Direction Reset：停止 Guidance/Gain 表现，选择安全 Physical Forward，
-/// 并在用户原地转入容差后发布 ResetCompleted。任务恢复与 Replanning 由实验协调层处理。
+/// 执行 Turn-to-Safe-Direction Reset：停止 Guidance/Gain 表现并执行协调层冻结的 Physical Forward，
+/// 在用户原地转入容差后发布 ResetCompleted。航向选择、复验与重规划由实验协调层处理。
 /// </summary>
 public sealed class PauseResetController : MonoBehaviour
 {
@@ -65,6 +65,8 @@ public sealed class PauseResetController : MonoBehaviour
     private string resetReason = string.Empty;
     private string safeDirection = string.Empty;
     private Vector2 safePhysicalForward = Vector2.up;
+    private RecoveryHeadingPlan activePlan;
+    private readonly RecoveryHeadingPlanner compatibilityPlanner = new RecoveryHeadingPlanner();
 
     /// <summary>Reset 状态发生变化时触发。</summary>
     public event Action<ResetLifecycleState> StateChanged;
@@ -81,10 +83,12 @@ public sealed class PauseResetController : MonoBehaviour
                             state == ResetLifecycleState.Completed;
     /// <summary>当前 Reset 生命周期状态。</summary>
     public ResetLifecycleState State => state;
-    /// <summary>本次 Reset 选择的 forward、left 或 right。</summary>
+    /// <summary>本次 Reset 选择的显示方向。</summary>
     public string SafeDirection => safeDirection;
     /// <summary>本次 Reset 固定的 Physical Room 目标朝向。</summary>
     public Vector2 SafePhysicalForward => safePhysicalForward;
+    /// <summary>本次 Reset 正在执行的冻结恢复计划。</summary>
+    public RecoveryHeadingPlan ActivePlan => activePlan;
     /// <summary>当前 Physical Forward 到安全目标的剩余角度，单位：度。</summary>
     public float RemainingYawDegrees => userPoseTracker == null
         ? 180f
@@ -116,27 +120,58 @@ public sealed class PauseResetController : MonoBehaviour
     }
 
     /// <summary>
-    /// 立即停止可能改变用户朝向的表现并启动安全转向；重复风险刷新不会重启活动 Reset。
+    /// 使用已冻结的恢复航向立即停止表现并启动安全转向；重复风险刷新不会重启活动 Reset。
     /// </summary>
     /// <param name="reason">触发 Reset 的安全原因。</param>
-    /// <param name="riskState">触发时风险快照；为空时使用风险计算器最近状态。</param>
-    public void PauseForReset(string reason, PhysicalRiskState riskState = null)
+    /// <param name="plan">由协调层选择并冻结的恢复航向。</param>
+    /// <returns>成功启动恢复时返回 true。</returns>
+    public bool PauseForReset(string reason, RecoveryHeadingPlan plan)
     {
+        if (plan == null || !plan.IsSuccess)
+        {
+            return false;
+        }
+
         IsPaused = true;
         rotationGainController?.AbortGain("reset_required");
         guidanceExecutor?.Clear();
 
         if (state == ResetLifecycleState.TurningToSafeDirection || state == ResetLifecycleState.Required)
         {
-            return;
+            activePlan = plan;
+            safePhysicalForward = plan.SafePhysicalForward;
+            safeDirection = ToDisplayDirection(plan.RelativeYawDegrees);
+            rejectionPanel?.Show(BuildInstruction(safeDirection));
+            ResetStarted?.Invoke(CreateEventInfo());
+            return true;
         }
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_required" : reason;
         TransitionTo(ResetLifecycleState.Required);
-        SelectSafeDirection(riskState ?? riskEvaluator?.CurrentRiskState);
+        activePlan = plan;
+        safePhysicalForward = plan.SafePhysicalForward;
+        safeDirection = ToDisplayDirection(plan.RelativeYawDegrees);
         rejectionPanel?.Show(BuildInstruction(safeDirection));
         TransitionTo(ResetLifecycleState.TurningToSafeDirection);
         ResetStarted?.Invoke(CreateEventInfo());
+        return true;
+    }
+
+    /// <summary>
+    /// 兼容旧调用边界：从风险快照规划一次航向后立即冻结；生产流程应显式传入 RecoveryHeadingPlan。
+    /// </summary>
+    /// <param name="reason">触发 Reset 的安全原因。</param>
+    /// <param name="riskState">触发时风险快照；为空时使用风险计算器最近状态。</param>
+    public void PauseForReset(string reason, PhysicalRiskState riskState = null)
+    {
+        var facts = riskState ?? riskEvaluator?.CurrentRiskState;
+        var plan = compatibilityPlanner.Plan(facts != null ? facts.heading_profile : null);
+        if (!plan.IsSuccess)
+        {
+            plan = CreateLegacyForwardPlan(facts);
+        }
+
+        PauseForReset(reason, plan);
     }
 
     /// <summary>
@@ -173,6 +208,7 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         IsPaused = false;
+        activePlan = null;
         rejectionPanel?.Hide();
         TransitionTo(ResetLifecycleState.Inactive);
         return true;
@@ -188,41 +224,9 @@ public sealed class PauseResetController : MonoBehaviour
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_cancelled" : reason;
         IsPaused = false;
+        activePlan = null;
         rejectionPanel?.Hide();
         TransitionTo(ResetLifecycleState.Cancelled);
-    }
-
-    private void SelectSafeDirection(PhysicalRiskState riskState)
-    {
-        var currentForward = userPoseTracker != null
-            ? NormalizeForward(userPoseTracker.PhysicalForwardXZ)
-            : Vector2.up;
-        safeDirection = "forward";
-        var bestClearance = riskState != null ? riskState.clearance_forward : 0f;
-
-        if (riskState != null && riskState.clearance_left > bestClearance)
-        {
-            safeDirection = "left";
-            bestClearance = riskState.clearance_left;
-        }
-
-        if (riskState != null && riskState.clearance_right > bestClearance)
-        {
-            safeDirection = "right";
-        }
-
-        if (safeDirection == "left")
-        {
-            safePhysicalForward = new Vector2(-currentForward.y, currentForward.x);
-        }
-        else if (safeDirection == "right")
-        {
-            safePhysicalForward = new Vector2(currentForward.y, -currentForward.x);
-        }
-        else
-        {
-            safePhysicalForward = currentForward;
-        }
     }
 
     private ResetEventInfo CreateEventInfo()
@@ -244,6 +248,64 @@ public sealed class PauseResetController : MonoBehaviour
     private static Vector2 NormalizeForward(Vector2 forward)
     {
         return forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+    }
+
+    private RecoveryHeadingPlan CreateLegacyForwardPlan(PhysicalRiskState riskState)
+    {
+        var currentForward = userPoseTracker != null
+            ? NormalizeForward(userPoseTracker.PhysicalForwardXZ)
+            : Vector2.up;
+        var samples = new[]
+        {
+            CreateLegacySample(0f, currentForward, "forward", riskState != null ? riskState.clearance_forward : 0f, riskState),
+            CreateLegacySample(-90f, new Vector2(-currentForward.y, currentForward.x), "left", riskState != null ? riskState.clearance_left : 0f, riskState),
+            CreateLegacySample(90f, new Vector2(currentForward.y, -currentForward.x), "right", riskState != null ? riskState.clearance_right : 0f, riskState)
+        };
+        return compatibilityPlanner.Plan(samples);
+    }
+
+    private HeadingSample CreateLegacySample(
+        float relativeYawDegrees,
+        Vector2 physicalForward,
+        string direction,
+        float clearanceMeters,
+        PhysicalRiskState riskState)
+    {
+        var safety = clearanceMeters <= 0f || float.IsNaN(clearanceMeters) || float.IsInfinity(clearanceMeters)
+            ? HeadingSafety.Critical
+            : Contains(riskState != null ? riskState.unsafe_directions : null, direction)
+                ? HeadingSafety.Unsafe
+                : Contains(riskState != null ? riskState.safe_directions : null, direction)
+                    ? HeadingSafety.Safe
+                    : riskEvaluator != null && riskEvaluator.IsCriticalClearance(clearanceMeters)
+                        ? HeadingSafety.Critical
+                        : HeadingSafety.Unknown;
+        return new HeadingSample(relativeYawDegrees, physicalForward, clearanceMeters, safety);
+    }
+
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
+    {
+        if (values == null)
+        {
+            return false;
+        }
+
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ToDisplayDirection(float relativeYawDegrees)
+    {
+        if (relativeYawDegrees < -5f) return "left";
+        if (relativeYawDegrees > 5f) return "right";
+        return "forward";
     }
 
     private static string BuildInstruction(string direction)
