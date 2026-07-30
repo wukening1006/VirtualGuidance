@@ -195,6 +195,10 @@ public sealed class CandidateAssessment
     public CandidateExecutionState ExecutionState { get; }
     /// <summary>不可执行或未知时的稳定原因码。</summary>
     public string Reason { get; }
+    /// <summary>候选是否通过当前任务历史与角色规则。</summary>
+    public bool IsSemanticallyEligible { get; }
+    /// <summary>未通过语义资格时的稳定排除原因码。</summary>
+    public string SemanticExclusionReason { get; }
     /// <summary>当前是否可立即执行建议动作。</summary>
     public bool IsExecutable => ExecutionState == CandidateExecutionState.Executable;
 
@@ -204,13 +208,17 @@ public sealed class CandidateAssessment
         TargetBearing bearing,
         GuidanceAction suggestedAction,
         CandidateExecutionState executionState,
-        string reason)
+        string reason,
+        bool isSemanticallyEligible = true,
+        string semanticExclusionReason = "")
     {
         Candidate = candidate;
         Bearing = bearing;
         SuggestedAction = suggestedAction;
         ExecutionState = executionState;
         Reason = reason ?? string.Empty;
+        IsSemanticallyEligible = isSemanticallyEligible;
+        SemanticExclusionReason = semanticExclusionReason ?? string.Empty;
     }
 }
 
@@ -302,6 +310,8 @@ public sealed class CandidateSetReservation
     public IReadOnlyList<string> AllowedCandidateIds { get; }
     /// <summary>候选角色、方向和语义元数据的冻结副本。</summary>
     public IReadOnlyList<NavigationCandidate> Candidates { get; }
+    /// <summary>包含物理资格与语义排除原因的冻结诊断副本。</summary>
+    public IReadOnlyList<CandidateAssessment> Assessments { get; }
     /// <summary>当前任务内的 Candidate Reservation 代际。</summary>
     public int Generation { get; }
     /// <summary>构建候选时的 Target Registry 修订号。</summary>
@@ -341,6 +351,7 @@ public sealed class CandidateSetReservation
             candidateSet != null ? candidateSet.ModelCandidateIds : null,
             candidateSet != null ? candidateSet.AllowedCandidateIds : null,
             candidateSet != null ? candidateSet.Candidates : null,
+            candidateSet != null ? candidateSet.Assessments : null,
             generation,
             candidateSet != null ? candidateSet.RegistryRevision : 0,
             createdAtUtc,
@@ -363,6 +374,7 @@ public sealed class CandidateSetReservation
         IEnumerable<string> modelCandidateIds,
         IEnumerable<string> allowedCandidateIds,
         IEnumerable<NavigationCandidate> candidates,
+        IEnumerable<CandidateAssessment> assessments,
         int generation,
         int registryRevision,
         string createdAtUtc,
@@ -383,6 +395,8 @@ public sealed class CandidateSetReservation
         AllowedCandidateIds = ReadOnlyCopy(allowedCandidateIds);
         Candidates = Array.AsReadOnly(new List<NavigationCandidate>(
             candidates ?? Array.Empty<NavigationCandidate>()).ToArray());
+        Assessments = Array.AsReadOnly(new List<CandidateAssessment>(
+            assessments ?? Array.Empty<CandidateAssessment>()).ToArray());
         Generation = Math.Max(0, generation);
         RegistryRevision = Math.Max(0, registryRevision);
         CreatedAtUtc = createdAtUtc ?? string.Empty;
@@ -407,6 +421,7 @@ public sealed class CandidateSetReservation
             ModelCandidateIds,
             AllowedCandidateIds,
             Candidates,
+            Assessments,
             Generation,
             RegistryRevision,
             CreatedAtUtc,

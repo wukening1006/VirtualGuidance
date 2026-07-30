@@ -86,6 +86,34 @@ public enum GuidanceRecoveryState
 }
 
 /// <summary>
+/// 保存一次自动恢复状态转换的前后状态、原因与当时冻结的恢复计划。
+/// </summary>
+public sealed class GuidanceRecoveryTransitionInfo
+{
+    /// <summary>转换前状态。</summary>
+    public GuidanceRecoveryState PreviousState { get; }
+    /// <summary>转换后状态。</summary>
+    public GuidanceRecoveryState NextState { get; }
+    /// <summary>触发转换的稳定诊断原因。</summary>
+    public string Reason { get; }
+    /// <summary>转换发生时冻结的恢复计划；尚未选向时可为 null。</summary>
+    public RecoveryHeadingPlan RecoveryPlan { get; }
+
+    /// <summary>创建不可变恢复状态转换事件。</summary>
+    public GuidanceRecoveryTransitionInfo(
+        GuidanceRecoveryState previousState,
+        GuidanceRecoveryState nextState,
+        string reason,
+        RecoveryHeadingPlan recoveryPlan)
+    {
+        PreviousState = previousState;
+        NextState = nextState;
+        Reason = reason ?? string.Empty;
+        RecoveryPlan = recoveryPlan;
+    }
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
@@ -155,6 +183,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceTarget> DetourCompleted;
     /// <summary>自动物理恢复状态发生变化时触发。</summary>
     public event Action<GuidanceRecoveryState> RecoveryStateChanged;
+    /// <summary>自动物理恢复状态发生变化时发布完整诊断上下文。</summary>
+    public event Action<GuidanceRecoveryTransitionInfo> RecoveryTransitioned;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -636,8 +666,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         automaticResetAttempts = 0;
         resetAbandonedTargetId = string.Empty;
+        TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "reset_resumed_and_replanning");
         frozenRecoveryPlan = null;
-        TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
         Replanning?.Invoke(state);
         RequestNextGuidance();
         return true;
@@ -658,7 +688,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryDecisionPending = true;
         try
         {
-            TransitionRecoveryTo(GuidanceRecoveryState.Revalidating);
+            TransitionRecoveryTo(GuidanceRecoveryState.Revalidating, "reset_completed");
             // EvaluateNow 会同步发布 RiskStateChanged；Reset 抑制门保证该事件只更新事实与日志。
             var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
             if (!HasTrustedRecoveryFacts(riskState))
@@ -699,7 +729,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void CompleteResetAndReplan()
     {
-        TransitionRecoveryTo(GuidanceRecoveryState.Replanning);
+        TransitionRecoveryTo(GuidanceRecoveryState.Replanning, "recovery_heading_revalidated");
         if (!pauseResetController.ResumeAfterReset())
         {
             TriggerRecoveryHardStop("Reset completed but could not be released.");
@@ -723,15 +753,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             false,
             0,
             false));
+        TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
         frozenRecoveryPlan = null;
-        TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
         Replanning?.Invoke(state);
         RequestNextGuidance();
     }
 
     private void TriggerRecoveryHardStop(string reason)
     {
-        TransitionRecoveryTo(GuidanceRecoveryState.Terminated);
+        TransitionRecoveryTo(GuidanceRecoveryState.Terminated, reason);
         pauseResetController?.CancelReset(reason);
         taskController?.EndTask();
         TriggerRuntimeIntervention(null, reason);
@@ -954,12 +984,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         if (state == ResetLifecycleState.Completed)
         {
-            TransitionRecoveryTo(GuidanceRecoveryState.Stabilizing);
+            TransitionRecoveryTo(GuidanceRecoveryState.Stabilizing, "user_turn_completed");
         }
         else if (state == ResetLifecycleState.Cancelled &&
                  recoveryState != GuidanceRecoveryState.Terminated)
         {
-            TransitionRecoveryTo(GuidanceRecoveryState.Inactive);
+            TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "reset_cancelled");
         }
     }
 
@@ -995,7 +1025,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading);
+        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "frozen_heading_became_critical");
         var replacement = recoveryHeadingPlanner.Plan(
             riskState.heading_profile,
             TryGetRecoverySemanticYaw(null),
@@ -1016,7 +1046,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn);
+        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn, "replacement_heading_selected");
     }
 
     private void TriggerSoftReroute(
@@ -1082,7 +1112,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             resetAbandonedTargetId = response.selected_target ?? string.Empty;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance);
+        TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance, resolvedReason);
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         handlingGainTermination = true;
@@ -1095,7 +1125,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Cancelled);
-        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading);
+        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "guidance_stopped");
         var semanticYaw = TryGetRecoverySemanticYaw(response);
         var nextPlan = recoveryHeadingPlanner.Plan(
             riskState != null ? riskState.heading_profile : null,
@@ -1123,7 +1153,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn);
+        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn, "recovery_heading_selected");
     }
 
     /// <summary>
@@ -1353,15 +1383,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             : "Automatic recovery has no valid Heading Profile.";
     }
 
-    private void TransitionRecoveryTo(GuidanceRecoveryState nextState)
+    private void TransitionRecoveryTo(GuidanceRecoveryState nextState, string reason = "")
     {
         if (recoveryState == nextState)
         {
             return;
         }
 
+        var previousState = recoveryState;
         recoveryState = nextState;
         RecoveryStateChanged?.Invoke(recoveryState);
+        RecoveryTransitioned?.Invoke(new GuidanceRecoveryTransitionInfo(
+            previousState,
+            recoveryState,
+            reason,
+            frozenRecoveryPlan));
     }
 
     private bool HasFiniteNaturalDirectionClearances(PhysicalRiskState riskState)
@@ -1631,13 +1667,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (CanStartAutomaticReset(riskState))
-        {
-            TriggerPauseReset(activeResponse, riskState, $"{reason}: no eligible reroute candidate.");
-            return;
-        }
-
-        TriggerRuntimeIntervention(activeResponse, $"{reason}: no eligible reroute candidate.");
+        // 动作软失败和候选耗尽都不是物理危险证据；保持任务运行并等待新事实重规划。
+        EnterHoldAndReplan(
+            riskState,
+            $"{reason}: no eligible reroute candidate; holding for replanning.");
     }
 
     private void CompleteTurnCueAfterRiskReevaluation()

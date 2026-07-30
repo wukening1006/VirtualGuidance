@@ -101,14 +101,23 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
 
         var candidates = new List<NavigationCandidate>();
-        TryAddCandidate(candidates, runtimeState, runtimeState.finalTargetId, NavigationTargetRole.FinalTarget);
+        var assessments = new List<CandidateAssessment>();
+        TryAddCandidate(
+            candidates,
+            assessments,
+            runtimeState,
+            riskState,
+            runtimeState.finalTargetId,
+            NavigationTargetRole.FinalTarget);
         foreach (var safetyTargetId in navigationTargets.GetSafetyPlanningTargetIds())
         {
             if (!string.Equals(safetyTargetId, runtimeState.finalTargetId, StringComparison.Ordinal))
             {
                 TryAddCandidate(
                     candidates,
+                    assessments,
                     runtimeState,
+                    riskState,
                     safetyTargetId,
                     navigationTargets.GetSafetyTargetRole(safetyTargetId));
             }
@@ -116,13 +125,11 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
         var candidateIds = new List<string>(candidates.Count);
         var allowedCandidateIds = new List<string>(candidates.Count);
-        var assessments = new List<CandidateAssessment>(candidates.Count);
         foreach (var candidate in candidates)
         {
             candidateIds.Add(candidate.TargetId);
-            var assessment = AssessCandidate(candidate, riskState);
-            assessments.Add(assessment);
-            if (assessment.IsExecutable)
+            var assessment = FindAssessment(assessments, candidate.TargetId);
+            if (assessment != null && assessment.IsExecutable)
             {
                 allowedCandidateIds.Add(candidate.TargetId);
             }
@@ -287,17 +294,34 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
     private void TryAddCandidate(
         List<NavigationCandidate> candidates,
+        List<CandidateAssessment> assessments,
         GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
         string targetId,
         NavigationTargetRole role)
     {
-        if (!CanUseSafetyTarget(runtimeState, targetId, role) ||
-            !TryBuildCandidate(targetId, role, out var candidate))
+        if (!TryBuildCandidate(targetId, role, out var candidate))
         {
             return;
         }
 
+        var assessment = AssessCandidate(candidate, riskState);
+        var exclusionReason = GetSemanticExclusionReason(runtimeState, targetId, role);
+        if (!string.IsNullOrEmpty(exclusionReason))
+        {
+            assessments.Add(new CandidateAssessment(
+                assessment.Candidate,
+                assessment.Bearing,
+                assessment.SuggestedAction,
+                assessment.ExecutionState,
+                assessment.Reason,
+                false,
+                exclusionReason));
+            return;
+        }
+
         candidates.Add(candidate);
+        assessments.Add(assessment);
     }
 
     private bool TryBuildCandidate(
@@ -374,28 +398,46 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         return true;
     }
 
-    private static bool CanUseSafetyTarget(
+    private static CandidateAssessment FindAssessment(
+        IReadOnlyList<CandidateAssessment> assessments,
+        string targetId)
+    {
+        foreach (var assessment in assessments)
+        {
+            if (assessment?.Candidate != null &&
+                string.Equals(assessment.Candidate.TargetId, targetId, StringComparison.Ordinal))
+            {
+                return assessment;
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetSemanticExclusionReason(
         GuidanceRuntimeState runtimeState,
         string targetId,
         NavigationTargetRole role)
     {
         if (role == NavigationTargetRole.TurnCueAnchor)
         {
-            return !runtimeState.HasCompletedTurnCue(targetId);
+            return runtimeState.HasCompletedTurnCue(targetId) ? "turn_cue_completed" : string.Empty;
         }
 
         if (role != NavigationTargetRole.NavigableDetour)
         {
-            return true;
+            return string.Empty;
         }
 
         var sameActiveDetour = string.Equals(
             runtimeState.activeDetourId,
             targetId,
             System.StringComparison.Ordinal);
-        return sameActiveDetour ||
-               (!runtimeState.HasVisitedDetour(targetId) &&
-                !runtimeState.IsDetourCoolingDown(targetId) &&
-                runtimeState.consecutiveDetourCount < runtimeState.maxConsecutiveDetours);
+        if (sameActiveDetour) return string.Empty;
+        if (runtimeState.HasVisitedDetour(targetId)) return "detour_visited";
+        if (runtimeState.IsDetourCoolingDown(targetId)) return "detour_cooldown";
+        return runtimeState.consecutiveDetourCount >= runtimeState.maxConsecutiveDetours
+            ? "detour_limit_reached"
+            : string.Empty;
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Diagnostics;
 using TMPro;
 using UnityEngine;
 
@@ -762,7 +763,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private void HandleRequestBuilt(GuidanceRequest request)
     {
         activeGuidanceTrace = experimentLogger != null
-            ? experimentLogger.LogRequest(request, riskEvaluator?.CurrentRiskState)
+            ? experimentLogger.LogRequest(
+                request,
+                riskEvaluator?.CurrentRiskState,
+                taskController?.RuntimeState.ActiveCandidateSetReservation)
             : LogTraceContext.FromRequest(request, riskEvaluator?.CurrentRiskState);
     }
 
@@ -822,7 +826,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             intervention != null ? intervention.ResetAttempt : 0,
             intervention != null && intervention.SafeCandidateAvailable,
             xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive,
-            physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid);
+            physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid,
+            guidanceCoordinator?.FrozenRecoveryPlan);
         if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
         {
             if (intervention.Response != null)
@@ -1115,8 +1120,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private IEnumerator RuntimePrerequisiteRecoveryTimeoutRoutine()
     {
-        var deadline = Time.unscaledTime + Mathf.Max(0.1f, trackingRecoveryTimeoutSeconds);
-        while (Time.unscaledTime < deadline && IsSessionActiveState())
+        var timeoutSeconds = Mathf.Max(0.1f, trackingRecoveryTimeoutSeconds);
+        var startedTimestamp = Stopwatch.GetTimestamp();
+        while (ElapsedSeconds(startedTimestamp) < timeoutSeconds && IsSessionActiveState())
         {
             yield return null;
         }
@@ -1135,6 +1141,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         EndSession("automatic_safety_termination: tracking recovery timeout");
+    }
+
+    private static double ElapsedSeconds(long startedTimestamp)
+    {
+        return Math.Max(0d, Stopwatch.GetTimestamp() - startedTimestamp) / Stopwatch.Frequency;
     }
 
     private void StopRuntimePrerequisiteRecovery()
@@ -1177,6 +1188,17 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             participantUiController?.ShowRecoveryReplanning();
         }
+    }
+
+    private void HandleRecoveryTransitioned(GuidanceRecoveryTransitionInfo transition)
+    {
+        if (transition == null) return;
+        experimentLogger?.LogRecoveryTransition(
+            transition,
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState);
+        HandleRecoveryStateChanged(transition.NextState);
     }
 
     private static string GainEventName(RotationGainEventType eventType, string reason)
@@ -1362,8 +1384,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.TargetReached += HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
             guidanceCoordinator.DetourCompleted += HandleDetourCompleted;
-            guidanceCoordinator.RecoveryStateChanged -= HandleRecoveryStateChanged;
-            guidanceCoordinator.RecoveryStateChanged += HandleRecoveryStateChanged;
+            guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
+            guidanceCoordinator.RecoveryTransitioned += HandleRecoveryTransitioned;
         }
 
         if (riskEvaluator != null)
@@ -1422,7 +1444,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
             guidanceCoordinator.TargetReached -= HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
-            guidanceCoordinator.RecoveryStateChanged -= HandleRecoveryStateChanged;
+            guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         if (pauseResetController != null)

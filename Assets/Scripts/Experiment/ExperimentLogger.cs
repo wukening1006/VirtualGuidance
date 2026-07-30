@@ -197,10 +197,22 @@ public sealed class ExperimentLogger : MonoBehaviour
     }
 
     /// <summary>记录发送给后端的请求及请求时的物理风险状态。</summary>
-    public LogTraceContext LogRequest(GuidanceRequest request, PhysicalRiskState riskState)
+    public LogTraceContext LogRequest(
+        GuidanceRequest request,
+        PhysicalRiskState riskState,
+        CandidateSetReservation candidateReservation = null)
     {
         var trace = LogTraceContext.FromRequest(request, riskState);
-        Write("guidance_requested", null, request, null, riskState, null, "guidance requested", trace);
+        Write(
+            "guidance_requested",
+            null,
+            request,
+            null,
+            riskState,
+            null,
+            "guidance requested",
+            trace,
+            candidateReservation: candidateReservation);
         return trace;
     }
 
@@ -329,7 +341,8 @@ public sealed class ExperimentLogger : MonoBehaviour
         int resetAttempt = 0,
         bool safeCandidateAvailable = false,
         bool? trackingValid = null,
-        bool? calibrationValid = null)
+        bool? calibrationValid = null,
+        RecoveryHeadingPlan recoveryPlan = null)
     {
         Write(
             "runtime_intervention",
@@ -347,7 +360,29 @@ public sealed class ExperimentLogger : MonoBehaviour
             resetAttempt: resetAttempt,
             safeCandidateAvailable: safeCandidateAvailable,
             trackingValid: trackingValid,
-            calibrationValid: calibrationValid);
+            calibrationValid: calibrationValid,
+            recoveryPlan: recoveryPlan);
+    }
+
+    /// <summary>记录自动恢复状态机的前后状态、原因与当时冻结的恢复计划。</summary>
+    public void LogRecoveryTransition(
+        GuidanceRecoveryTransitionInfo transition,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (transition == null) return;
+        Write(
+            "recovery_state_changed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            transition.Reason,
+            trace,
+            recoveryPlan: transition.RecoveryPlan,
+            recoveryTransition: transition);
     }
 
     /// <summary>记录通过运行时验证并实际开始执行的 Guidance。</summary>
@@ -486,7 +521,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         int resetAttempt = 0,
         bool safeCandidateAvailable = false,
         bool? trackingValid = null,
-        bool? calibrationValid = null)
+        bool? calibrationValid = null,
+        CandidateSetReservation candidateReservation = null,
+        RecoveryHeadingPlan recoveryPlan = null,
+        GuidanceRecoveryTransitionInfo recoveryTransition = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -591,12 +629,17 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["reset_risk"] = riskState != null ? riskState.reset_risk : string.Empty,
                 ["reset_required"] = riskState != null && riskState.reset_required,
                 ["safe_directions"] = JArray.FromObject(riskState?.safe_directions ?? Array.Empty<string>()),
-                ["unsafe_directions"] = JArray.FromObject(riskState?.unsafe_directions ?? Array.Empty<string>())
+                ["unsafe_directions"] = JArray.FromObject(riskState?.unsafe_directions ?? Array.Empty<string>()),
+                ["heading_profile"] = SerializeHeadingProfile(riskState?.heading_profile)
             };
 
             if (request != null)
             {
                 data["request"] = JToken.FromObject(request);
+            }
+            if (candidateReservation != null)
+            {
+                data["candidate_assessments"] = SerializeCandidateAssessments(candidateReservation.Assessments);
             }
             if (response != null && response.verifier != null)
             {
@@ -619,6 +662,16 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["safe_candidate_available"] = safeCandidateAvailable;
                 if (trackingValid.HasValue) data["tracking_valid"] = trackingValid.Value;
                 if (calibrationValid.HasValue) data["calibration_valid"] = calibrationValid.Value;
+            }
+            if (recoveryPlan != null)
+            {
+                data["recovery_plan"] = SerializeRecoveryPlan(recoveryPlan);
+            }
+            if (recoveryTransition != null)
+            {
+                data["previous_state"] = RecoveryStateLabel(recoveryTransition.PreviousState);
+                data["next_state"] = RecoveryStateLabel(recoveryTransition.NextState);
+                data["transition_reason"] = recoveryTransition.Reason;
             }
 
             if (descriptor.Level == LogType.Error)
@@ -812,6 +865,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "gain_completed": return new EventDescriptor("rdw.gain_completed", "RDW", level);
             case "gain_cancelled": return new EventDescriptor("rdw.gain_cancelled", "RDW", level);
             case "gain_aborted": return new EventDescriptor("rdw.gain_aborted", "RDW", level);
+            case "recovery_state_changed": return new EventDescriptor("rdw.recovery_state_changed", "RDW", level);
             default:
                 return new EventDescriptor(
                     "system." + FirstNonEmpty(eventType, "unspecified_event").Replace('_', '.'),
@@ -890,6 +944,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["reset_required"] = riskState.reset_required,
                 ["safe_directions"] = JArray.FromObject(riskState.safe_directions ?? Array.Empty<string>()),
                 ["unsafe_directions"] = JArray.FromObject(riskState.unsafe_directions ?? Array.Empty<string>()),
+                ["heading_profile"] = SerializeHeadingProfile(riskState.heading_profile),
                 ["active_target"] = FirstNonEmpty(runtimeState?.guidanceTargetId, trace.TargetId),
                 ["active_decision_id"] = trace.DecisionId,
                 ["active_guidance_intent"] = trace.GuidanceIntent,
@@ -915,6 +970,99 @@ public sealed class ExperimentLogger : MonoBehaviour
         catch (Exception exception)
         {
             ReportStorageError("telemetry_serialize", exception);
+        }
+    }
+
+    private static JArray SerializeHeadingProfile(IReadOnlyList<HeadingSample> headingProfile)
+    {
+        var result = new JArray();
+        if (headingProfile == null) return result;
+        foreach (var sample in headingProfile)
+        {
+            result.Add(new JObject
+            {
+                ["relative_yaw_deg"] = sample.RelativeYawDegrees,
+                ["physical_forward"] = new JObject
+                {
+                    ["x"] = sample.PhysicalForward.x,
+                    ["z"] = sample.PhysicalForward.y
+                },
+                ["clearance_m"] = sample.ClearanceMeters,
+                ["safety"] = sample.Safety.ToString().ToLowerInvariant()
+            });
+        }
+        return result;
+    }
+
+    private static JArray SerializeCandidateAssessments(IReadOnlyList<CandidateAssessment> assessments)
+    {
+        var result = new JArray();
+        if (assessments == null) return result;
+        foreach (var assessment in assessments)
+        {
+            if (assessment?.Candidate == null) continue;
+            result.Add(new JObject
+            {
+                ["target_id"] = assessment.Candidate.TargetId,
+                ["target_role"] = GuidanceTypeUtility.TargetRoleToProtocol(assessment.Candidate.TargetRole),
+                ["relative_yaw_deg"] = assessment.Bearing?.RelativeYawDegrees ?? 0f,
+                ["display_label"] = assessment.Candidate.RelativeDirection,
+                ["semantic_eligible"] = assessment.IsSemanticallyEligible,
+                ["semantic_exclusion_reason"] = assessment.SemanticExclusionReason,
+                ["action_type"] = ActionTypeLabel(assessment.SuggestedAction),
+                ["turn_side"] = assessment.SuggestedAction != null
+                    ? assessment.SuggestedAction.TurnSide.ToString().ToLowerInvariant()
+                    : "none",
+                ["target_yaw_deg"] = assessment.SuggestedAction?.TargetYawDegrees ?? 0f,
+                ["execution_state"] = assessment.ExecutionState.ToString().ToLowerInvariant(),
+                ["execution_reason"] = assessment.Reason
+            });
+        }
+        return result;
+    }
+
+    private static JObject SerializeRecoveryPlan(RecoveryHeadingPlan plan)
+    {
+        return new JObject
+        {
+            ["success"] = plan != null && plan.IsSuccess,
+            ["failure"] = plan != null ? plan.Failure.ToString().ToLowerInvariant() : string.Empty,
+            ["relative_yaw_deg"] = plan?.RelativeYawDegrees ?? 0f,
+            ["physical_forward"] = new JObject
+            {
+                ["x"] = plan?.SafePhysicalForward.x ?? 0f,
+                ["z"] = plan?.SafePhysicalForward.y ?? 0f
+            },
+            ["clearance_m"] = plan?.ClearanceMeters ?? 0f,
+            ["safety"] = plan != null ? plan.Safety.ToString().ToLowerInvariant() : string.Empty,
+            ["score"] = plan != null && !float.IsInfinity(plan.Score) ? plan.Score : (float?)null
+        };
+    }
+
+    private static string ActionTypeLabel(GuidanceAction action)
+    {
+        if (action == null) return string.Empty;
+        switch (action.Type)
+        {
+            case GuidanceActionType.TurnInPlace: return "turn_in_place";
+            case GuidanceActionType.MoveForward: return "move_forward";
+            case GuidanceActionType.Reevaluate: return "reevaluate";
+            default: return "hold";
+        }
+    }
+
+    private static string RecoveryStateLabel(GuidanceRecoveryState state)
+    {
+        switch (state)
+        {
+            case GuidanceRecoveryState.StoppingGuidance: return "stopping_guidance";
+            case GuidanceRecoveryState.SelectingHeading: return "selecting_heading";
+            case GuidanceRecoveryState.WaitingForUserTurn: return "waiting_for_user_turn";
+            case GuidanceRecoveryState.Stabilizing: return "stabilizing";
+            case GuidanceRecoveryState.Revalidating: return "revalidating";
+            case GuidanceRecoveryState.Replanning: return "replanning";
+            case GuidanceRecoveryState.Terminated: return "terminated";
+            default: return "inactive";
         }
     }
 
