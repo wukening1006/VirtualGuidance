@@ -242,6 +242,25 @@ public sealed class NavigationTargetManager : MonoBehaviour
             : NavigationTargetRole.NavigableDetour;
     }
 
+    /// <summary>
+    /// 返回 Target Registry 中由语义角色或标签显式声明的安全规划目标 ID。
+    /// </summary>
+    public string[] GetSafetyPlanningTargetIds()
+    {
+        EnsureIndex();
+        var ids = new List<string>();
+        foreach (var pair in targetsById)
+        {
+            if (pair.Value != null && pair.Value.IsSafetyPlanningTarget)
+            {
+                ids.Add(pair.Key);
+            }
+        }
+
+        ids.Sort(StringComparer.Ordinal);
+        return ids.ToArray();
+    }
+
     private string BuildRegistrySignature()
     {
         var ids = new List<string>(targetsById.Keys);
@@ -253,7 +272,8 @@ public sealed class NavigationTargetManager : MonoBehaviour
             entries.Add(string.Join(
                 "~",
                 id,
-                target != null ? target.SafetyTargetRole.ToString() : string.Empty));
+                target != null ? target.SafetyTargetRole.ToString() : string.Empty,
+                target != null && target.IsSafetyPlanningTarget ? "planning" : "ordinary"));
         }
         return string.Join("|", entries);
     }

@@ -68,6 +68,16 @@ public sealed class ExhibitMetadata : MonoBehaviour
     }
 
     /// <summary>
+    /// 当前展品是否由场景元数据声明为安全规划候选。
+    /// </summary>
+    public bool IsSafetyPlanningTarget =>
+        SafetyTargetRole == NavigationTargetRole.TurnCueAnchor ||
+        ContainsTag("navigable_detour") ||
+        ContainsTag("left_redirect") ||
+        ContainsTag("right_redirect") ||
+        string.Equals(semanticRole, "navigable_detour", System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// 与当前展品语义相关的其他展品 ID 列表。
     /// </summary>
     public string[] RelatedExhibits => relatedExhibits;

@@ -21,9 +21,9 @@ public enum CandidateSafetyState
 /// </summary>
 public sealed class SemanticTargetSelector : MonoBehaviour
 {
-    private static readonly string[] T2DetourTargetIds = { "E3", "E4" };
-
     [SerializeField] private NavigationTargetManager navigationTargets;
+    private readonly GuidanceActionPlanner actionPlanner = new GuidanceActionPlanner();
+    private readonly GuidanceActionSafetyEvaluator actionSafetyEvaluator = new GuidanceActionSafetyEvaluator();
 
     private void Awake()
     {
@@ -63,7 +63,12 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     {
         var candidateSet = BuildCandidateSet(runtimeState, riskState, policy);
         if (candidateSet == null || !candidateSet.HasModelCandidates) return null;
-        var targetId = candidateSet.ModelCandidateIds[0];
+        var useSafeFilter = policy != null &&
+                            policy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled;
+        var source = useSafeFilter && candidateSet.AllowedCandidateIds.Count > 0
+            ? candidateSet.AllowedCandidateIds
+            : candidateSet.ModelCandidateIds;
+        var targetId = source[0];
         foreach (var candidate in candidateSet.Candidates)
         {
             if (candidate != null && string.Equals(candidate.TargetId, targetId, StringComparison.Ordinal))
@@ -75,7 +80,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     }
 
     /// <summary>
-    /// 构建 T2 的 Base、Model 和 Allowed Candidate Set；E3/E4 是唯一临时 Detour，E5 始终为 Final Goal。
+    /// 构建 T2 的 Base、Model、Assessment 和 Executable Candidate Set。
     /// </summary>
     public NavigationCandidateSet BuildCandidateSet(
         GuidanceRuntimeState runtimeState,
@@ -97,33 +102,41 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
         var candidates = new List<NavigationCandidate>();
         TryAddCandidate(candidates, runtimeState, runtimeState.finalTargetId, NavigationTargetRole.FinalTarget);
-        foreach (var detourId in T2DetourTargetIds)
+        foreach (var safetyTargetId in navigationTargets.GetSafetyPlanningTargetIds())
         {
-            TryAddCandidate(candidates, runtimeState, detourId, navigationTargets.GetSafetyTargetRole(detourId));
+            if (!string.Equals(safetyTargetId, runtimeState.finalTargetId, StringComparison.Ordinal))
+            {
+                TryAddCandidate(
+                    candidates,
+                    runtimeState,
+                    safetyTargetId,
+                    navigationTargets.GetSafetyTargetRole(safetyTargetId));
+            }
         }
 
         var candidateIds = new List<string>(candidates.Count);
         var allowedCandidateIds = new List<string>(candidates.Count);
+        var assessments = new List<CandidateAssessment>(candidates.Count);
         foreach (var candidate in candidates)
         {
             candidateIds.Add(candidate.TargetId);
-            if (GetCandidateSafetyState(candidate.TargetId, riskState) == CandidateSafetyState.Eligible)
+            var assessment = AssessCandidate(candidate, riskState);
+            assessments.Add(assessment);
+            if (assessment.IsExecutable)
             {
                 allowedCandidateIds.Add(candidate.TargetId);
             }
         }
 
-        var useSafeFilter = policy != null &&
-                            policy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled;
-        var modelCandidateIds = useSafeFilter
-            ? allowedCandidateIds
-            : candidateIds;
+        // 语义目标存在性不再由当前物理执行资格决定；本地安全层仍通过 AllowedCandidateIds 最终否决。
+        var modelCandidateIds = candidateIds;
         return new NavigationCandidateSet(
             candidateIds,
             modelCandidateIds,
-            useSafeFilter ? allowedCandidateIds : Array.Empty<string>(),
+            allowedCandidateIds,
             candidates,
-            navigationTargets.RegistryRevision);
+            navigationTargets.RegistryRevision,
+            assessments);
     }
 
     /// <summary>重新构建候选并确认冻结 Reservation 的成员、角色和方向仍然一致。</summary>
@@ -152,6 +165,79 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     }
 
     /// <summary>
+    /// 使用最新风险重验模型选中的单个冻结候选，不要求其他候选仍与请求时完全一致。
+    /// </summary>
+    /// <param name="reason">候选失效时返回可记录的具体原因；有效时为空。</param>
+    /// <returns>请求上下文稳定，且所选候选的角色、方向、资格和 clearance 均仍安全时返回 true。</returns>
+    public bool IsSelectedCandidateCurrent(
+        CandidateSetReservation reservation,
+        string selectedTargetId,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ExperimentConditionPolicy policy,
+        PhysicalRiskEvaluator riskEvaluator,
+        out string reason)
+    {
+        ResolveReferences();
+        reason = string.Empty;
+        if (reservation == null || runtimeState == null || riskState == null ||
+            navigationTargets == null || riskEvaluator == null)
+        {
+            reason = "Selected candidate revalidation dependencies are unavailable.";
+            return false;
+        }
+
+        if (reservation.Phase != CandidateSetReservationPhase.Reserved ||
+            reservation.TaskStateVersion != runtimeState.stateVersion ||
+            !string.Equals(reservation.TaskId, runtimeState.taskId, StringComparison.Ordinal) ||
+            !string.Equals(reservation.FinalTargetId, runtimeState.finalTargetId, StringComparison.Ordinal) ||
+            !string.Equals(reservation.CalibrationId, riskState.calibration_id, StringComparison.Ordinal) ||
+            !string.Equals(reservation.Condition, policy != null ? policy.Condition : string.Empty, StringComparison.Ordinal))
+        {
+            reason = "Selected candidate no longer matches the active task or calibration context.";
+            return false;
+        }
+
+        if (reservation.RegistryRevision != navigationTargets.RegistryRevision ||
+            !reservation.ContainsModelCandidate(selectedTargetId) ||
+            !reservation.TryGetCandidate(selectedTargetId, out var frozenCandidate))
+        {
+            reason = "Selected candidate is not part of the active frozen candidate set.";
+            return false;
+        }
+
+        var current = BuildCandidateSet(runtimeState, riskState, policy);
+        NavigationCandidate currentCandidate = null;
+        if (current != null)
+        {
+            foreach (var candidate in current.Candidates)
+            {
+                if (candidate != null && string.Equals(candidate.TargetId, selectedTargetId, StringComparison.Ordinal))
+                {
+                    currentCandidate = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (currentCandidate == null ||
+            currentCandidate.TargetRole != frozenCandidate.TargetRole)
+        {
+            reason = "Selected candidate identity or role changed after the request.";
+            return false;
+        }
+
+        var assessment = AssessCandidate(currentCandidate, riskState);
+        if (!assessment.IsExecutable)
+        {
+            reason = $"Selected candidate is not executable under the latest physical risk snapshot: {assessment.Reason}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 根据风险计算器已有 safe/unsafe 阈值带判定候选状态；Unknown 不视为可执行。
     /// </summary>
     public CandidateSafetyState GetCandidateSafetyState(string targetId, PhysicalRiskState riskState)
@@ -164,20 +250,31 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             return CandidateSafetyState.Unknown;
         }
 
-        var direction = navigationTargets.GetTargetDirection(targetId);
-        if (!IsNaturalDirection(direction))
+        if (!TryBuildCandidate(targetId, NavigationTargetRole.FinalTarget, out var candidate))
         {
-            return CandidateSafetyState.Blocked;
+            return CandidateSafetyState.Unknown;
         }
 
-        if (IsDirectionUnsafe(direction, riskState))
-        {
-            return CandidateSafetyState.Blocked;
-        }
-
-        return IsDirectionSafe(direction, riskState)
+        var state = AssessCandidate(candidate, riskState).ExecutionState;
+        return state == CandidateExecutionState.Executable
             ? CandidateSafetyState.Eligible
-            : CandidateSafetyState.Unknown;
+            : state == CandidateExecutionState.Blocked
+                ? CandidateSafetyState.Blocked
+                : CandidateSafetyState.Unknown;
+    }
+
+    /// <summary>
+    /// 使用最新位姿和风险重新评估指定候选。
+    /// </summary>
+    public bool TryAssessCandidate(
+        string targetId,
+        NavigationTargetRole role,
+        PhysicalRiskState riskState,
+        out CandidateAssessment assessment)
+    {
+        assessment = null;
+        return TryBuildCandidate(targetId, role, out var candidate) &&
+               (assessment = AssessCandidate(candidate, riskState)) != null;
     }
 
     private void ResolveReferences()
@@ -188,56 +285,64 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         }
     }
 
-    private static bool IsDirectionUnsafe(string direction, PhysicalRiskState riskState)
-    {
-        return Contains(riskState != null ? riskState.unsafe_directions : null, direction);
-    }
-
-    private static bool IsDirectionSafe(string direction, PhysicalRiskState riskState)
-    {
-        return Contains(riskState != null ? riskState.safe_directions : null, direction);
-    }
-
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string value)
-    {
-        if (values == null || string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        foreach (var item in values)
-        {
-            if (item == value)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private void TryAddCandidate(
         List<NavigationCandidate> candidates,
         GuidanceRuntimeState runtimeState,
         string targetId,
         NavigationTargetRole role)
     {
-        if (string.IsNullOrWhiteSpace(targetId) || !navigationTargets.TryGetTarget(targetId, out var metadata) ||
-            metadata == null || !CanUseSafetyTarget(runtimeState, targetId, role) ||
-            !navigationTargets.TryGetTargetDirection(targetId, out var direction) || !IsNaturalDirection(direction))
+        if (!CanUseSafetyTarget(runtimeState, targetId, role) ||
+            !TryBuildCandidate(targetId, role, out var candidate))
         {
             return;
         }
 
-        candidates.Add(new NavigationCandidate(
+        candidates.Add(candidate);
+    }
+
+    private bool TryBuildCandidate(
+        string targetId,
+        NavigationTargetRole role,
+        out NavigationCandidate candidate)
+    {
+        candidate = null;
+        if (string.IsNullOrWhiteSpace(targetId) ||
+            !navigationTargets.TryGetTarget(targetId, out var metadata) ||
+            metadata == null ||
+            !navigationTargets.TryGetTargetBearing(targetId, out var bearing))
+        {
+            return false;
+        }
+
+        candidate = new NavigationCandidate(
             targetId,
             role,
-            direction,
+            BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel),
             metadata.ExhibitName,
             metadata.Description,
             metadata.SemanticRole,
             metadata.Tags,
-            metadata.RelatedExhibits));
+            metadata.RelatedExhibits,
+            bearing.RelativeYawDegrees,
+            bearing.DistanceMeters,
+            bearing.DisplayLabel,
+            bearing.PoseRevision);
+        return true;
+    }
+
+    private CandidateAssessment AssessCandidate(
+        NavigationCandidate candidate,
+        PhysicalRiskState riskState)
+    {
+        var bearing = new TargetBearing(
+            candidate.TargetId,
+            candidate.RelativeYawDegrees,
+            candidate.DistanceMeters,
+            candidate.DisplayLabel,
+            candidate.PoseRevision);
+        var action = actionPlanner.Plan(bearing);
+        var executionState = actionSafetyEvaluator.Evaluate(action, riskState, out var reason);
+        return new CandidateAssessment(candidate, bearing, action, executionState, reason);
     }
 
     private static bool SameCandidates(
@@ -249,8 +354,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         {
             if (left[i] == null || right[i] == null ||
                 !string.Equals(left[i].TargetId, right[i].TargetId, StringComparison.Ordinal) ||
-                left[i].TargetRole != right[i].TargetRole ||
-                !string.Equals(left[i].RelativeDirection, right[i].RelativeDirection, StringComparison.Ordinal))
+                left[i].TargetRole != right[i].TargetRole)
             {
                 return false;
             }
@@ -268,11 +372,6 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             if (!string.Equals(left[i], right[i], StringComparison.Ordinal)) return false;
         }
         return true;
-    }
-
-    private static bool IsNaturalDirection(string direction)
-    {
-        return direction == "forward" || direction == "left" || direction == "right";
     }
 
     private static bool CanUseSafetyTarget(

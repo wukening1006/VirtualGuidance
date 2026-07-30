@@ -8,6 +8,8 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
 {
     [SerializeField] private NavigationTargetManager navigationTargets;
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    private readonly GuidanceActionPlanner actionPlanner = new GuidanceActionPlanner();
+    private readonly GuidanceActionSafetyEvaluator actionSafetyEvaluator = new GuidanceActionSafetyEvaluator();
 
     private void Awake()
     {
@@ -48,10 +50,10 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
-        // 后端响应到达前任务或风险可能已经变化，过期 guidance 不允许继续执行。
-        if (requestSnapshot != null && !requestSnapshot.Matches(runtimeState, currentRiskState))
+        // 风险修订可在网络等待期间变化；请求身份保持稳定后，具体方向由最新风险继续校验。
+        if (requestSnapshot != null && !requestSnapshot.MatchesTaskContext(runtimeState, currentRiskState))
         {
-            reason = "Guidance rejected locally because task or risk state changed after the request.";
+            reason = "Guidance rejected locally because task, calibration, or physical space changed after the request.";
             return false;
         }
 
@@ -98,6 +100,52 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
+        if (!navigationTargets.TryGetTargetBearing(response.selected_target, out var bearing))
+        {
+            reason = "Local RDW check cannot calculate the selected target bearing.";
+            return false;
+        }
+
+        if (currentRiskState.heading_profile == null || currentRiskState.heading_profile.Count == 0)
+        {
+            return ValidateLegacyDirection(
+                response,
+                currentRiskState,
+                movementDirection,
+                out reason);
+        }
+
+        var plannedAction = actionPlanner.Plan(bearing);
+        var expectedMovement = GuidanceActionProtocolMapper.ToMovementInstruction(plannedAction);
+        if (!string.Equals(
+                response.movement_instruction,
+                expectedMovement,
+                System.StringComparison.Ordinal))
+        {
+            reason =
+                $"Local RDW check rejected movement '{response.movement_instruction}' because local planning requires '{expectedMovement}'.";
+            return false;
+        }
+
+        var executionState = actionSafetyEvaluator.Evaluate(
+            plannedAction,
+            currentRiskState,
+            out var executionReason);
+        if (executionState != CandidateExecutionState.Executable)
+        {
+            reason = $"Local RDW check rejected planned action: {executionReason}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool ValidateLegacyDirection(
+        GuidanceResponse response,
+        PhysicalRiskState riskState,
+        string movementDirection,
+        out string reason)
+    {
         if (!navigationTargets.TryGetTargetDirection(response.selected_target, out var targetDirection) ||
             !IsNaturalDirection(targetDirection))
         {
@@ -106,7 +154,7 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
         }
 
         if (riskEvaluator == null ||
-            !riskEvaluator.TryGetDirectionClearance(currentRiskState, targetDirection, out _))
+            !riskEvaluator.TryGetDirectionClearance(riskState, targetDirection, out _))
         {
             reason = "Local RDW check cannot query planned direction clearance.";
             return false;
@@ -114,22 +162,24 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
 
         if (!string.IsNullOrWhiteSpace(movementDirection) && movementDirection != targetDirection)
         {
-            reason = $"Local RDW check rejected conflicting movement '{movementDirection}' for target direction '{targetDirection}'.";
+            reason =
+                $"Local RDW check rejected conflicting movement '{movementDirection}' for target direction '{targetDirection}'.";
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(movementDirection) && IsUnsafe(movementDirection, currentRiskState))
+        if (!string.IsNullOrWhiteSpace(movementDirection) && IsUnsafe(movementDirection, riskState))
         {
             reason = $"Local RDW check rejected unsafe {movementDirection} movement.";
             return false;
         }
 
-        if (IsUnsafe(targetDirection, currentRiskState))
+        if (IsUnsafe(targetDirection, riskState))
         {
             reason = $"Local RDW check rejected target in unsafe {targetDirection} direction.";
             return false;
         }
 
+        reason = string.Empty;
         return true;
     }
 
@@ -188,4 +238,5 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
 
         return false;
     }
+
 }

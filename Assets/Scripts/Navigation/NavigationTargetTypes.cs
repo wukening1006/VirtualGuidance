@@ -67,6 +67,21 @@ public static class BearingLabelProtocolMapper
 }
 
 /// <summary>
+/// 表示候选对应的原子动作在最新物理事实下的执行资格。
+/// </summary>
+public enum CandidateExecutionState
+{
+    /// <summary>缺少足够的物理事实，不能执行但可以继续规划。</summary>
+    Unknown,
+    /// <summary>当前动作满足物理安全约束。</summary>
+    Executable,
+    /// <summary>当前动作需要保持并等待新位姿或风险样本。</summary>
+    TemporarilyBlocked,
+    /// <summary>当前动作方向已明确不安全。</summary>
+    Blocked
+}
+
+/// <summary>
 /// 区分最终目标、原路线节点、只转向锚点和需要实际到达的安全绕行点。
 /// </summary>
 public enum NavigationTargetRole
@@ -111,6 +126,14 @@ public sealed class NavigationCandidate
     public NavigationTargetRole TargetRole { get; }
     /// <summary>候选相对用户当前 Virtual Forward 的方向。</summary>
     public string RelativeDirection { get; }
+    /// <summary>候选相对请求位姿的连续偏航角，单位：度。</summary>
+    public float RelativeYawDegrees { get; }
+    /// <summary>候选距离请求位姿的水平距离，单位：米。</summary>
+    public float DistanceMeters { get; }
+    /// <summary>候选方向的显示标签。</summary>
+    public BearingLabel DisplayLabel { get; }
+    /// <summary>生成候选时的虚拟位姿修订号。</summary>
+    public int PoseRevision { get; }
     /// <summary>候选显示名称。</summary>
     public string Name { get; }
     /// <summary>候选语义描述。</summary>
@@ -131,7 +154,11 @@ public sealed class NavigationCandidate
         string description,
         string semanticRole,
         IEnumerable<string> tags,
-        IEnumerable<string> relatedExhibits)
+        IEnumerable<string> relatedExhibits,
+        float relativeYawDegrees = 0f,
+        float distanceMeters = 0f,
+        BearingLabel displayLabel = BearingLabel.Forward,
+        int poseRevision = 0)
     {
         TargetId = targetId ?? string.Empty;
         TargetRole = targetRole;
@@ -141,11 +168,49 @@ public sealed class NavigationCandidate
         SemanticRole = semanticRole ?? string.Empty;
         Tags = ReadOnlyCopy(tags);
         RelatedExhibits = ReadOnlyCopy(relatedExhibits);
+        RelativeYawDegrees = relativeYawDegrees;
+        DistanceMeters = Math.Max(0f, distanceMeters);
+        DisplayLabel = displayLabel;
+        PoseRevision = Math.Max(0, poseRevision);
     }
 
     private static IReadOnlyList<string> ReadOnlyCopy(IEnumerable<string> values)
     {
         return Array.AsReadOnly(new List<string>(values ?? Array.Empty<string>()).ToArray());
+    }
+}
+
+/// <summary>
+/// 将语义候选、连续方位、建议动作和当前执行资格组合为只读评估结果。
+/// </summary>
+public sealed class CandidateAssessment
+{
+    /// <summary>被评估的语义候选。</summary>
+    public NavigationCandidate Candidate { get; }
+    /// <summary>基于最新虚拟位姿的连续目标方位。</summary>
+    public TargetBearing Bearing { get; }
+    /// <summary>本地规划器生成的原子动作。</summary>
+    public GuidanceAction SuggestedAction { get; }
+    /// <summary>最新物理事实下的动作执行资格。</summary>
+    public CandidateExecutionState ExecutionState { get; }
+    /// <summary>不可执行或未知时的稳定原因码。</summary>
+    public string Reason { get; }
+    /// <summary>当前是否可立即执行建议动作。</summary>
+    public bool IsExecutable => ExecutionState == CandidateExecutionState.Executable;
+
+    /// <summary>创建一项不可变候选评估。</summary>
+    public CandidateAssessment(
+        NavigationCandidate candidate,
+        TargetBearing bearing,
+        GuidanceAction suggestedAction,
+        CandidateExecutionState executionState,
+        string reason)
+    {
+        Candidate = candidate;
+        Bearing = bearing;
+        SuggestedAction = suggestedAction;
+        ExecutionState = executionState;
+        Reason = reason ?? string.Empty;
     }
 }
 
@@ -162,6 +227,8 @@ public sealed class NavigationCandidateSet
     public IReadOnlyList<string> AllowedCandidateIds { get; }
     /// <summary>完整候选及其语义元数据。</summary>
     public IReadOnlyList<NavigationCandidate> Candidates { get; }
+    /// <summary>每个基础候选的动作与当前执行资格。</summary>
+    public IReadOnlyList<CandidateAssessment> Assessments { get; }
     /// <summary>构建候选时的场景 Target Registry 修订号。</summary>
     public int RegistryRevision { get; }
 
@@ -171,13 +238,16 @@ public sealed class NavigationCandidateSet
         IEnumerable<string> modelCandidateIds,
         IEnumerable<string> allowedCandidateIds,
         IEnumerable<NavigationCandidate> candidates,
-        int registryRevision)
+        int registryRevision,
+        IEnumerable<CandidateAssessment> assessments = null)
     {
         CandidateIds = ReadOnlyCopy(candidateIds);
         ModelCandidateIds = ReadOnlyCopy(modelCandidateIds);
         AllowedCandidateIds = ReadOnlyCopy(allowedCandidateIds);
         Candidates = Array.AsReadOnly(new List<NavigationCandidate>(
             candidates ?? Array.Empty<NavigationCandidate>()).ToArray());
+        Assessments = Array.AsReadOnly(new List<CandidateAssessment>(
+            assessments ?? Array.Empty<CandidateAssessment>()).ToArray());
         RegistryRevision = Math.Max(0, registryRevision);
     }
 
