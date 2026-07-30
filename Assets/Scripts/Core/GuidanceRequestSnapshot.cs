@@ -18,6 +18,8 @@ public sealed class GuidanceRequestSnapshot
     public string candidateSetId { get; private set; }
     /// <summary>请求发出时的任务状态版本。</summary>
     public int stateVersion { get; private set; }
+    /// <summary>请求所属任务 ID。</summary>
+    public string taskId { get; private set; }
     /// <summary>请求决策使用的风险快照 ID。</summary>
     public string riskSnapshotId { get; private set; }
     /// <summary>请求使用的执行风险修订号。</summary>
@@ -48,12 +50,19 @@ public sealed class GuidanceRequestSnapshot
             decisionId = request != null ? request.decision_id : string.Empty,
             candidateSetId = request != null ? request.candidate_set_id : string.Empty,
             stateVersion = request != null ? request.state_version : runtimeState != null ? runtimeState.stateVersion : 0,
+            taskId = request != null && !string.IsNullOrWhiteSpace(request.task_id)
+                ? request.task_id
+                : runtimeState != null ? runtimeState.taskId : string.Empty,
             riskSnapshotId = request != null ? request.risk_snapshot_id : string.Empty,
             riskRevision = request != null && request.risk_snapshot != null
                 ? request.risk_snapshot.risk_revision
                 : riskState != null ? riskState.risk_revision : 0,
-            currentExhibitId = request != null ? request.current_exhibit : string.Empty,
-            preferredTaskTargetId = request != null ? request.preferred_task_target : string.Empty,
+            currentExhibitId = request != null && !string.IsNullOrWhiteSpace(request.current_exhibit)
+                ? request.current_exhibit
+                : runtimeState != null ? runtimeState.currentExhibitId : string.Empty,
+            preferredTaskTargetId = request != null && !string.IsNullOrWhiteSpace(request.preferred_task_target)
+                ? request.preferred_task_target
+                : runtimeState != null ? runtimeState.nextTargetId : string.Empty,
             physicalSpaceId = request != null ? request.physical_space_id : string.Empty,
             riskSignature = BuildRiskSignature(riskState)
         };
@@ -77,17 +86,31 @@ public sealed class GuidanceRequestSnapshot
     }
 
     /// <summary>
-    /// 检查任务版本和风险签名是否仍与请求发出时一致。
+    /// 检查任务版本、校准和物理空间身份是否仍与请求发出时一致。
     /// </summary>
-    /// <returns>状态未变化、响应仍可继续校验时返回 true。</returns>
+    /// <returns>稳定上下文未变化、响应仍可基于最新风险继续校验时返回 true。</returns>
+    public bool MatchesTaskContext(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        return runtimeState != null &&
+               runtimeState.stateVersion == stateVersion &&
+               string.Equals(taskId ?? string.Empty, runtimeState.taskId ?? string.Empty, StringComparison.Ordinal) &&
+               string.Equals(
+                   currentExhibitId ?? string.Empty,
+                   runtimeState.currentExhibitId ?? string.Empty,
+                   StringComparison.Ordinal) &&
+               string.Equals(
+                   preferredTaskTargetId ?? string.Empty,
+                   runtimeState.nextTargetId ?? string.Empty,
+                   StringComparison.Ordinal) &&
+               riskState != null &&
+               string.Equals(calibrationId ?? string.Empty, riskState.calibration_id, StringComparison.Ordinal) &&
+               string.Equals(physicalSpaceId ?? string.Empty, riskState.physical_space, StringComparison.Ordinal);
+    }
+
+    /// <summary>兼容旧调用：按稳定任务上下文判断，不要求风险修订号保持不变。</summary>
     public bool Matches(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
     {
-        if (runtimeState != null && runtimeState.stateVersion != stateVersion)
-        {
-            return false;
-        }
-
-        return riskState != null && riskState.risk_revision == riskRevision;
+        return MatchesTaskContext(runtimeState, riskState);
     }
 
     private static string BuildRiskSignature(PhysicalRiskState riskState)

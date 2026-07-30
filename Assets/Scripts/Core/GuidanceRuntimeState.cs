@@ -7,6 +7,8 @@ using System;
 /// </summary>
 public sealed class GuidanceRuntimeState
 {
+    private const double DetourCooldownSeconds = 3d;
+
     /// <summary>当前任务运行阶段。</summary>
     public GuidanceRuntimePhase phase = GuidanceRuntimePhase.Idle;
     /// <summary>当前任务 ID，必须与实验条件和后端 schema 使用相同取值。</summary>
@@ -33,6 +35,10 @@ public sealed class GuidanceRuntimeState
     public int consecutiveDetourCount;
     /// <summary>允许的最大连续 Detour 数量。</summary>
     public int maxConsecutiveDetours = 2;
+    /// <summary>当前处于短暂冷却的 Detour ID。</summary>
+    public string[] coolingDownDetourIds = Array.Empty<string>();
+    /// <summary>与 coolingDownDetourIds 对齐的 UTC 到期时刻，单位：Ticks。</summary>
+    public long[] detourCooldownUntilUtcTicks = Array.Empty<long>();
     /// <summary>最近一次 Guidance Target 决策对应的状态版本。</summary>
     public int decisionStateVersion;
     /// <summary>当前任务中已创建的 Target Reservation 代际。</summary>
@@ -90,6 +96,8 @@ public sealed class GuidanceRuntimeState
         completedTurnCueAnchorIds = Array.Empty<string>();
         consecutiveDetourCount = 0;
         maxConsecutiveDetours = Math.Max(0, detourLimit);
+        coolingDownDetourIds = Array.Empty<string>();
+        detourCooldownUntilUtcTicks = Array.Empty<long>();
         decisionStateVersion = 0;
         guidanceGeneration = 0;
         candidateSetGeneration = 0;
@@ -149,7 +157,9 @@ public sealed class GuidanceRuntimeState
         {
             var sameActiveDetour = string.Equals(activeDetourId, target.TargetId, StringComparison.Ordinal);
             if (!sameActiveDetour &&
-                (HasVisitedDetour(target.TargetId) || consecutiveDetourCount >= maxConsecutiveDetours))
+                (HasVisitedDetour(target.TargetId) ||
+                 IsDetourCoolingDown(target.TargetId) ||
+                 consecutiveDetourCount >= maxConsecutiveDetours))
             {
                 return false;
             }
@@ -157,7 +167,6 @@ public sealed class GuidanceRuntimeState
             if (!sameActiveDetour)
             {
                 activeDetourId = target.TargetId;
-                consecutiveDetourCount++;
             }
         }
         else if (target.TargetRole == NavigationTargetRole.TurnCueAnchor &&
@@ -276,7 +285,9 @@ public sealed class GuidanceRuntimeState
         {
             var sameActiveDetour = string.Equals(activeDetourId, selectedCandidate.TargetId, StringComparison.Ordinal);
             if (!sameActiveDetour &&
-                (HasVisitedDetour(selectedCandidate.TargetId) || consecutiveDetourCount >= maxConsecutiveDetours))
+                (HasVisitedDetour(selectedCandidate.TargetId) ||
+                 IsDetourCoolingDown(selectedCandidate.TargetId) ||
+                 consecutiveDetourCount >= maxConsecutiveDetours))
             {
                 return false;
             }
@@ -291,7 +302,6 @@ public sealed class GuidanceRuntimeState
             !string.Equals(activeDetourId, selectedCandidate.TargetId, StringComparison.Ordinal))
         {
             activeDetourId = selectedCandidate.TargetId;
-            consecutiveDetourCount++;
         }
 
         guidanceTargetId = selectedCandidate.TargetId;
@@ -365,6 +375,7 @@ public sealed class GuidanceRuntimeState
 
         activeReservation.Abandon();
         activeReservation = null;
+        StartActiveDetourCooldown();
         guidanceTargetId = string.Empty;
         activeDetourId = string.Empty;
         stateVersion++;
@@ -385,6 +396,8 @@ public sealed class GuidanceRuntimeState
         CompleteActiveReservation();
         currentExhibitId = detourId;
         visitedDetourIds = AppendUnique(visitedDetourIds, detourId);
+        consecutiveDetourCount++;
+        RemoveDetourCooldown(detourId);
         activeDetourId = string.Empty;
         guidanceTargetId = string.Empty;
         stateVersion++;
@@ -413,6 +426,34 @@ public sealed class GuidanceRuntimeState
     public bool HasVisitedDetour(string detourId)
     {
         return Contains(visitedDetourIds, detourId);
+    }
+
+    /// <summary>检查指定 Detour 是否仍处于放弃后的短暂冷却。</summary>
+    public bool IsDetourCoolingDown(string detourId)
+    {
+        return IsDetourCoolingDown(detourId, DateTime.UtcNow);
+    }
+
+    /// <summary>按给定 UTC 时刻检查 Detour 冷却，供确定性测试与日志复验使用。</summary>
+    public bool IsDetourCoolingDown(string detourId, DateTime utcNow)
+    {
+        if (string.IsNullOrWhiteSpace(detourId) || coolingDownDetourIds == null ||
+            detourCooldownUntilUtcTicks == null)
+        {
+            return false;
+        }
+
+        var count = Math.Min(coolingDownDetourIds.Length, detourCooldownUntilUtcTicks.Length);
+        var nowTicks = utcNow.ToUniversalTime().Ticks;
+        for (var index = 0; index < count; index++)
+        {
+            if (string.Equals(coolingDownDetourIds[index], detourId, StringComparison.Ordinal))
+            {
+                return detourCooldownUntilUtcTicks[index] > nowTicks;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>检查 TurnCueAnchor 是否已经在本轮路线决策中完成。</summary>
@@ -477,6 +518,7 @@ public sealed class GuidanceRuntimeState
     {
         activeReservation?.Abandon();
         activeReservation = null;
+        StartActiveDetourCooldown();
         if (activeCandidateSetReservation != null &&
             activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Committed)
         {
@@ -494,7 +536,73 @@ public sealed class GuidanceRuntimeState
         visitedDetourIds = Array.Empty<string>();
         completedTurnCueAnchorIds = Array.Empty<string>();
         consecutiveDetourCount = 0;
+        coolingDownDetourIds = Array.Empty<string>();
+        detourCooldownUntilUtcTicks = Array.Empty<long>();
         decisionStateVersion = 0;
+    }
+
+    private void StartActiveDetourCooldown()
+    {
+        if (guidanceTargetRole != NavigationTargetRole.NavigableDetour ||
+            string.IsNullOrWhiteSpace(activeDetourId))
+        {
+            return;
+        }
+
+        var untilTicks = DateTime.UtcNow.AddSeconds(DetourCooldownSeconds).Ticks;
+        var ids = coolingDownDetourIds ?? Array.Empty<string>();
+        var ticks = detourCooldownUntilUtcTicks ?? Array.Empty<long>();
+        var count = Math.Min(ids.Length, ticks.Length);
+        for (var index = 0; index < count; index++)
+        {
+            if (!string.Equals(ids[index], activeDetourId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ticks[index] = untilTicks;
+            return;
+        }
+
+        var nextIds = new string[count + 1];
+        var nextTicks = new long[count + 1];
+        Array.Copy(ids, nextIds, count);
+        Array.Copy(ticks, nextTicks, count);
+        nextIds[count] = activeDetourId;
+        nextTicks[count] = untilTicks;
+        coolingDownDetourIds = nextIds;
+        detourCooldownUntilUtcTicks = nextTicks;
+    }
+
+    private void RemoveDetourCooldown(string detourId)
+    {
+        var ids = coolingDownDetourIds ?? Array.Empty<string>();
+        var ticks = detourCooldownUntilUtcTicks ?? Array.Empty<long>();
+        var count = Math.Min(ids.Length, ticks.Length);
+        for (var index = 0; index < count; index++)
+        {
+            if (!string.Equals(ids[index], detourId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var nextIds = new string[count - 1];
+            var nextTicks = new long[count - 1];
+            if (index > 0)
+            {
+                Array.Copy(ids, 0, nextIds, 0, index);
+                Array.Copy(ticks, 0, nextTicks, 0, index);
+            }
+            if (index < count - 1)
+            {
+                Array.Copy(ids, index + 1, nextIds, index, count - index - 1);
+                Array.Copy(ticks, index + 1, nextTicks, index, count - index - 1);
+            }
+
+            coolingDownDetourIds = nextIds;
+            detourCooldownUntilUtcTicks = nextTicks;
+            return;
+        }
     }
 
     private static bool Contains(string[] values, string target)

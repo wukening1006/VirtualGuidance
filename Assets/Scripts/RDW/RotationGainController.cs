@@ -77,6 +77,8 @@ public sealed class RotationGainController : MonoBehaviour
         WaitingForUserTurn,
         /// <summary>正在根据真实转头增量施加额外虚拟 yaw。</summary>
         GainActive,
+        /// <summary>已达到目标转角，等待用户保持稳定朝向。</summary>
+        Stabilizing,
         /// <summary>物理转向和 Gain 已完成。</summary>
         GainCompleted,
         /// <summary>等待风险重算和 TurnCue 完成处理。</summary>
@@ -111,12 +113,18 @@ public sealed class RotationGainController : MonoBehaviour
     [SerializeField] private float targetPhysicalYawDegrees = 30f;
     [Tooltip("GainActive 后允许用户停止转动的最长时间，单位：秒。")]
     [SerializeField] private float turnStopTimeoutSeconds = 0.75f;
+    [Tooltip("停止转动超时后允许重新提示同方向转动的次数。")]
+    [SerializeField, Min(0)] private int turnStopRetryLimit = 1;
+    [Tooltip("达到目标转角后需要保持稳定的时间，单位：秒。")]
+    [SerializeField, Min(0f)] private float completionStableSeconds = 0.4f;
 
     private GainState state = GainState.Inactive;
     private int expectedDirectionSign;
     private float accumulatedPhysicalYaw;
     private float appliedExtraYaw;
     private float stationaryDurationSeconds;
+    private float completionStableDurationSeconds;
+    private int turnStopRetryCount;
     private string lastTerminationReason = string.Empty;
     private string activeDecisionId = string.Empty;
     private float currentTargetPhysicalYawDegrees = 30f;
@@ -130,9 +138,10 @@ public sealed class RotationGainController : MonoBehaviour
 
     /// <summary>是否处于一次尚未结束的 Gain 生命周期。</summary>
     public bool IsActive => state == GainState.Prepared ||
-                            state == GainState.WaitingForUserTurn ||
-                            state == GainState.GainActive ||
-                            state == GainState.Reevaluating;
+                             state == GainState.WaitingForUserTurn ||
+                             state == GainState.GainActive ||
+                             state == GainState.Stabilizing ||
+                             state == GainState.Reevaluating;
     /// <summary>是否正在实际向 Virtual Rotation Root 施加额外 yaw。</summary>
     public bool IsApplyingGain => state == GainState.GainActive;
     /// <summary>Inspector 或实验条件是否允许旋转增益。</summary>
@@ -145,6 +154,8 @@ public sealed class RotationGainController : MonoBehaviour
     public float AccumulatedPhysicalYawDegrees => accumulatedPhysicalYaw;
     /// <summary>本次 Gain 已施加到虚拟根节点的额外 yaw，单位：度。</summary>
     public float AppliedExtraYawDegrees => appliedExtraYaw;
+    /// <summary>本轮停止转动后已重新提示的次数。</summary>
+    public int TurnStopRetryCount => turnStopRetryCount;
     /// <summary>最近一次取消或中止原因。</summary>
     public string LastTerminationReason => lastTerminationReason;
     /// <summary>当前通过作用对象校验的 Rotation Gain 根节点。</summary>
@@ -186,7 +197,9 @@ public sealed class RotationGainController : MonoBehaviour
     /// <param name="deltaTimeSeconds">本帧持续时间，单位：秒；负值时使用 unscaledDeltaTime。</param>
     public void ProcessTurnSample(bool isTurning, float signedYawDeltaDegrees, float deltaTimeSeconds = -1f)
     {
-        if (state != GainState.WaitingForUserTurn && state != GainState.GainActive)
+        if (state != GainState.WaitingForUserTurn &&
+            state != GainState.GainActive &&
+            state != GainState.Stabilizing)
         {
             return;
         }
@@ -218,6 +231,12 @@ public sealed class RotationGainController : MonoBehaviour
         }
 
         var sampleDuration = deltaTimeSeconds >= 0f ? deltaTimeSeconds : Time.unscaledDeltaTime;
+        if (state == GainState.Stabilizing)
+        {
+            ProcessStabilizationSample(isTurning, signedYawDeltaDegrees, sampleDuration);
+            return;
+        }
+
         if (!isTurning || Mathf.Abs(signedYawDeltaDegrees) <= YawEpsilon)
         {
             if (state == GainState.GainActive)
@@ -225,7 +244,17 @@ public sealed class RotationGainController : MonoBehaviour
                 stationaryDurationSeconds += Mathf.Max(0f, sampleDuration);
                 if (stationaryDurationSeconds >= Mathf.Max(0.01f, turnStopTimeoutSeconds))
                 {
-                    AbortGain("turn_stopped_timeout");
+                    if (turnStopRetryCount < Mathf.Max(0, turnStopRetryLimit))
+                    {
+                        turnStopRetryCount++;
+                        stationaryDurationSeconds = 0f;
+                        TransitionTo(GainState.WaitingForUserTurn);
+                        EmitLifecycleEvent(RotationGainEventType.TurnRequested, "turn_retry");
+                    }
+                    else
+                    {
+                        AbortGain("turn_stopped_timeout");
+                    }
                 }
             }
 
@@ -269,7 +298,16 @@ public sealed class RotationGainController : MonoBehaviour
 
         if (accumulatedPhysicalYaw >= Mathf.Max(YawEpsilon, currentTargetPhysicalYawDegrees))
         {
-            CompleteUserTurn();
+            stationaryDurationSeconds = 0f;
+            completionStableDurationSeconds = 0f;
+            if (completionStableSeconds <= YawEpsilon)
+            {
+                CompleteUserTurn();
+            }
+            else
+            {
+                TransitionTo(GainState.Stabilizing);
+            }
         }
     }
 
@@ -317,12 +355,22 @@ public sealed class RotationGainController : MonoBehaviour
     /// <param name="maxExtraYaw">单次最大额外 yaw，单位：度。</param>
     /// <param name="targetPhysicalYaw">完成所需物理转角，单位：度。</param>
     /// <param name="stopTimeout">停止转动超时，单位：秒。</param>
-    public void ConfigureLimits(float multiplier, float maxExtraYaw, float targetPhysicalYaw, float stopTimeout)
+    /// <param name="stopRetryLimit">停止超时后允许同方向重试的次数。</param>
+    /// <param name="stableCompletionSeconds">达到目标角度后的稳定窗口，单位：秒。</param>
+    public void ConfigureLimits(
+        float multiplier,
+        float maxExtraYaw,
+        float targetPhysicalYaw,
+        float stopTimeout,
+        int stopRetryLimit = 0,
+        float stableCompletionSeconds = 0f)
     {
         gainMultiplier = Mathf.Max(0f, multiplier);
         maxExtraYawDegrees = Mathf.Max(0f, maxExtraYaw);
         targetPhysicalYawDegrees = Mathf.Max(YawEpsilon, targetPhysicalYaw);
         turnStopTimeoutSeconds = Mathf.Max(0.01f, stopTimeout);
+        turnStopRetryLimit = Mathf.Max(0, stopRetryLimit);
+        completionStableSeconds = Mathf.Max(0f, stableCompletionSeconds);
     }
 
     /// <summary>启用或禁用 Rotation Gain；禁用会取消尚未结束的生命周期。</summary>
@@ -463,14 +511,28 @@ public sealed class RotationGainController : MonoBehaviour
             return;
         }
 
-        if (riskState.reset_required)
+        if (physicalSpaceCalibration != null && !physicalSpaceCalibration.IsCalibrationValid)
+        {
+            AbortGain("tracking_invalid");
+        }
+        else if (riskState.reset_required)
         {
             AbortGain("reset_required");
         }
-        else if (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase))
+        else if (riskState.boundary_context != null &&
+                 riskState.boundary_context.Count >= 3 &&
+                 !PhysicalSpaceGeometry.ContainsPoint(
+                     riskState.boundary_context,
+                     riskState.user_physical_position))
         {
-            AbortGain("risk_critical");
+            AbortGain("outside_physical_boundary");
+        }
+        else if (riskState.TryGetNearestHeading(
+                     expectedDirectionSign * Mathf.Min(180f, currentTargetPhysicalYawDegrees),
+                     out var plannedHeading) &&
+                 plannedHeading.Safety == HeadingSafety.Critical)
+        {
+            AbortGain("planned_heading_critical");
         }
     }
 
@@ -523,10 +585,30 @@ public sealed class RotationGainController : MonoBehaviour
         accumulatedPhysicalYaw = 0f;
         appliedExtraYaw = 0f;
         stationaryDurationSeconds = 0f;
+        completionStableDurationSeconds = 0f;
+        turnStopRetryCount = 0;
         lastTerminationReason = string.Empty;
         if (state != GainState.Inactive)
         {
             TransitionTo(GainState.Inactive);
+        }
+    }
+
+    private void ProcessStabilizationSample(
+        bool isTurning,
+        float signedYawDeltaDegrees,
+        float sampleDurationSeconds)
+    {
+        if (isTurning && Mathf.Abs(signedYawDeltaDegrees) > YawEpsilon)
+        {
+            completionStableDurationSeconds = 0f;
+            return;
+        }
+
+        completionStableDurationSeconds += Mathf.Max(0f, sampleDurationSeconds);
+        if (completionStableDurationSeconds >= Mathf.Max(0f, completionStableSeconds))
+        {
+            CompleteUserTurn();
         }
     }
 

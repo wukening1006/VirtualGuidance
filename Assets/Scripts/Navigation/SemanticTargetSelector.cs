@@ -395,6 +395,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             System.StringComparison.Ordinal);
         return sameActiveDetour ||
                (!runtimeState.HasVisitedDetour(targetId) &&
+                !runtimeState.IsDetourCoolingDown(targetId) &&
                 runtimeState.consecutiveDetourCount < runtimeState.maxConsecutiveDetours);
     }
 }

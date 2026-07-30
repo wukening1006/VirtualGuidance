@@ -1926,12 +1926,13 @@ public sealed class GuidanceRuntimeEditModeTests
             state.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
             Is.True);
         Assert.That(state.activeDetourId, Is.EqualTo("E2"));
-        Assert.That(state.consecutiveDetourCount, Is.EqualTo(1));
+        Assert.That(state.consecutiveDetourCount, Is.Zero);
         Assert.That(
             state.TrySetGuidanceTarget(new GuidanceTarget("E2", NavigationTargetRole.NavigableDetour)),
             Is.True);
-        Assert.That(state.consecutiveDetourCount, Is.EqualTo(1));
+        Assert.That(state.consecutiveDetourCount, Is.Zero);
         Assert.That(state.CompleteDetour("E2"), Is.True);
+        Assert.That(state.consecutiveDetourCount, Is.EqualTo(1));
         Assert.That(state.currentExhibitId, Is.EqualTo("E2"));
         Assert.That(state.nextTargetId, Is.EqualTo("E3"));
         Assert.That(state.HasVisitedDetour("E2"), Is.True);
@@ -2117,6 +2118,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.False);
 
             motion.Sample(leftFortyFiveDegrees, 0.25f);
+            gain.ProcessTurnSample(false, 0f, 0.4f);
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
             Assert.That(task.RuntimeState.HasCompletedTurnCue(turnCueTargetId), Is.True);
@@ -2259,6 +2261,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             gain.BeginPendingTurn(1, 30f, "decision-no-risk");
             gain.ProcessTurnSample(true, 30f, 0.1f);
+            gain.ProcessTurnSample(false, 0f, 0.4f);
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("risk_snapshot_unavailable"));

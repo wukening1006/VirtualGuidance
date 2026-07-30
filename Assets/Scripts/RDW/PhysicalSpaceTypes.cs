@@ -245,13 +245,18 @@ internal static class PhysicalSpaceGeometry
 
     internal static bool ContainsPoint(Vector2[] boundary, Vector2 point)
     {
-        if (boundary == null || boundary.Length < 3)
+        return ContainsPoint((IReadOnlyList<Vector2>)boundary, point);
+    }
+
+    internal static bool ContainsPoint(IReadOnlyList<Vector2> boundary, Vector2 point)
+    {
+        if (boundary == null || boundary.Count < 3)
         {
             return false;
         }
 
         var inside = false;
-        for (int i = 0, j = boundary.Length - 1; i < boundary.Length; j = i++)
+        for (int i = 0, j = boundary.Count - 1; i < boundary.Count; j = i++)
         {
             var current = boundary[i];
             var previous = boundary[j];

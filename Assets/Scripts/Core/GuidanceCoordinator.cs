@@ -236,8 +236,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             requestClient = agentClient;
         }
 
-        if (requestClient == null || taskController == null || !taskController.RuntimeState.IsNavigating ||
-            requestClient.RequestInFlight)
+        if (taskController == null || requestClient == null || semanticTargetSelector == null || riskEvaluator == null)
+        {
+            TriggerRuntimeIntervention(null, "Guidance planning dependencies are unavailable.");
+            return;
+        }
+
+        if (!taskController.RuntimeState.IsNavigating || requestClient.RequestInFlight)
         {
             return;
         }
@@ -250,8 +255,19 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var requestId = Guid.NewGuid().ToString("N");
         var decisionId = Guid.NewGuid().ToString("N");
         var candidateSetId = Guid.NewGuid().ToString("N");
-        if (riskState == null || candidateSet == null || !candidateSet.HasModelCandidates ||
-            !taskController.TryReserveCandidateSet(
+        if (riskState == null || candidateSet == null)
+        {
+            TriggerRuntimeIntervention(null, "Guidance planning could not obtain current risk or candidate facts.");
+            return;
+        }
+
+        if (!candidateSet.HasModelCandidates)
+        {
+            HandleUnavailableCandidatePlanning(riskState);
+            return;
+        }
+
+        if (!taskController.TryReserveCandidateSet(
                 candidateSet,
                 candidateSetId,
                 requestId,
@@ -259,10 +275,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 riskState,
                 out var reservation))
         {
-            TriggerRuntimeIntervention(
-                null,
-                "No eligible navigation candidate set is available.",
-                false);
+            TriggerRuntimeIntervention(null, "Candidate set reservation could not be created.");
             return;
         }
 
@@ -325,20 +338,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        // 请求发出后任务或物理风险可能已变化，旧响应必须在任何表现执行前被拒绝。
-        if (localValidator != null &&
-            !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
-        {
-            if (reason.IndexOf("state changed", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                ExpireAndReplan(reason);
-                return;
-            }
-
-            TriggerRuntimeIntervention(response, reason);
-            return;
-        }
-
         var candidateReservation = runtimeState.ActiveCandidateSetReservation;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
         if (candidateReservation == null ||
@@ -348,14 +347,50 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             !string.Equals(
                 response.target_role,
                 GuidanceTypeUtility.TargetRoleToProtocol(frozenCandidate.TargetRole),
-                StringComparison.Ordinal) ||
-            !semanticTargetSelector.IsReservationCurrent(
-                candidateReservation,
-                runtimeState,
-                riskState,
-                conditionPolicy))
+                StringComparison.Ordinal))
         {
             ExpireAndReplan("Guidance response does not match the active Candidate-Set Reservation.");
+            return;
+        }
+
+        // 只重验模型实际选择的目标；其他候选变化不应使仍安全的响应过期。
+        if (!semanticTargetSelector.IsSelectedCandidateCurrent(
+                candidateReservation,
+                response.selected_target,
+                runtimeState,
+                riskState,
+                conditionPolicy,
+                riskEvaluator,
+                out var candidateReason))
+        {
+            ExpireAndReplan(candidateReason);
+            return;
+        }
+
+        // 后端只选择语义目标；最终身体动作始终由最新连续偏航和本地物理安全层生成。
+        if (!semanticTargetSelector.TryAssessCandidate(
+                response.selected_target,
+                frozenCandidate.TargetRole,
+                riskState,
+                out var selectedAssessment) ||
+            !selectedAssessment.IsExecutable)
+        {
+            ExpireAndReplan("Selected candidate cannot produce an executable local action.");
+            return;
+        }
+        response.movement_instruction =
+            GuidanceActionProtocolMapper.ToMovementInstruction(selectedAssessment.SuggestedAction);
+
+        if (localValidator != null &&
+            !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
+        {
+            if (reason.IndexOf("changed", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                ExpireAndReplan(reason);
+                return;
+            }
+
+            TriggerRuntimeIntervention(response, reason);
             return;
         }
 
@@ -404,7 +439,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             turnCueCompletionTracker.Cancel();
             rotationGainController?.QueueFromMovementInstruction(
                 response.movement_instruction,
-                activeSnapshot != null ? activeSnapshot.decisionId : string.Empty);
+                activeSnapshot != null ? activeSnapshot.decisionId : string.Empty,
+                Mathf.Abs(selectedAssessment.SuggestedAction.TargetYawDegrees));
         }
     }
 
@@ -751,11 +787,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleRuntimeRiskStateChanged(PhysicalRiskState riskState)
     {
-        if (IsResetRecoveryActive ||
-            requestPhase != GuidanceRequestPhase.Executing ||
+        if (IsResetRecoveryActive || runtimeReplanPending)
+        {
+            return;
+        }
+
+        if (requestPhase == GuidanceRequestPhase.Requested ||
+            requestPhase == GuidanceRequestPhase.Received)
+        {
+            HandlePendingRequestRiskChanged(riskState);
+            return;
+        }
+
+        if (requestPhase != GuidanceRequestPhase.Executing ||
             activeSnapshot == null ||
-            activeResponse == null ||
-            runtimeReplanPending)
+            activeResponse == null)
         {
             return;
         }
@@ -844,7 +890,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
                 interruptedResponse,
                 reason,
-                RuntimeGuidanceSafetyDecision.SoftReroute));
+                RuntimeGuidanceSafetyDecision.SoftReroute,
+                false,
+                0,
+                true));
             Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
             RequestNextGuidance();
         }
@@ -943,6 +992,94 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         return null;
+    }
+
+    private void HandlePendingRequestRiskChanged(PhysicalRiskState riskState)
+    {
+        if (taskController == null)
+        {
+            TriggerRuntimeIntervention(null, "Pending guidance request has no stable request context.");
+            return;
+        }
+
+        // AgentClient 构建请求与发布快照之间存在同帧窗口，此时等待 RequestBuilt 完成即可。
+        if (activeSnapshot == null)
+        {
+            return;
+        }
+
+        if (!HasTrustedRecoveryFacts(riskState) || !activeSnapshot.MatchesTaskContext(taskController.RuntimeState, riskState))
+        {
+            TriggerRuntimeIntervention(null, "Pending guidance request received unavailable or mismatched safety facts.");
+            return;
+        }
+
+        var reservation = taskController.RuntimeState.ActiveCandidateSetReservation;
+        if (HasCurrentFrozenSafetyCandidate(reservation, riskState))
+        {
+            return;
+        }
+
+        if (CanStartAutomaticReset(riskState))
+        {
+            TriggerPauseReset(
+                null,
+                riskState,
+                "Pending guidance candidates became unsafe; starting automatic reset.");
+            return;
+        }
+
+        TriggerRuntimeIntervention(
+            null,
+            IsUserInsidePhysicalBoundary(riskState)
+                ? "Pending guidance has no eligible candidate or meaningful reset direction."
+                : "The user is outside the physical boundary.");
+    }
+
+    private bool HasCurrentFrozenSafetyCandidate(
+        CandidateSetReservation reservation,
+        PhysicalRiskState riskState)
+    {
+        if (reservation == null || semanticTargetSelector == null || taskController == null)
+        {
+            return false;
+        }
+
+        var policy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
+        foreach (var targetId in reservation.ModelCandidateIds)
+        {
+            if (semanticTargetSelector.IsSelectedCandidateCurrent(
+                    reservation,
+                    targetId,
+                    taskController.RuntimeState,
+                    riskState,
+                    policy,
+                    riskEvaluator,
+                    out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void HandleUnavailableCandidatePlanning(PhysicalRiskState riskState)
+    {
+        if (CanStartAutomaticReset(riskState))
+        {
+            TriggerPauseReset(
+                null,
+                riskState,
+                "No eligible navigation candidate is currently available; starting automatic reset.");
+            return;
+        }
+
+        TriggerRuntimeIntervention(
+            null,
+            HasTrustedRecoveryFacts(riskState)
+                ? "No eligible navigation candidate or meaningful reset direction is available."
+                : "Guidance planning safety facts are unavailable or invalid.");
     }
 
     private bool HasTrustedRecoveryFacts(PhysicalRiskState riskState)
@@ -1264,14 +1401,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         var resetRequired = riskState != null && riskState.reset_required;
-        var criticalRisk = riskState != null &&
-                           (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase));
+        var currentHeadingCritical = IsCurrentHeadingCritical(riskState);
+        var outsideBoundary = riskState != null && !IsUserInsidePhysicalBoundary(riskState);
         if (riskState == null ||
             riskEvaluator == null ||
             !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
             resetRequired ||
-            criticalRisk)
+            currentHeadingCritical ||
+            outsideBoundary)
         {
             if (riskState != null && CanStartAutomaticReset(riskState))
             {
@@ -1335,12 +1472,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             TriggerSoftRerouteFromLatestRisk(info.Reason);
         }
         else if (info.Reason == "tracking_invalid" ||
-                  info.Reason == "risk_critical" ||
+                  info.Reason == "planned_heading_critical" ||
                   info.Reason == "reset_required" ||
+                  info.Reason == "outside_physical_boundary" ||
                   info.Reason == "rotation_root_invalid")
         {
             turnCueCompletionTracker.Cancel();
-            if ((info.Reason == "risk_critical" || info.Reason == "reset_required") &&
+            if ((info.Reason == "planned_heading_critical" || info.Reason == "reset_required") &&
                 riskEvaluator != null &&
                 CanStartAutomaticReset(riskEvaluator.CurrentRiskState))
             {
@@ -1370,14 +1508,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                               riskEvaluator == null ||
                               !riskEvaluator.IsRiskIdentityCurrent(riskState);
         var resetRequired = riskState != null && riskState.reset_required;
-        var criticalRisk = riskState != null &&
-                           (string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase));
-        if (riskUnavailable || resetRequired || criticalRisk)
+        var currentHeadingCritical = IsCurrentHeadingCritical(riskState);
+        var outsideBoundary = riskState != null && !IsUserInsidePhysicalBoundary(riskState);
+        if (riskUnavailable || resetRequired || currentHeadingCritical || outsideBoundary)
         {
             var reason = riskUnavailable
                 ? "risk_snapshot_unavailable"
-                : resetRequired ? "reset_required" : "risk_critical";
+                : resetRequired
+                    ? "reset_required"
+                    : outsideBoundary ? "outside_physical_boundary" : "planned_heading_critical";
             handlingGainTermination = true;
             rotationGainController?.CompleteReevaluation(false, reason);
             handlingGainTermination = false;
@@ -1400,5 +1539,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         {
             CompleteTurnCueAfterRiskReevaluation();
         }
+    }
+
+    private static bool IsCurrentHeadingCritical(PhysicalRiskState riskState)
+    {
+        if (riskState == null)
+        {
+            return false;
+        }
+
+        if (riskState.heading_profile != null && riskState.heading_profile.Count > 0)
+        {
+            return riskState.TryGetNearestHeading(0f, out var currentHeading) &&
+                   currentHeading.Safety == HeadingSafety.Critical;
+        }
+
+        return string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase);
     }
 }
