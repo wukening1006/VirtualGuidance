@@ -23,6 +23,49 @@ public interface IGuidanceRequestClient
     void CancelPendingRequest();
 }
 
+/// <summary>表示后端健康检查的容错状态。</summary>
+public enum BackendHealthStatus
+{
+    /// <summary>尚未获得健康检查结果。</summary>
+    Unknown,
+    /// <summary>最近一次健康检查成功。</summary>
+    Online,
+    /// <summary>健康检查正在失败，但仍处于瞬时故障宽限期。</summary>
+    Degraded,
+    /// <summary>连续失败次数和失败持续时间均已超过离线阈值。</summary>
+    Offline
+}
+
+/// <summary>保存一次不可变的后端健康状态转换信息。</summary>
+public sealed class BackendHealthStatusInfo
+{
+    /// <summary>当前后端健康状态。</summary>
+    public BackendHealthStatus Status { get; }
+    /// <summary>当前连续失败次数。</summary>
+    public int ConsecutiveFailures { get; }
+    /// <summary>本轮连续失败持续时间，单位：秒。</summary>
+    public float FailureElapsedSeconds { get; }
+    /// <summary>进入 Offline 所需的连续失败次数。</summary>
+    public int FailureThreshold { get; }
+    /// <summary>进入 Offline 所需的失败宽限时间，单位：秒。</summary>
+    public float OfflineGraceSeconds { get; }
+
+    /// <summary>创建后端健康状态诊断快照。</summary>
+    public BackendHealthStatusInfo(
+        BackendHealthStatus status,
+        int consecutiveFailures,
+        float failureElapsedSeconds,
+        int failureThreshold,
+        float offlineGraceSeconds)
+    {
+        Status = status;
+        ConsecutiveFailures = Math.Max(0, consecutiveFailures);
+        FailureElapsedSeconds = Mathf.Max(0f, failureElapsedSeconds);
+        FailureThreshold = Math.Max(1, failureThreshold);
+        OfflineGraceSeconds = Mathf.Max(0f, offlineGraceSeconds);
+    }
+}
+
 /// <summary>
 /// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
@@ -68,6 +111,12 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     [SerializeField] private string healthEndpoint = "http://127.0.0.1:8000/health";
     [Tooltip("健康检查间隔，单位：秒。")]
     [SerializeField] private float healthCheckIntervalSeconds = 2f;
+    [Tooltip("进入离线状态前允许的连续健康检查失败次数。")]
+    [SerializeField, Min(1)] private int healthCheckFailureThreshold = 3;
+    [Tooltip("进入离线状态前允许的连续失败时间，单位：秒。")]
+    [SerializeField, Min(0f)] private float backendOfflineGraceSeconds = 8f;
+    [Tooltip("活动实验在 BackendHold 中等待恢复的最长时间，单位：秒。")]
+    [SerializeField, Min(1f)] private float backendFatalTimeoutSeconds = 30f;
 
     [Header("状态来源")]
     [Tooltip("当前 physical space 管理器；未配置时自动查找。")]
@@ -111,6 +160,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     /// 请求上下文和位姿组装完成、发送前触发一次；参数为本次请求快照，供日志和过期响应检测使用。
     /// </summary>
     public event Action<GuidanceRequest> GuidanceRequestBuilt;
+    /// <summary>后端健康状态发生变化时触发。</summary>
+    public event Action<BackendHealthStatusInfo> BackendHealthChanged;
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
@@ -119,13 +170,25 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     private int requestGeneration;
     private UnityWebRequest activeGuidanceRequest;
     private Coroutine healthLoop;
+    private BackendHealthStatus backendHealthStatus = BackendHealthStatus.Unknown;
+    private int consecutiveHealthCheckFailures;
+    private float firstHealthCheckFailureTime = -1f;
+    private bool lastRequestFailureRecoverable;
 
     /// <summary>
     /// 当前是否正在等待后端响应，用于避免重复请求造成状态乱序。
     /// </summary>
     public bool RequestInFlight => requestInFlight;
-    /// <summary>最近一次健康检查是否成功。</summary>
+    /// <summary>后端是否已成功连接且尚未超过离线判定阈值。</summary>
     public bool BackendOnline => backendOnline;
+    /// <summary>当前后端健康状态。</summary>
+    public BackendHealthStatus BackendHealthStatus => backendHealthStatus;
+    /// <summary>当前连续健康检查失败次数。</summary>
+    public int ConsecutiveHealthCheckFailures => consecutiveHealthCheckFailures;
+    /// <summary>活动实验允许等待后端恢复的最长时间，单位：秒。</summary>
+    public float BackendFatalTimeoutSeconds => Mathf.Max(1f, backendFatalTimeoutSeconds);
+    /// <summary>最近一次 Guidance 请求失败是否属于可恢复的连接、无响应或服务端暂时故障。</summary>
+    public bool LastRequestFailureRecoverable => lastRequestFailureRecoverable;
 
     private void Awake()
     {
@@ -134,6 +197,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
     private void OnEnable()
     {
+        ResetHealthTracking();
         healthLoop = StartCoroutine(HealthLoop());
     }
 
@@ -146,6 +210,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         }
 
         CancelPendingRequest();
+        healthRequestInFlight = false;
+        ResetHealthTracking();
     }
 
     /// <summary>
@@ -184,6 +250,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     /// </summary>
     public void RequestGuidance(GuidanceRequestContext context)
     {
+        lastRequestFailureRecoverable = false;
         if (requestInFlight)
         {
             GuidanceRequestFailed?.Invoke("Guidance request is already in progress.");
@@ -207,6 +274,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     /// <summary>拒绝绕过 Coordinator 的直接重试；重试必须创建新的 Candidate-Set Reservation。</summary>
     public void RetryLastRequest()
     {
+        lastRequestFailureRecoverable = false;
         GuidanceRequestFailed?.Invoke(
             "Direct retry is disabled; GuidanceCoordinator must create a new Candidate-Set Reservation.");
     }
@@ -579,12 +647,22 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
 
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
+                lastRequestFailureRecoverable =
+                    webRequest.result == UnityWebRequest.Result.ConnectionError ||
+                    webRequest.responseCode <= 0 ||
+                    webRequest.responseCode >= 500;
+                if (lastRequestFailureRecoverable)
+                {
+                    RecordHealthCheckResult(false, Time.realtimeSinceStartup);
+                }
                 GuidanceRequestFailed?.Invoke(FormatGuidanceRequestFailure(webRequest.error, responseText));
                 yield break;
             }
 
+            RecordHealthCheckResult(true, Time.realtimeSinceStartup);
             if (!TryParseGuidanceResponse(responseText, request, out var response, out var failureReason))
             {
+                lastRequestFailureRecoverable = false;
                 GuidanceRequestFailed?.Invoke($"Guidance response rejected: {failureReason}.");
                 yield break;
             }
@@ -662,28 +740,110 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         {
             request.timeout = Mathf.Max(1, requestTimeoutSeconds);
             yield return request.SendWebRequest();
-            SetBackendOnline(request.result == UnityWebRequest.Result.Success && request.responseCode >= 200 && request.responseCode < 300);
+            RecordHealthCheckResult(
+                request.result == UnityWebRequest.Result.Success &&
+                request.responseCode >= 200 &&
+                request.responseCode < 300,
+                Time.realtimeSinceStartup);
         }
 
         healthRequestInFlight = false;
     }
 
-    private void SetBackendOnline(bool online)
+    private void RecordHealthCheckResult(bool succeeded, float timestampSeconds)
     {
-        if (backendOnline == online)
+        if (succeeded)
         {
+            consecutiveHealthCheckFailures = 0;
+            firstHealthCheckFailureTime = -1f;
+            SetBackendHealthStatus(BackendHealthStatus.Online, 0f);
             return;
         }
 
-        backendOnline = online;
-        BackendOnlineChanged?.Invoke(backendOnline);
+        if (consecutiveHealthCheckFailures == 0)
+        {
+            firstHealthCheckFailureTime = timestampSeconds;
+        }
+
+        consecutiveHealthCheckFailures++;
+        var failureElapsedSeconds = firstHealthCheckFailureTime >= 0f
+            ? Mathf.Max(0f, timestampSeconds - firstHealthCheckFailureTime)
+            : 0f;
+        var offline = consecutiveHealthCheckFailures >= Mathf.Max(1, healthCheckFailureThreshold) &&
+                      failureElapsedSeconds >= Mathf.Max(0f, backendOfflineGraceSeconds);
+        SetBackendHealthStatus(
+            offline ? BackendHealthStatus.Offline : BackendHealthStatus.Degraded,
+            failureElapsedSeconds,
+            true);
+    }
+
+    private void SetBackendHealthStatus(
+        BackendHealthStatus status,
+        float failureElapsedSeconds,
+        bool forceNotification = false)
+    {
+        var previousOnline = backendOnline;
+        backendOnline = status == BackendHealthStatus.Online ||
+                        (status == BackendHealthStatus.Degraded && backendOnline);
+        var statusChanged = backendHealthStatus != status;
+        backendHealthStatus = status;
+        if (statusChanged || forceNotification)
+        {
+            BackendHealthChanged?.Invoke(CreateBackendHealthInfo(failureElapsedSeconds));
+        }
+
+        if (previousOnline != backendOnline)
+        {
+            BackendOnlineChanged?.Invoke(backendOnline);
+        }
+    }
+
+    private BackendHealthStatusInfo CreateBackendHealthInfo(float failureElapsedSeconds)
+    {
+        return new BackendHealthStatusInfo(
+            backendHealthStatus,
+            consecutiveHealthCheckFailures,
+            failureElapsedSeconds,
+            healthCheckFailureThreshold,
+            backendOfflineGraceSeconds);
+    }
+
+    private void ResetHealthTracking()
+    {
+        consecutiveHealthCheckFailures = 0;
+        firstHealthCheckFailureTime = -1f;
+        backendOnline = false;
+        backendHealthStatus = BackendHealthStatus.Unknown;
     }
 
 #if UNITY_EDITOR
     /// <summary>仅供 EditMode 测试设置健康状态。</summary>
     public void SetBackendOnlineForTesting(bool online)
     {
-        SetBackendOnline(online);
+        consecutiveHealthCheckFailures = online ? 0 : Mathf.Max(1, healthCheckFailureThreshold);
+        firstHealthCheckFailureTime = online ? -1f : 0f;
+        SetBackendHealthStatus(
+            online ? BackendHealthStatus.Online : BackendHealthStatus.Offline,
+            online ? 0f : Mathf.Max(0f, backendOfflineGraceSeconds),
+            true);
+    }
+
+    /// <summary>仅供 EditMode 测试配置后端健康容错阈值。</summary>
+    public void ConfigureHealthPolicyForTesting(
+        int failureThreshold,
+        float offlineGraceSeconds,
+        float fatalTimeoutSeconds = 30f)
+    {
+        healthCheckFailureThreshold = Mathf.Max(1, failureThreshold);
+        backendOfflineGraceSeconds = Mathf.Max(0f, offlineGraceSeconds);
+        backendFatalTimeoutSeconds = Mathf.Max(1f, fatalTimeoutSeconds);
+        ResetHealthTracking();
+    }
+
+    /// <summary>仅供 EditMode 测试注入一次健康检查结果及其时间。</summary>
+    public void RecordHealthCheckResultForTesting(bool succeeded, float timestampSeconds)
+    {
+        RecordHealthCheckResult(succeeded, Mathf.Max(0f, timestampSeconds));
     }
 #endif
 

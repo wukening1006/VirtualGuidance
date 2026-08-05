@@ -39,6 +39,14 @@ public sealed class RotationGainEventInfo
     public float PhysicalYawDegrees { get; }
     /// <summary>事件发生时已施加的额外虚拟 yaw，单位：度。</summary>
     public float ExtraYawDegrees { get; }
+    /// <summary>本次任务要求完成的物理 yaw，单位：度。</summary>
+    public float TargetPhysicalYawDegrees { get; }
+    /// <summary>Inspector 配置的旋转增益倍率。</summary>
+    public float ConfiguredGainMultiplier { get; }
+    /// <summary>受单次额外 yaw 预算约束后的实际旋转增益倍率。</summary>
+    public float EffectiveGainMultiplier { get; }
+    /// <summary>本次允许施加的最大额外虚拟 yaw，单位：度。</summary>
+    public float MaxExtraYawDegrees { get; }
 
     /// <summary>创建一条不可变 Rotation Gain 生命周期事件。</summary>
     public RotationGainEventInfo(
@@ -48,7 +56,11 @@ public sealed class RotationGainEventInfo
         string reason,
         float physicalYawDegrees,
         float extraYawDegrees,
-        string decisionId = "")
+        string decisionId = "",
+        float targetPhysicalYawDegrees = 0f,
+        float configuredGainMultiplier = 0f,
+        float effectiveGainMultiplier = 0f,
+        float maxExtraYawDegrees = 0f)
     {
         EventType = eventType;
         State = state;
@@ -57,6 +69,10 @@ public sealed class RotationGainEventInfo
         PhysicalYawDegrees = physicalYawDegrees;
         ExtraYawDegrees = extraYawDegrees;
         DecisionId = decisionId ?? string.Empty;
+        TargetPhysicalYawDegrees = Mathf.Max(0f, targetPhysicalYawDegrees);
+        ConfiguredGainMultiplier = Mathf.Max(0f, configuredGainMultiplier);
+        EffectiveGainMultiplier = Mathf.Max(0f, effectiveGainMultiplier);
+        MaxExtraYawDegrees = Mathf.Max(0f, maxExtraYawDegrees);
     }
 }
 
@@ -85,7 +101,7 @@ public sealed class RotationGainController : MonoBehaviour
         Reevaluating,
         /// <summary>因 Guidance 取消等正常外部原因结束。</summary>
         Cancelled,
-        /// <summary>因反向、超时、风险、追踪或增益越界而中止。</summary>
+        /// <summary>因反向、超时、风险或追踪异常而中止。</summary>
         Aborted
     }
 
@@ -128,6 +144,7 @@ public sealed class RotationGainController : MonoBehaviour
     private string lastTerminationReason = string.Empty;
     private string activeDecisionId = string.Empty;
     private float currentTargetPhysicalYawDegrees = 30f;
+    private float effectiveGainMultiplier;
 
     /// <summary>Gain 状态发生变化时触发。</summary>
     public event Action<GainState> StateChanged;
@@ -154,6 +171,14 @@ public sealed class RotationGainController : MonoBehaviour
     public float AccumulatedPhysicalYawDegrees => accumulatedPhysicalYaw;
     /// <summary>本次 Gain 已施加到虚拟根节点的额外 yaw，单位：度。</summary>
     public float AppliedExtraYawDegrees => appliedExtraYaw;
+    /// <summary>本次 Gain 要求完成的物理转角，单位：度。</summary>
+    public float CurrentTargetPhysicalYawDegrees => currentTargetPhysicalYawDegrees;
+    /// <summary>Inspector 配置的旋转增益倍率。</summary>
+    public float ConfiguredGainMultiplier => Mathf.Max(0f, gainMultiplier);
+    /// <summary>受单次额外 yaw 预算约束后的本轮有效增益倍率。</summary>
+    public float EffectiveGainMultiplier => effectiveGainMultiplier;
+    /// <summary>单次允许施加的最大额外虚拟 yaw，单位：度。</summary>
+    public float MaxExtraYawDegrees => Mathf.Max(0f, maxExtraYawDegrees);
     /// <summary>本轮停止转动后已重新提示的次数。</summary>
     public int TurnStopRetryCount => turnStopRetryCount;
     /// <summary>最近一次取消或中止原因。</summary>
@@ -276,15 +301,15 @@ public sealed class RotationGainController : MonoBehaviour
         }
 
         var physicalYaw = Mathf.Abs(signedYawDeltaDegrees);
-        var requestedExtraYaw = physicalYaw * Mathf.Max(0f, gainMultiplier);
-        if (appliedExtraYaw + requestedExtraYaw > Mathf.Max(0f, maxExtraYawDegrees) + YawEpsilon)
-        {
-            AbortGain("gain_limit_exceeded");
-            return;
-        }
+        var remainingTargetYaw = Mathf.Max(0f, currentTargetPhysicalYawDegrees - accumulatedPhysicalYaw);
+        var gainEligibleYaw = Mathf.Min(physicalYaw, remainingTargetYaw);
+        var remainingGainCapacity = Mathf.Max(0f, MaxExtraYawDegrees - appliedExtraYaw);
+        var actualExtraYaw = Mathf.Min(
+            gainEligibleYaw * effectiveGainMultiplier,
+            remainingGainCapacity);
 
         accumulatedPhysicalYaw += physicalYaw;
-        if (requestedExtraYaw > 0f)
+        if (actualExtraYaw > 0f)
         {
             var rotationPivot = userPoseTracker != null
                 ? userPoseTracker.UserVirtualPosition
@@ -292,8 +317,8 @@ public sealed class RotationGainController : MonoBehaviour
             virtualRotationRoot.RotateAround(
                 rotationPivot,
                 Vector3.up,
-                requestedExtraYaw * expectedDirectionSign);
-            appliedExtraYaw += requestedExtraYaw;
+                actualExtraYaw * expectedDirectionSign);
+            appliedExtraYaw += actualExtraYaw;
         }
 
         if (accumulatedPhysicalYaw >= Mathf.Max(YawEpsilon, currentTargetPhysicalYawDegrees))
@@ -582,6 +607,9 @@ public sealed class RotationGainController : MonoBehaviour
         currentTargetPhysicalYawDegrees = requiredPhysicalYawDegrees >= 0f
             ? Mathf.Max(YawEpsilon, requiredPhysicalYawDegrees)
             : Mathf.Max(YawEpsilon, targetPhysicalYawDegrees);
+        effectiveGainMultiplier = Mathf.Min(
+            ConfiguredGainMultiplier,
+            MaxExtraYawDegrees / currentTargetPhysicalYawDegrees);
         accumulatedPhysicalYaw = 0f;
         appliedExtraYaw = 0f;
         stationaryDurationSeconds = 0f;
@@ -632,7 +660,11 @@ public sealed class RotationGainController : MonoBehaviour
             reason,
             accumulatedPhysicalYaw,
             appliedExtraYaw,
-            activeDecisionId));
+            activeDecisionId,
+            currentTargetPhysicalYawDegrees,
+            ConfiguredGainMultiplier,
+            effectiveGainMultiplier,
+            MaxExtraYawDegrees));
     }
 
     private static bool IsValidRotationRoot(Transform root)

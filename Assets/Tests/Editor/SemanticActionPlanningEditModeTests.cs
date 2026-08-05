@@ -26,7 +26,7 @@ public sealed class SemanticActionPlanningEditModeTests
     }
 
     /// <summary>
-    /// 验证 behind 和 medium 不会从语义候选消失，只有当前执行资格会变化。
+    /// 验证目标保留在基础语义候选中，安全过滤只向模型暴露当前可执行候选。
     /// </summary>
     [Test]
     public void SemanticTargetSelector_SeparatesBaseCandidatesFromActionExecutability()
@@ -78,7 +78,7 @@ public sealed class SemanticActionPlanningEditModeTests
             var mediumAssessment = mediumSet.Assessments.Single(item => item.Candidate.TargetId == final.Id);
 
             Assert.That(mediumSet.CandidateIds, Does.Contain(final.Id));
-            Assert.That(mediumSet.ModelCandidateIds, Does.Contain(final.Id));
+            Assert.That(mediumSet.ModelCandidateIds, Does.Not.Contain(final.Id));
             Assert.That(mediumSet.AllowedCandidateIds, Does.Not.Contain(final.Id));
             Assert.That(mediumAssessment.SuggestedAction.Type, Is.EqualTo(GuidanceActionType.MoveForward));
             Assert.That(mediumAssessment.ExecutionState, Is.EqualTo(CandidateExecutionState.TemporarilyBlocked));

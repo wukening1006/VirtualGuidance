@@ -580,7 +580,20 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(
                 validator.Validate(unsafeResponse, safeSnapshot, runtimeState, riskState, out var worsenedReason),
                 Is.False);
-            Assert.That(worsenedReason, Does.Contain("changed after the request"));
+            Assert.That(worsenedReason, Does.Contain("unsafe forward"));
+
+            var safeLater = new PhysicalRiskState(
+                riskRevision: 3,
+                physicalSpace: "narrow_room",
+                clearanceForward: 2f,
+                clearanceLeft: 2f,
+                clearanceRight: 2f,
+                unsafeDirections: System.Array.Empty<string>(),
+                safeDirections: new[] { "forward", "left", "right" });
+            Assert.That(
+                validator.Validate(unsafeResponse, safeSnapshot, runtimeState, safeLater, out var safeLaterReason),
+                Is.True,
+                safeLaterReason);
 
             runtimeState.AdvanceTo("E3", "E5");
             Assert.That(runtimeState.stateVersion, Is.GreaterThan(originalVersion));
@@ -844,10 +857,17 @@ public sealed class GuidanceRuntimeEditModeTests
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
             var softRerouteCount = 0;
+            var softRerouteReportedSafeCandidate = false;
+            RuntimeInterventionInfo lastRuntimeIntervention = null;
             var replanCount = 0;
             coordinator.RuntimeIntervention += info =>
             {
-                if (info.Decision == RuntimeGuidanceSafetyDecision.SoftReroute) softRerouteCount++;
+                lastRuntimeIntervention = info;
+                if (info.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
+                {
+                    softRerouteCount++;
+                    softRerouteReportedSafeCandidate = info.SafeCandidateAvailable;
+                }
             };
             coordinator.Replanning += _ => replanCount++;
 
@@ -886,10 +906,14 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
 
             Assert.That(softRerouteCount, Is.EqualTo(1));
+            Assert.That(softRerouteReportedSafeCandidate, Is.True);
             Assert.That(replanCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
             Assert.That(requests.Contexts[1].preferred_task_target, Is.EqualTo("E5"));
-            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(
+                coordinator.RequestPhase,
+                Is.EqualTo(GuidanceRequestPhase.Requested),
+                lastRuntimeIntervention != null ? lastRuntimeIntervention.Reason : string.Empty);
             Assert.That(task.RuntimeState.IsNavigating, Is.True);
             Assert.That(task.RuntimeState.ActiveReservation, Is.Null);
             Assert.That(task.RuntimeState.ActiveCandidateSetReservation.Phase, Is.EqualTo(CandidateSetReservationPhase.Reserved));
@@ -1169,17 +1193,17 @@ public sealed class GuidanceRuntimeEditModeTests
                 safeDirections: SafeDirectionsExcept(selectedDirection)));
 
             gain.BeginPendingTurn(1, 30f, "stale-decision");
-            gain.AbortGain("gain_limit_exceeded");
+            gain.AbortGain("turn_stopped_timeout");
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
             Assert.That(softRerouteCount, Is.Zero);
 
             gain.BeginPendingTurn(1, 30f, request.decision_id);
-            gain.AbortGain("gain_limit_exceeded");
+            gain.AbortGain("turn_stopped_timeout");
 
             Assert.That(matchedAbort, Is.Not.Null);
             Assert.That(matchedAbort.DecisionId, Is.EqualTo(request.decision_id));
-            Assert.That(matchedAbort.Reason, Is.EqualTo("gain_limit_exceeded"));
+            Assert.That(matchedAbort.Reason, Is.EqualTo("turn_stopped_timeout"));
             Assert.That(softRerouteCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));
             Assert.That(requests.Contexts[1].preferred_task_target, Is.EqualTo("E5"));
@@ -1332,6 +1356,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Inactive));
             Assert.That(states, Does.Contain(RotationGainController.GainState.GainCompleted));
             Assert.That(states, Does.Contain(RotationGainController.GainState.Reevaluating));
+            Assert.That(
+                states.Count(value => value == RotationGainController.GainState.Reevaluating),
+                Is.EqualTo(1));
 
             gain.SetGainEnabled(false);
             Assert.That(gain.GainEnabled, Is.False);
@@ -1346,7 +1373,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void RotationGainController_AbortsForReverseStopTimeoutAndGainLimitWithDecisionId()
+    public void RotationGainController_AbortsForReverseAndStopTimeoutWithDecisionId()
     {
         var root = new GameObject("RotationGainAbortRulesTest");
         var rotationRoot = new GameObject("RotationGainAbortRoot");
@@ -1376,14 +1403,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("turn_stopped_timeout"));
 
-            gain.BeginPendingTurn(1, -1f, "decision-limit");
-            gain.ProcessTurnSample(true, 60f, 0.1f);
-            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
-            Assert.That(gain.LastTerminationReason, Is.EqualTo("gain_limit_exceeded"));
-            Assert.That(gain.AppliedExtraYawDegrees, Is.Zero.Within(0.001f));
             Assert.That(
                 cancelledEvents.Select(info => info.DecisionId),
-                Is.EqualTo(new[] { "decision-reverse", "decision-timeout", "decision-limit" }));
+                Is.EqualTo(new[] { "decision-reverse", "decision-timeout" }));
         }
         finally
         {
@@ -2970,6 +2992,80 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void RotationGainController_LongTurnUsesFeasibleMultiplierAndCompletesAtBudget()
+    {
+        var root = new GameObject("RotationGainFeasibleMultiplierTest");
+        var rotationRoot = new GameObject("RotationGainFeasibleMultiplierRoot");
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(rotationRoot.transform), Is.True);
+            gain.ConfigureLimits(0.15f, 8f, 30f, 0.5f);
+            gain.SetGainEnabled(true);
+            var cancelledCount = 0;
+            RotationGainEventInfo completedEvent = null;
+            gain.LifecycleEventOccurred += info =>
+            {
+                if (info.EventType == RotationGainEventType.GainCancelled) cancelledCount++;
+                if (info.EventType == RotationGainEventType.GainCompleted) completedEvent = info;
+            };
+
+            gain.BeginPendingTurn(1, 82.62477f, "decision-long-turn");
+
+            Assert.That(gain.ConfiguredGainMultiplier, Is.EqualTo(0.15f).Within(0.000001f));
+            Assert.That(gain.EffectiveGainMultiplier, Is.EqualTo(8f / 82.62477f).Within(0.000001f));
+            gain.ProcessTurnSample(true, 82.62477f, 0.1f);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Reevaluating));
+            Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(8f).Within(0.001f));
+            Assert.That(cancelledCount, Is.Zero);
+            Assert.That(gain.LastTerminationReason, Is.Empty);
+            Assert.That(completedEvent.TargetPhysicalYawDegrees, Is.EqualTo(82.62477f).Within(0.0001f));
+            Assert.That(completedEvent.ConfiguredGainMultiplier, Is.EqualTo(0.15f).Within(0.0001f));
+            Assert.That(completedEvent.EffectiveGainMultiplier, Is.EqualTo(8f / 82.62477f).Within(0.0001f));
+            Assert.That(completedEvent.MaxExtraYawDegrees, Is.EqualTo(8f).Within(0.0001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
+    public void RotationGainController_OvershootAndZeroBudgetRemainBoundedAndCompletable()
+    {
+        var root = new GameObject("RotationGainBudgetBoundsTest");
+        var rotationRoot = new GameObject("RotationGainBudgetBoundsRoot");
+        try
+        {
+            var gain = root.AddComponent<RotationGainController>();
+            Assert.That(gain.ConfigureRotationRoot(rotationRoot.transform), Is.True);
+            gain.ConfigureLimits(0.15f, 8f, 30f, 0.5f);
+            gain.SetGainEnabled(true);
+            gain.BeginPendingTurn(1, 82.62477f, "decision-overshoot");
+            gain.ProcessTurnSample(true, 120f, 0.1f);
+
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Reevaluating));
+            Assert.That(gain.AppliedExtraYawDegrees, Is.EqualTo(8f).Within(0.001f));
+
+            gain.CompleteReevaluation(true);
+            gain.ConfigureLimits(0.15f, 0f, 30f, 0.5f);
+            gain.BeginPendingTurn(1, 30f, "decision-zero-budget");
+            gain.ProcessTurnSample(true, 30f, 0.1f);
+
+            Assert.That(gain.EffectiveGainMultiplier, Is.Zero);
+            Assert.That(gain.AppliedExtraYawDegrees, Is.Zero);
+            Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Reevaluating));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+            Object.DestroyImmediate(rotationRoot);
+        }
+    }
+
+    [Test]
     public void ExperimentDashboard_RequiresCalibrationBeforeSessionCanStart()
     {
         var root = new GameObject("ExperimentDashboardCalibrationGateTest");
@@ -3607,6 +3703,66 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void ExperimentLogger_WritesStructuredGainReplanAndBackendDiagnostics()
+    {
+        var root = new GameObject("ExperimentStructuredDiagnosticsTest");
+        string logPath = null;
+        ExperimentLogger logger = null;
+        try
+        {
+            logger = root.AddComponent<ExperimentLogger>();
+            SetPrivateField(logger, "logFolderRelativeToProject", "Temp/VirtualGuidanceEditModeLogs");
+            SetPrivateField(logger, "mirrorToUnityConsole", false);
+            logger.StartSession(ExperimentConditionMatrix.Build(5, 1, 1, "P-structured-diagnostics"));
+            logPath = logger.LogPath;
+
+            logger.LogRotationGain(
+                new RotationGainEventInfo(
+                    RotationGainEventType.GainCompleted,
+                    RotationGainController.GainState.GainCompleted,
+                    -1,
+                    string.Empty,
+                    82.62477f,
+                    8f,
+                    "decision-structured",
+                    82.62477f,
+                    0.15f,
+                    8f / 82.62477f,
+                    8f),
+                LogTraceContext.Empty,
+                null,
+                null);
+            logger.LogReplanHold(
+                new ReplanHoldInfo(true, "no candidate", "state:2|risk:7", 7, 2, 1f),
+                LogTraceContext.Empty,
+                null,
+                null);
+            logger.LogBackendHealth(
+                new BackendHealthStatusInfo(BackendHealthStatus.Degraded, 2, 2f, 3, 8f),
+                LogTraceContext.Empty,
+                null,
+                null);
+
+            var records = ReadAllEventLines(logger).Select(JObject.Parse).ToArray();
+            var gain = records.Single(record => (string)record["event_name"] == "rdw.gain_completed");
+            var hold = records.Single(record => (string)record["event_name"] == "guidance.holding_for_replan");
+            var backend = records.Single(record => (string)record["event_name"] == "backend.degraded");
+
+            Assert.That((float)gain["data"]["effective_gain_multiplier"], Is.EqualTo(8f / 82.62477f).Within(0.0001f));
+            Assert.That((float)gain["data"]["max_extra_yaw_degrees"], Is.EqualTo(8f).Within(0.0001f));
+            Assert.That((string)hold["data"]["planning_fingerprint"], Is.EqualTo("state:2|risk:7"));
+            Assert.That((int)hold["data"]["replan_retry_count"], Is.EqualTo(2));
+            Assert.That((string)backend["data"]["backend_health_status"], Is.EqualTo("degraded"));
+            Assert.That((int)backend["data"]["health_check_failure_count"], Is.EqualTo(2));
+        }
+        finally
+        {
+            CloseLoggerAndDeleteSession(logger, logPath);
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
     public void ExperimentLogger_FlushesPreSessionCalibrationEvents()
     {
         var root = new GameObject("ExperimentLoggerCalibrationQueueTest");
@@ -3943,6 +4099,17 @@ public sealed class GuidanceRuntimeEditModeTests
 
             controller.ShowRuntimeIntervention();
             Assert.That(safetyText.text, Is.EqualTo("请停止移动，等待安全引导"));
+
+            controller.ShowAutomaticReset();
+            var resetMessage = safetyText.text;
+            controller.ShowReplanningHold();
+            var replanMessage = safetyText.text;
+            controller.ShowBackendHold();
+            var backendMessage = safetyText.text;
+
+            Assert.That(resetMessage, Is.Not.EqualTo(replanMessage));
+            Assert.That(replanMessage, Is.Not.EqualTo(backendMessage));
+            Assert.That(backendMessage, Is.Not.EqualTo(resetMessage));
         }
         finally
         {
@@ -4124,6 +4291,283 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
+    public void GuidanceCoordinator_AcceptsSelectedCandidateThatRemainsSafeAfterRiskRevisionChanges()
+    {
+        var root = new GameObject("GuidanceLatestSelectedCandidateTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-latest-safe");
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            var selectedTarget = request.model_candidate_ids[0];
+            var selectedDirection = CandidateDirectionForRequest(request, selectedTarget);
+            var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
+            var latestRisk = CopyRiskWithDirections(
+                riskEvaluator.CurrentRiskState,
+                riskEvaluator.CurrentRiskState.risk_revision + 1,
+                new[] { selectedDirection },
+                SafeDirectionsExcept(selectedDirection));
+            SetPrivateField(riskEvaluator, "currentRiskState", latestRisk);
+
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, selectedTarget));
+
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            Assert.That(task.RuntimeState.CurrentGuidanceTarget.TargetId, Is.EqualTo(selectedTarget));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_ExpiresSelectedCandidateThatBecameUnsafeAndIgnoresLateOldResponse()
+    {
+        var root = new GameObject("GuidanceLatestUnsafeCandidateTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var expiredCount = 0;
+            var hardStopCount = 0;
+            coordinator.GuidanceExpired += _ => expiredCount++;
+            coordinator.RuntimeIntervention += info =>
+            {
+                if (info.Decision == RuntimeGuidanceSafetyDecision.HardStop) hardStopCount++;
+            };
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-became-unsafe");
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            var selectedTarget = request.model_candidate_ids[0];
+            var selectedDirection = CandidateDirectionForRequest(request, selectedTarget);
+            var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
+            var latestRisk = CopyRiskWithDirections(
+                riskEvaluator.CurrentRiskState,
+                riskEvaluator.CurrentRiskState.risk_revision + 1,
+                SafeDirectionsExcept(selectedDirection),
+                new[] { selectedDirection });
+            SetPrivateField(riskEvaluator, "currentRiskState", latestRisk);
+
+            var oldResponse = ResponseForRequest(request, selectedTarget);
+            coordinator.HandleGuidanceResponse(oldResponse);
+            coordinator.HandleGuidanceResponse(oldResponse);
+
+            Assert.That(expiredCount, Is.EqualTo(1));
+            Assert.That(hardStopCount, Is.Zero);
+            Assert.That(requests.Contexts, Has.Count.EqualTo(2));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(task.RuntimeState.CurrentGuidanceTarget, Is.Null);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_PendingRequestKeepsSafeCandidateThenHoldsForReplan()
+    {
+        var root = new GameObject("GuidancePendingRiskTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
+            var pauseReset = root.AddComponent<PauseResetController>();
+            pauseReset.Configure(null, null, null, root.GetComponent<UserPoseTracker>(), riskEvaluator);
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                root.GetComponent<NavigationTargetManager>(),
+                root.GetComponent<SemanticTargetSelector>(),
+                null,
+                riskEvaluator,
+                root.GetComponent<LocalGuidanceValidator>(),
+                pauseReset,
+                null,
+                null);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var pauseResetCount = 0;
+            var hardStopCount = 0;
+            coordinator.RuntimeIntervention += info =>
+            {
+                if (info.Decision == RuntimeGuidanceSafetyDecision.PauseReset) pauseResetCount++;
+                if (info.Decision == RuntimeGuidanceSafetyDecision.HardStop) hardStopCount++;
+            };
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-pending-risk");
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            var selectedDirection = CandidateDirectionForRequest(request, request.model_candidate_ids[0]);
+            var currentRisk = riskEvaluator.CurrentRiskState;
+            var oneSafeCandidate = CopyRiskWithDirections(
+                currentRisk,
+                currentRisk.risk_revision + 1,
+                new[] { selectedDirection },
+                SafeDirectionsExcept(selectedDirection));
+
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", oneSafeCandidate);
+
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+            Assert.That(pauseResetCount, Is.Zero);
+            Assert.That(hardStopCount, Is.Zero);
+
+            var noSafeCandidate = CopyRiskWithDirections(
+                currentRisk,
+                currentRisk.risk_revision + 2,
+                System.Array.Empty<string>(),
+                new[] { "forward", "left", "right" },
+                0.6f);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", noSafeCandidate);
+            var jitteredNoSafeCandidate = CopyRiskWithDirections(
+                noSafeCandidate,
+                noSafeCandidate.risk_revision,
+                noSafeCandidate.safe_directions.ToArray(),
+                noSafeCandidate.unsafe_directions.ToArray(),
+                noSafeCandidate.clearance_forward);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", jitteredNoSafeCandidate);
+
+            Assert.That(pauseResetCount, Is.Zero);
+            Assert.That(hardStopCount, Is.Zero);
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Cancelled));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(coordinator.IsHoldingForReplan, Is.True);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+            Assert.That(
+                GetPrivateField<float>(coordinator, "nextReplanAttemptTime"),
+                Is.GreaterThanOrEqualTo(Time.unscaledTime));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_EmptyPlanningCandidatesHoldButMissingDependenciesHardStop()
+    {
+        var recoverableRoot = new GameObject("EmptyPlanningRecoverableTest");
+        recoverableRoot.SetActive(false);
+        var technicalRoot = new GameObject("EmptyPlanningTechnicalTest");
+        technicalRoot.SetActive(false);
+        try
+        {
+            var recoverableTask = recoverableRoot.AddComponent<GuidanceTaskController>();
+            recoverableTask.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "MissingFinal",
+                routeTargetIds = new[] { "E1", "MissingFinal" },
+                maxConsecutiveDetours = 0
+            });
+            recoverableTask.StartTask();
+            var recoverableCoordinator = recoverableRoot.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(recoverableRoot, recoverableCoordinator, recoverableTask);
+            var recoverableRisk = recoverableRoot.GetComponent<PhysicalRiskEvaluator>();
+            var pauseReset = recoverableRoot.AddComponent<PauseResetController>();
+            pauseReset.Configure(
+                null,
+                null,
+                null,
+                recoverableRoot.GetComponent<UserPoseTracker>(),
+                recoverableRisk);
+            recoverableCoordinator.Configure(
+                null,
+                null,
+                recoverableTask,
+                recoverableRoot.GetComponent<NavigationTargetManager>(),
+                recoverableRoot.GetComponent<SemanticTargetSelector>(),
+                null,
+                recoverableRisk,
+                recoverableRoot.GetComponent<LocalGuidanceValidator>(),
+                pauseReset,
+                null,
+                null);
+            recoverableCoordinator.ConfigureRequestClient(new RecordingGuidanceRequestClient());
+            RuntimeInterventionInfo recoverableDecision = null;
+            recoverableCoordinator.RuntimeIntervention += info => recoverableDecision = info;
+
+            recoverableCoordinator.RequestNextGuidance();
+
+            Assert.That(recoverableDecision, Is.Not.Null);
+            Assert.That(recoverableDecision.Decision, Is.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
+            Assert.That(recoverableDecision.StartReset, Is.False);
+            Assert.That(recoverableTask.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(recoverableCoordinator.IsHoldingForReplan, Is.True);
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+
+            var technicalTask = technicalRoot.AddComponent<GuidanceTaskController>();
+            technicalTask.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            technicalTask.StartTask();
+            var technicalCoordinator = technicalRoot.AddComponent<GuidanceCoordinator>();
+            technicalCoordinator.ConfigureRequestClient(new RecordingGuidanceRequestClient());
+            RuntimeInterventionInfo technicalDecision = null;
+            technicalCoordinator.RuntimeIntervention += info => technicalDecision = info;
+
+            technicalCoordinator.RequestNextGuidance();
+
+            Assert.That(technicalDecision, Is.Not.Null);
+            Assert.That(technicalDecision.Decision, Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
+            Assert.That(technicalCoordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
+        }
+        finally
+        {
+            Object.DestroyImmediate(recoverableRoot);
+            Object.DestroyImmediate(technicalRoot);
+        }
+    }
+
+    [Test]
     public void SemanticTargetSelector_ReservationUsesRiskRevisionInsteadOfSampleId()
     {
         var root = new GameObject("CandidateReservationRiskRevisionTest");
@@ -4175,6 +4619,93 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(
                 selector.IsReservationCurrent(reservation, runtime, changedRevision, policy),
                 Is.False);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void SemanticTargetSelector_RevalidatesOnlySelectedCandidateAgainstLatestRisk()
+    {
+        var root = new GameObject("SelectedCandidateLatestRiskTest");
+        try
+        {
+            var virtualUser = new GameObject("SelectedCandidateUser");
+            virtualUser.transform.SetParent(root.transform, false);
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            AlignVirtualUserToT2Route(virtualUser.transform, targets);
+            var selector = root.AddComponent<SemanticTargetSelector>();
+            selector.Configure(targets);
+            var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            var runtime = new GuidanceRuntimeState();
+            runtime.Begin("T2_main_target", "E1", "E5", "E5");
+            var policy = ExperimentConditionMatrix.GetPolicy("ours_full");
+            var initialRisk = new PhysicalRiskState(
+                riskSnapshotId: "selected-risk-1",
+                riskRevision: 1,
+                calibrationId: "calibration-current",
+                clearanceForward: 2f,
+                clearanceLeft: 2f,
+                clearanceRight: 2f,
+                safeDirections: new[] { "forward", "left", "right" });
+            var candidateSet = selector.BuildCandidateSet(runtime, initialRisk, policy);
+            Assert.That(runtime.TryReserveCandidateSet(
+                candidateSet,
+                "candidate-set-selected",
+                "request-selected",
+                "decision-selected",
+                policy.Condition,
+                initialRisk,
+                out var reservation), Is.True);
+            var selectedTargetId = candidateSet.ModelCandidateIds[0];
+            Assert.That(reservation.TryGetCandidate(selectedTargetId, out var selectedCandidate), Is.True);
+
+            var changedRisk = new PhysicalRiskState(
+                riskSnapshotId: "selected-risk-2",
+                riskRevision: 2,
+                calibrationId: "calibration-current",
+                clearanceForward: 2f,
+                clearanceLeft: 2f,
+                clearanceRight: 2f,
+                safeDirections: new[] { selectedCandidate.RelativeDirection });
+            Assert.That(
+                selector.IsSelectedCandidateCurrent(
+                    reservation,
+                    selectedTargetId,
+                    runtime,
+                    changedRisk,
+                    policy,
+                    riskEvaluator,
+                    out var changedReason),
+                Is.True,
+                changedReason);
+
+            var unsafeRisk = new PhysicalRiskState(
+                riskSnapshotId: "selected-risk-3",
+                riskRevision: 3,
+                calibrationId: "calibration-current",
+                clearanceForward: 2f,
+                clearanceLeft: 2f,
+                clearanceRight: 2f,
+                unsafeDirections: new[] { selectedCandidate.RelativeDirection },
+                safeDirections: SafeDirectionsExcept(selectedCandidate.RelativeDirection));
+            Assert.That(
+                selector.IsSelectedCandidateCurrent(
+                    reservation,
+                    selectedTargetId,
+                    runtime,
+                    unsafeRisk,
+                    policy,
+                    riskEvaluator,
+                    out var unsafeReason),
+                Is.False);
+            Assert.That(unsafeReason, Does.Contain("latest physical risk"));
         }
         finally
         {
@@ -4290,7 +4821,7 @@ public sealed class GuidanceRuntimeEditModeTests
             model_candidate_ids = modelCandidateIds,
             allowed_candidate_ids = context.allowed_candidate_ids ?? new string[0],
             semantic_candidates = semanticCandidates,
-            physical_space_id = "narrow_room"
+            physical_space_id = "wide_room"
         };
     }
 
@@ -4336,6 +4867,37 @@ public sealed class GuidanceRuntimeEditModeTests
         return new[] { "forward", "left", "right" }
             .Where(direction => direction != unsafeDirection)
             .ToArray();
+    }
+
+    private static PhysicalRiskState CopyRiskWithDirections(
+        PhysicalRiskState source,
+        int riskRevision,
+        string[] safeDirections,
+        string[] unsafeDirections,
+        float? clearanceMeters = null)
+    {
+        var clearance = clearanceMeters;
+        return new PhysicalRiskState(
+            riskSnapshotId: $"risk-copy-{riskRevision}",
+            riskRevision: riskRevision,
+            calibrationId: source.calibration_id,
+            sampledAtUtc: source.sampled_at_utc,
+            riskPolicyVersion: source.risk_policy_version,
+            snapshotSource: source.source,
+            physicalSpace: source.physical_space,
+            physicalPosition: source.user_physical_position,
+            physicalForward: source.user_physical_forward,
+            boundaryContext: source.boundary_context,
+            obstacleContext: source.obstacle_context,
+            clearanceForward: clearance ?? source.clearance_forward,
+            clearanceLeft: clearance ?? source.clearance_left,
+            clearanceRight: clearance ?? source.clearance_right,
+            boundaryRisk: source.boundary_risk,
+            resetRisk: source.reset_risk,
+            unsafeDirections: unsafeDirections,
+            safeDirections: safeDirections,
+            isCritical: source.critical,
+            resetRequired: false);
     }
 
     private static void ConfigureT2CoordinatorHarness(
@@ -4572,6 +5134,43 @@ public sealed class GuidanceRuntimeEditModeTests
         Assert.That(formatted, Does.Contain("plain backend failure line two"));
         Assert.That(formatted, Does.Not.Contain("\r"));
         Assert.That(formatted, Does.Not.Contain("\n"));
+    }
+
+    [Test]
+    public void AgentClient_HealthChecksTolerateTransientFailureAndRequireBothThresholds()
+    {
+        var root = new GameObject("AgentClientHealthPolicyTest");
+        try
+        {
+            var client = root.AddComponent<AgentClient>();
+            client.ConfigureHealthPolicyForTesting(3, 6f, 30f);
+            var statuses = new List<BackendHealthStatus>();
+            client.BackendHealthChanged += info => statuses.Add(info.Status);
+
+            client.RecordHealthCheckResultForTesting(true, 0f);
+            client.RecordHealthCheckResultForTesting(false, 2f);
+            client.RecordHealthCheckResultForTesting(false, 4f);
+            client.RecordHealthCheckResultForTesting(false, 6f);
+
+            Assert.That(client.BackendHealthStatus, Is.EqualTo(BackendHealthStatus.Degraded));
+            Assert.That(client.BackendOnline, Is.True);
+            Assert.That(client.ConsecutiveHealthCheckFailures, Is.EqualTo(3));
+
+            client.RecordHealthCheckResultForTesting(false, 8f);
+            Assert.That(client.BackendHealthStatus, Is.EqualTo(BackendHealthStatus.Offline));
+            Assert.That(client.BackendOnline, Is.False);
+            Assert.That(statuses, Does.Contain(BackendHealthStatus.Degraded));
+            Assert.That(statuses, Does.Contain(BackendHealthStatus.Offline));
+
+            client.RecordHealthCheckResultForTesting(true, 9f);
+            Assert.That(client.BackendHealthStatus, Is.EqualTo(BackendHealthStatus.Online));
+            Assert.That(client.ConsecutiveHealthCheckFailures, Is.Zero);
+            Assert.That(client.BackendOnline, Is.True);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
     }
 
     private sealed class RecordingGuidanceRequestClient : IGuidanceRequestClient

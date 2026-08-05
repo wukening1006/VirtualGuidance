@@ -135,8 +135,9 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             }
         }
 
-        // 语义目标存在性不再由当前物理执行资格决定；本地安全层仍通过 AllowedCandidateIds 最终否决。
-        var modelCandidateIds = candidateIds;
+        // 安全过滤开启时模型仅见过滤后候选；基线条件模型仍见完整集合。
+        var useSafeFilter = policy != null && policy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled;
+        var modelCandidateIds = useSafeFilter ? allowedCandidateIds : candidateIds;
         return new NavigationCandidateSet(
             candidateIds,
             modelCandidateIds,

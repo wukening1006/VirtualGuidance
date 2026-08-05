@@ -80,6 +80,10 @@ public sealed class ParticipantUiController : MonoBehaviour
 
     /// <summary>显示安全朝向已到达，系统正在复验并重新规划。</summary>
     public void ShowRecoveryReplanning() => ShowSafetyMessage("请保持朝向，正在重新规划");
+    /// <summary>显示当前没有可执行候选，系统正在等待新物理事实重新规划。</summary>
+    public void ShowReplanningHold() => ShowSafetyMessage("请保持当前位置，正在更新安全路线");
+    /// <summary>显示后端暂时不可用，系统正在自动等待恢复。</summary>
+    public void ShowBackendHold() => ShowSafetyMessage("系统连接暂时中断，请保持原地等待恢复");
     public void ShowSystemUnavailable() => ShowSafetyMessage("系统暂时无法继续，请保持原地");
     public void ShowCompleted() => ShowSafetyMessage("任务已完成，请保持原地");
     public void ShowEnded() => ShowSafetyMessage("实验已结束，请等待研究员");

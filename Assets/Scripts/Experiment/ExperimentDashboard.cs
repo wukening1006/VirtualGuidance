@@ -40,8 +40,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private ExperimentConditionSpec currentSpec;
     private ExperimentRunState runState = ExperimentRunState.Preparing;
     private ExperimentRunState stateBeforeSafetyHold = ExperimentRunState.Running;
+    private ExperimentRunState stateBeforeBackendHold = ExperimentRunState.Running;
     private Coroutine completionRoutine;
     private Coroutine runtimePrerequisiteRecoveryRoutine;
+    private Coroutine backendHoldTimeoutRoutine;
     private bool runtimePrerequisiteRecoveryPending;
     private float completionSecondsRemaining;
     private string lastStatusMessage = "Initializing";
@@ -74,6 +76,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         Unsubscribe();
         StopCompletionCountdown();
         StopRuntimePrerequisiteRecovery();
+        StopBackendHoldTimeout();
     }
 
     private void Update()
@@ -452,6 +455,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         var terminalTrace = activeGuidanceTrace;
         StopRuntimePrerequisiteRecovery();
+        StopBackendHoldTimeout();
         StopCompletionCountdown();
         LogTargetAbandoned(terminalTrace, "session ended");
         FreezeExperimentBehavior();
@@ -587,6 +591,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void EnterError(string reason)
     {
+        StopBackendHoldTimeout();
         var terminalTrace = activeGuidanceTrace;
         LogTargetAbandoned(terminalTrace, reason);
         FreezeExperimentBehavior();
@@ -745,19 +750,126 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private void HandleBackendOnlineChanged(bool online)
     {
-        experimentLogger?.LogStatus(
-            online ? "backend_online" : "backend_unavailable",
+        if (online && runState == ExperimentRunState.BackendHold)
+        {
+            RecoverFromBackendHold();
+        }
+
+        RefreshReadinessState();
+    }
+
+    private void HandleBackendHealthChanged(BackendHealthStatusInfo info)
+    {
+        if (info == null)
+        {
+            return;
+        }
+
+        experimentLogger?.LogBackendHealth(
+            info,
             activeGuidanceTrace,
             taskController?.RuntimeState,
-            riskEvaluator?.CurrentRiskState,
-            online ? "backend online" : "backend unavailable");
-        if (!online && IsSessionActiveState())
+            riskEvaluator?.CurrentRiskState);
+
+        if (info.Status == BackendHealthStatus.Offline && IsSessionActiveState())
         {
-            EnterError("backend unavailable");
+            EnterBackendHold();
+            return;
+        }
+
+        if (info.Status == BackendHealthStatus.Online && runState == ExperimentRunState.BackendHold)
+        {
+            RecoverFromBackendHold();
             return;
         }
 
         RefreshReadinessState();
+    }
+
+    private void EnterBackendHold()
+    {
+        if (runState == ExperimentRunState.BackendHold)
+        {
+            return;
+        }
+
+        stateBeforeBackendHold = runState;
+        StopCompletionCountdown();
+        FreezeExperimentBehavior();
+        TransitionTo(ExperimentRunState.BackendHold, "Backend unavailable; waiting for recovery");
+        participantUiController?.ShowBackendHold();
+        StopBackendHoldTimeout();
+        backendHoldTimeoutRoutine = StartCoroutine(BackendHoldTimeoutRoutine());
+    }
+
+    private void RecoverFromBackendHold()
+    {
+        if (runState != ExperimentRunState.BackendHold)
+        {
+            return;
+        }
+
+        StopBackendHoldTimeout();
+        if (stateBeforeBackendHold == ExperimentRunState.Paused)
+        {
+            TransitionTo(ExperimentRunState.Paused, "Backend recovered; researcher pause restored");
+            participantUiController?.ShowResearcherPaused();
+            return;
+        }
+
+        if (stateBeforeBackendHold == ExperimentRunState.SafetyHold)
+        {
+            TransitionTo(ExperimentRunState.SafetyHold, "Backend recovered; safety hold restored");
+            participantUiController?.ShowAutomaticReset();
+            return;
+        }
+
+        if (stateBeforeBackendHold == ExperimentRunState.Completing &&
+            taskController != null && taskController.RuntimeState.IsCompleted)
+        {
+            TransitionTo(ExperimentRunState.Completing, "Backend recovered; completion resumed");
+            participantUiController?.ShowCompleted();
+            ResumeCompletionCountdown();
+            return;
+        }
+
+        TransitionTo(ExperimentRunState.Running, "Backend recovered; replanning");
+        participantUiController?.ShowReplanningHold();
+        guidanceCoordinator?.RequestNextGuidance();
+    }
+
+    private IEnumerator BackendHoldTimeoutRoutine()
+    {
+        var startedAt = Time.unscaledTime;
+        var timeoutSeconds = agentClient != null ? agentClient.BackendFatalTimeoutSeconds : 30f;
+        while (runState == ExperimentRunState.BackendHold &&
+               Time.unscaledTime - startedAt < timeoutSeconds)
+        {
+            yield return null;
+        }
+
+        backendHoldTimeoutRoutine = null;
+        if (runState == ExperimentRunState.BackendHold)
+        {
+            experimentLogger?.LogStatus(
+                "backend_fatal_timeout",
+                activeGuidanceTrace,
+                taskController?.RuntimeState,
+                riskEvaluator?.CurrentRiskState,
+                $"backend did not recover within {timeoutSeconds:F1} seconds");
+            EnterError("backend recovery timeout");
+        }
+    }
+
+    private void StopBackendHoldTimeout()
+    {
+        if (backendHoldTimeoutRoutine == null)
+        {
+            return;
+        }
+
+        StopCoroutine(backendHoldTimeoutRoutine);
+        backendHoldTimeoutRoutine = null;
     }
 
     private void HandleRequestBuilt(GuidanceRequest request)
@@ -787,7 +899,14 @@ public sealed class ExperimentDashboard : MonoBehaviour
             message);
         if (IsSessionActiveState())
         {
-            EnterError(message);
+            if (agentClient != null && agentClient.LastRequestFailureRecoverable)
+            {
+                EnterBackendHold();
+            }
+            else
+            {
+                EnterError(message);
+            }
         }
     }
 
@@ -929,6 +1048,24 @@ public sealed class ExperimentDashboard : MonoBehaviour
             "replanning requested");
     }
 
+    private void HandleReplanHoldChanged(ReplanHoldInfo info)
+    {
+        if (info == null)
+        {
+            return;
+        }
+
+        experimentLogger?.LogReplanHold(
+            info,
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState);
+        if (info.IsHolding && runState == ExperimentRunState.Running)
+        {
+            participantUiController?.ShowReplanningHold();
+        }
+    }
+
     private void HandleTaskCompleted(GuidanceRuntimeState state)
     {
         experimentLogger?.LogStatus(
@@ -982,16 +1119,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        var eventType = GainEventName(info.EventType, info.Reason);
-        var message = string.IsNullOrWhiteSpace(info.Reason)
-            ? $"physical yaw: {info.PhysicalYawDegrees:F1}, extra yaw: {info.ExtraYawDegrees:F1}"
-            : info.Reason;
-        experimentLogger?.LogStatus(
-            eventType,
+        experimentLogger?.LogRotationGain(
+            info,
             activeGuidanceTrace,
             taskController?.RuntimeState,
-            riskEvaluator?.CurrentRiskState,
-            message);
+            riskEvaluator?.CurrentRiskState);
     }
 
     private void HandleCalibrationStateChanged(PhysicalCalibrationState state)
@@ -1201,29 +1333,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
         HandleRecoveryStateChanged(transition.NextState);
     }
 
-    private static string GainEventName(RotationGainEventType eventType, string reason)
-    {
-        switch (eventType)
-        {
-            case RotationGainEventType.TurnRequested: return "turn_requested";
-            case RotationGainEventType.UserTurnStarted: return "user_turn_started";
-            case RotationGainEventType.GainStarted: return "gain_started";
-            case RotationGainEventType.UserTurnCompleted: return "user_turn_completed";
-            case RotationGainEventType.GainCompleted: return "gain_completed";
-            case RotationGainEventType.GainCancelled:
-                return IsGainCancellation(reason) ? "gain_cancelled" : "gain_aborted";
-            default: return "gain_event";
-        }
-    }
-
-    private static bool IsGainCancellation(string reason)
-    {
-        return string.Equals(reason, "gain_disabled", StringComparison.Ordinal) ||
-               string.Equals(reason, "guidance_completed", StringComparison.Ordinal) ||
-               string.Equals(reason, "stopped", StringComparison.Ordinal) ||
-               string.Equals(reason, "session_ended", StringComparison.Ordinal);
-    }
-
     private void StartCompletionCountdown()
     {
         StopCompletionCountdown();
@@ -1314,7 +1423,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         return runState == ExperimentRunState.Starting || runState == ExperimentRunState.Running ||
                runState == ExperimentRunState.Paused || runState == ExperimentRunState.SafetyHold ||
-               runState == ExperimentRunState.Completing || runState == ExperimentRunState.Error;
+               runState == ExperimentRunState.Completing || runState == ExperimentRunState.Error ||
+               runState == ExperimentRunState.BackendHold;
     }
 
     private bool IsSessionActiveState()
@@ -1354,6 +1464,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             agentClient.GuidanceRequestFailed.AddListener(HandleRequestFailed);
             agentClient.BackendOnlineChanged.RemoveListener(HandleBackendOnlineChanged);
             agentClient.BackendOnlineChanged.AddListener(HandleBackendOnlineChanged);
+            agentClient.BackendHealthChanged -= HandleBackendHealthChanged;
+            agentClient.BackendHealthChanged += HandleBackendHealthChanged;
         }
 
         if (taskController != null)
@@ -1386,6 +1498,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.DetourCompleted += HandleDetourCompleted;
             guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
             guidanceCoordinator.RecoveryTransitioned += HandleRecoveryTransitioned;
+            guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
+            guidanceCoordinator.ReplanHoldChanged += HandleReplanHoldChanged;
         }
 
         if (riskEvaluator != null)
@@ -1430,6 +1544,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             agentClient.GuidanceReceived.RemoveListener(HandleResponseReceived);
             agentClient.GuidanceRequestFailed.RemoveListener(HandleRequestFailed);
             agentClient.BackendOnlineChanged.RemoveListener(HandleBackendOnlineChanged);
+            agentClient.BackendHealthChanged -= HandleBackendHealthChanged;
         }
         if (taskController != null) taskController.StateChanged -= HandleTaskStateChanged;
         if (guidanceCoordinator != null)
@@ -1445,6 +1560,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.TargetReached -= HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
             guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
+            guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
         if (pauseResetController != null)

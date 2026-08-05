@@ -114,6 +114,42 @@ public sealed class GuidanceRecoveryTransitionInfo
 }
 
 /// <summary>
+/// 描述 Guidance 因暂无可执行候选进入或退出重规划等待的诊断信息。
+/// </summary>
+public sealed class ReplanHoldInfo
+{
+    /// <summary>当前是否处于重规划等待。</summary>
+    public bool IsHolding { get; }
+    /// <summary>进入或更新等待状态的稳定原因。</summary>
+    public string Reason { get; }
+    /// <summary>最近一次实际评估的规划指纹。</summary>
+    public string PlanningFingerprint { get; }
+    /// <summary>最近一次实际评估使用的风险修订号。</summary>
+    public int RiskRevision { get; }
+    /// <summary>当前连续无候选规划次数。</summary>
+    public int RetryCount { get; }
+    /// <summary>下一次允许评估新修订的退避时间，单位：秒。</summary>
+    public float RetryDelaySeconds { get; }
+
+    /// <summary>创建不可变的重规划等待诊断信息。</summary>
+    public ReplanHoldInfo(
+        bool isHolding,
+        string reason,
+        string planningFingerprint,
+        int riskRevision,
+        int retryCount,
+        float retryDelaySeconds)
+    {
+        IsHolding = isHolding;
+        Reason = reason ?? string.Empty;
+        PlanningFingerprint = planningFingerprint ?? string.Empty;
+        RiskRevision = Math.Max(0, riskRevision);
+        RetryCount = Math.Max(0, retryCount);
+        RetryDelaySeconds = Mathf.Max(0f, retryDelaySeconds);
+    }
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
@@ -142,6 +178,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [Tooltip("等待 TurnCue 完成的最长时间，单位：秒。")]
     [SerializeField] private float turnCueTimeoutSeconds = 8f;
 
+    [Header("重规划等待")]
+    [Tooltip("暂无可执行候选后首次重试的最短间隔，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float replanInitialRetryDelaySeconds = 0.5f;
+    [Tooltip("连续暂无候选时允许使用的最大重试间隔，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float replanMaxRetryDelaySeconds = 2f;
+
     private GuidanceRequestSnapshot activeSnapshot;
     private GuidanceResponse activeResponse;
     private IGuidanceRequestClient requestClient;
@@ -160,7 +202,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private RecoveryHeadingPlan frozenRecoveryPlan;
     private GuidanceRecoveryState recoveryState = GuidanceRecoveryState.Inactive;
     private bool holdForReplan;
-    private string holdRiskSnapshotId = string.Empty;
+    private int holdRiskRevision = -1;
+    private string holdPlanningFingerprint = string.Empty;
+    private string holdReason = string.Empty;
+    private int replanRetryCount;
+    private float nextReplanAttemptTime;
+    private float currentReplanRetryDelaySeconds;
+    private bool planningRequestInProgress;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -185,6 +233,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceRecoveryState> RecoveryStateChanged;
     /// <summary>自动物理恢复状态发生变化时发布完整诊断上下文。</summary>
     public event Action<GuidanceRecoveryTransitionInfo> RecoveryTransitioned;
+    /// <summary>进入、更新或退出重规划等待时触发。</summary>
+    public event Action<ReplanHoldInfo> ReplanHoldChanged;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -210,6 +260,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public bool IsAutomaticRecoveryActive => IsResetRecoveryActive;
     /// <summary>当前是否因没有可执行语义候选而等待下一份事实重规划。</summary>
     public bool IsHoldingForReplan => holdForReplan;
+    /// <summary>当前重规划等待使用的规划指纹。</summary>
+    public string ReplanPlanningFingerprint => holdPlanningFingerprint;
+    /// <summary>当前连续无候选规划次数。</summary>
+    public int ReplanRetryCount => replanRetryCount;
+    /// <summary>当前重规划退避间隔，单位：秒。</summary>
+    public float CurrentReplanRetryDelaySeconds => currentReplanRetryDelaySeconds;
 
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
 
@@ -301,8 +357,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// </summary>
     public void RequestNextGuidance()
     {
-        holdForReplan = false;
-        holdRiskSnapshotId = string.Empty;
+        if (planningRequestInProgress)
+        {
+            return;
+        }
+
+        planningRequestInProgress = true;
+        try
+        {
+            RequestNextGuidanceInternal();
+        }
+        finally
+        {
+            planningRequestInProgress = false;
+        }
+    }
+
+    private void RequestNextGuidanceInternal()
+    {
         if (requestClient == null)
         {
             requestClient = agentClient;
@@ -333,9 +405,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        var planningFingerprint = BuildPlanningFingerprint(riskState);
+        if (holdForReplan &&
+            (string.Equals(holdPlanningFingerprint, planningFingerprint, StringComparison.Ordinal) ||
+             Time.unscaledTime < nextReplanAttemptTime))
+        {
+            return;
+        }
+
         if (!candidateSet.HasModelCandidates)
         {
-            HandleUnavailableCandidatePlanning(riskState);
+            HandleUnavailableCandidatePlanning(riskState, planningFingerprint);
             return;
         }
 
@@ -359,6 +439,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        ExitReplanHold("executable_candidate_reserved");
         SetRequestPhase(GuidanceRequestPhase.Requested);
         requestClient.RequestGuidance(context);
     }
@@ -629,6 +710,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         automaticResetAttempts = 0;
         resetAbandonedTargetId = string.Empty;
+        ExitReplanHold("guidance_cancelled");
         if (requestPhase == GuidanceRequestPhase.Requested ||
             requestPhase == GuidanceRequestPhase.Received ||
             requestPhase == GuidanceRequestPhase.Verified ||
@@ -814,6 +896,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
+        ExitReplanHold("runtime_intervention");
         SetRequestPhase(GuidanceRequestPhase.Failed);
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
             response,
@@ -874,12 +957,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (holdForReplan)
         {
             if (riskState == null ||
-                string.Equals(holdRiskSnapshotId, riskState.risk_snapshot_id, StringComparison.Ordinal))
+                riskState.risk_revision <= holdRiskRevision ||
+                Time.unscaledTime < nextReplanAttemptTime)
             {
                 return;
             }
 
-            holdRiskSnapshotId = riskState.risk_snapshot_id ?? string.Empty;
             RequestNextGuidance();
             return;
         }
@@ -1258,6 +1341,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         EnterHoldAndReplan(
             riskState,
+            BuildPlanningFingerprint(riskState),
             "Pending guidance candidates are not currently executable; holding for replanning.");
     }
 
@@ -1289,7 +1373,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return false;
     }
 
-    private void HandleUnavailableCandidatePlanning(PhysicalRiskState riskState)
+    private void HandleUnavailableCandidatePlanning(
+        PhysicalRiskState riskState,
+        string planningFingerprint)
     {
         if (!HasTrustedRecoveryFacts(riskState))
         {
@@ -1301,6 +1387,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         EnterHoldAndReplan(
             riskState,
+            planningFingerprint,
             "No semantic candidate is currently executable; holding while the task remains active.");
     }
 
@@ -1329,8 +1416,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return recoveryHeadingPlanner.Plan(riskState.heading_profile).IsSuccess;
     }
 
-    private void EnterHoldAndReplan(PhysicalRiskState riskState, string reason)
+    private void EnterHoldAndReplan(
+        PhysicalRiskState riskState,
+        string planningFingerprint,
+        string reason)
     {
+        var firstEntry = !holdForReplan;
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         handlingGainTermination = true;
@@ -1351,15 +1442,71 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         holdForReplan = true;
-        holdRiskSnapshotId = riskState != null ? riskState.risk_snapshot_id ?? string.Empty : string.Empty;
-        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
-            null,
-            reason,
-            RuntimeGuidanceSafetyDecision.SoftReroute,
+        holdRiskRevision = riskState != null ? riskState.risk_revision : -1;
+        holdPlanningFingerprint = planningFingerprint ?? string.Empty;
+        holdReason = reason ?? string.Empty;
+        replanRetryCount++;
+        currentReplanRetryDelaySeconds = Mathf.Min(
+            Mathf.Max(0.1f, replanMaxRetryDelaySeconds),
+            Mathf.Max(0.1f, replanInitialRetryDelaySeconds) *
+            Mathf.Pow(2f, Mathf.Max(0, replanRetryCount - 1)));
+        nextReplanAttemptTime = Time.unscaledTime + currentReplanRetryDelaySeconds;
+        ReplanHoldChanged?.Invoke(CreateReplanHoldInfo(true));
+        if (firstEntry)
+        {
+            RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+                null,
+                reason,
+                RuntimeGuidanceSafetyDecision.SoftReroute,
+                false,
+                0,
+                false));
+            Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
+        }
+    }
+
+    private void ExitReplanHold(string reason)
+    {
+        if (!holdForReplan)
+        {
+            return;
+        }
+
+        var completedInfo = new ReplanHoldInfo(
             false,
-            0,
-            false));
-        Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
+            reason,
+            holdPlanningFingerprint,
+            Math.Max(0, holdRiskRevision),
+            replanRetryCount,
+            currentReplanRetryDelaySeconds);
+        holdForReplan = false;
+        holdRiskRevision = -1;
+        holdPlanningFingerprint = string.Empty;
+        holdReason = string.Empty;
+        replanRetryCount = 0;
+        nextReplanAttemptTime = 0f;
+        currentReplanRetryDelaySeconds = 0f;
+        ReplanHoldChanged?.Invoke(completedInfo);
+    }
+
+    private ReplanHoldInfo CreateReplanHoldInfo(bool isHolding)
+    {
+        return new ReplanHoldInfo(
+            isHolding,
+            holdReason,
+            holdPlanningFingerprint,
+            Math.Max(0, holdRiskRevision),
+            replanRetryCount,
+            currentReplanRetryDelaySeconds);
+    }
+
+    private string BuildPlanningFingerprint(PhysicalRiskState riskState)
+    {
+        var stateVersion = taskController != null && taskController.RuntimeState != null
+            ? taskController.RuntimeState.stateVersion
+            : 0;
+        var riskRevision = riskState != null ? riskState.risk_revision : -1;
+        return $"state:{stateVersion}|risk:{riskRevision}";
     }
 
     private float? TryGetRecoverySemanticYaw(GuidanceResponse response)
@@ -1670,6 +1817,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         // 动作软失败和候选耗尽都不是物理危险证据；保持任务运行并等待新事实重规划。
         EnterHoldAndReplan(
             riskState,
+            BuildPlanningFingerprint(riskState),
             $"{reason}: no eligible reroute candidate; holding for replanning.");
     }
 
@@ -1751,8 +1899,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (info.Reason == "reverse_turn" ||
             info.Reason == "turn_cue_reverse" ||
             info.Reason == "turn_cue_timeout" ||
-            info.Reason == "turn_stopped_timeout" ||
-            info.Reason == "gain_limit_exceeded")
+            info.Reason == "turn_stopped_timeout")
         {
             turnCueCompletionTracker.Cancel();
             TriggerSoftRerouteFromLatestRisk(info.Reason);

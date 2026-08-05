@@ -452,6 +452,67 @@ public sealed class ExperimentLogger : MonoBehaviour
         Write(eventType, null, null, null, riskState, runtimeState, message, trace);
     }
 
+    /// <summary>记录 Rotation Gain 生命周期及本轮配置、有效倍率和角度预算。</summary>
+    public void LogRotationGain(
+        RotationGainEventInfo gainEvent,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (gainEvent == null) return;
+        var eventType = GainEventType(gainEvent.EventType, gainEvent.Reason);
+        Write(
+            eventType,
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            gainEvent.Reason,
+            trace,
+            rotationGainEvent: gainEvent);
+    }
+
+    /// <summary>记录重规划等待的规划指纹、风险修订与退避次数。</summary>
+    public void LogReplanHold(
+        ReplanHoldInfo holdInfo,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (holdInfo == null) return;
+        Write(
+            holdInfo.IsHolding ? "holding_for_replan" : "replan_hold_resumed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            holdInfo.Reason,
+            trace,
+            replanHoldInfo: holdInfo);
+    }
+
+    /// <summary>记录后端健康状态、连续失败次数与宽限期进度。</summary>
+    public void LogBackendHealth(
+        BackendHealthStatusInfo healthInfo,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (healthInfo == null) return;
+        Write(
+            BackendHealthEventType(healthInfo.Status),
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            healthInfo.Status.ToString(),
+            trace,
+            backendHealthInfo: healthInfo);
+    }
+
     /// <summary>先写入 session_ended，再关闭活动会话。</summary>
     public void EndSession(string reason, LogTraceContext trace)
     {
@@ -524,7 +585,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         bool? calibrationValid = null,
         CandidateSetReservation candidateReservation = null,
         RecoveryHeadingPlan recoveryPlan = null,
-        GuidanceRecoveryTransitionInfo recoveryTransition = null)
+        GuidanceRecoveryTransitionInfo recoveryTransition = null,
+        RotationGainEventInfo rotationGainEvent = null,
+        ReplanHoldInfo replanHoldInfo = null,
+        BackendHealthStatusInfo backendHealthInfo = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -673,6 +737,32 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["next_state"] = RecoveryStateLabel(recoveryTransition.NextState);
                 data["transition_reason"] = recoveryTransition.Reason;
             }
+            if (rotationGainEvent != null)
+            {
+                data["target_physical_yaw_degrees"] = rotationGainEvent.TargetPhysicalYawDegrees;
+                data["configured_gain_multiplier"] = rotationGainEvent.ConfiguredGainMultiplier;
+                data["effective_gain_multiplier"] = rotationGainEvent.EffectiveGainMultiplier;
+                data["max_extra_yaw_degrees"] = rotationGainEvent.MaxExtraYawDegrees;
+                data["physical_yaw_degrees"] = rotationGainEvent.PhysicalYawDegrees;
+                data["applied_extra_yaw_degrees"] = rotationGainEvent.ExtraYawDegrees;
+                data["gain_termination_reason"] = rotationGainEvent.Reason;
+            }
+            if (replanHoldInfo != null)
+            {
+                data["hold_reason"] = replanHoldInfo.Reason;
+                data["planning_fingerprint"] = replanHoldInfo.PlanningFingerprint;
+                data["hold_risk_revision"] = replanHoldInfo.RiskRevision;
+                data["replan_retry_count"] = replanHoldInfo.RetryCount;
+                data["replan_retry_delay_seconds"] = replanHoldInfo.RetryDelaySeconds;
+            }
+            if (backendHealthInfo != null)
+            {
+                data["backend_health_status"] = backendHealthInfo.Status.ToString().ToLowerInvariant();
+                data["health_check_failure_count"] = backendHealthInfo.ConsecutiveFailures;
+                data["health_failure_elapsed_seconds"] = backendHealthInfo.FailureElapsedSeconds;
+                data["health_check_failure_threshold"] = backendHealthInfo.FailureThreshold;
+                data["backend_offline_grace_seconds"] = backendHealthInfo.OfflineGraceSeconds;
+            }
 
             if (descriptor.Level == LogType.Error)
             {
@@ -785,6 +875,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         switch (eventType)
         {
             case "backend_unavailable":
+            case "backend_fatal_timeout":
             case "session_error":
             case "task_failed":
                 return LogType.Error;
@@ -803,6 +894,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "safety_hold":
             case "target_abandoned":
             case "request_failed":
+            case "backend_degraded":
+            case "backend_hold_started":
                 return LogType.Warning;
             case "risk_changed":
                 return riskState != null &&
@@ -847,6 +940,11 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "hard_stop": return new EventDescriptor("safety.hard_stop", "Safety", level);
             case "backend_online": return new EventDescriptor("network.backend_online", "Network", level);
             case "backend_unavailable": return new EventDescriptor("network.backend_unavailable", "Network", level);
+            case "backend_unknown": return new EventDescriptor("backend.unknown", "Network", level);
+            case "backend_degraded": return new EventDescriptor("backend.degraded", "Network", level);
+            case "backend_hold_started": return new EventDescriptor("backend.hold_started", "Network", level);
+            case "backend_recovered": return new EventDescriptor("backend.recovered", "Network", level);
+            case "backend_fatal_timeout": return new EventDescriptor("backend.fatal_timeout", "Network", level);
             case "request_failed": return new EventDescriptor("network.request_failed", "Network", level);
             case "task_state_changed": return new EventDescriptor("task.state_changed", "Task", level);
             case "task_completed": return new EventDescriptor("task.completed", "Task", level);
@@ -858,6 +956,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "detour_completed": return new EventDescriptor("task.detour_completed", "Task", level);
             case "replanning":
             case "replanning_started": return new EventDescriptor("task.replanning_started", "Task", level);
+            case "holding_for_replan": return new EventDescriptor("guidance.holding_for_replan", "Guidance", level);
+            case "replan_hold_resumed": return new EventDescriptor("guidance.replan_resumed", "Guidance", level);
             case "turn_requested": return new EventDescriptor("rdw.turn_requested", "RDW", level);
             case "user_turn_started": return new EventDescriptor("rdw.user_turn_started", "RDW", level);
             case "user_turn_completed": return new EventDescriptor("rdw.user_turn_completed", "RDW", level);
@@ -970,6 +1070,41 @@ public sealed class ExperimentLogger : MonoBehaviour
         catch (Exception exception)
         {
             ReportStorageError("telemetry_serialize", exception);
+        }
+    }
+
+    private static string GainEventType(RotationGainEventType eventType, string reason)
+    {
+        switch (eventType)
+        {
+            case RotationGainEventType.TurnRequested: return "turn_requested";
+            case RotationGainEventType.UserTurnStarted: return "user_turn_started";
+            case RotationGainEventType.GainStarted: return "gain_started";
+            case RotationGainEventType.UserTurnCompleted: return "user_turn_completed";
+            case RotationGainEventType.GainCompleted: return "gain_completed";
+            case RotationGainEventType.GainCancelled:
+                return IsGainCancellation(reason) ? "gain_cancelled" : "gain_aborted";
+            default: return "gain_cancelled";
+        }
+    }
+
+    private static bool IsGainCancellation(string reason)
+    {
+        return string.Equals(reason, "gain_disabled", StringComparison.Ordinal) ||
+               string.Equals(reason, "guidance_completed", StringComparison.Ordinal) ||
+               string.Equals(reason, "stopped", StringComparison.Ordinal) ||
+               string.Equals(reason, "session_ended", StringComparison.Ordinal) ||
+               string.Equals(reason, "cancelled", StringComparison.Ordinal);
+    }
+
+    private static string BackendHealthEventType(BackendHealthStatus status)
+    {
+        switch (status)
+        {
+            case BackendHealthStatus.Online: return "backend_recovered";
+            case BackendHealthStatus.Degraded: return "backend_degraded";
+            case BackendHealthStatus.Offline: return "backend_hold_started";
+            default: return "backend_unknown";
         }
     }
 
