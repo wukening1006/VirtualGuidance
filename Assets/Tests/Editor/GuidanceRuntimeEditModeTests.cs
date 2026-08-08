@@ -618,7 +618,11 @@ public sealed class GuidanceRuntimeEditModeTests
         var policy = new RuntimeGuidanceSafetyPolicy();
         var unsafeForward = new PhysicalRiskState(
             unsafeDirections: new[] { "forward" },
-            safeDirections: new[] { "left" });
+            safeDirections: new[] { "left" },
+            headingProfile: new[]
+            {
+                new HeadingSample(90f, Vector2.right, 2f, HeadingSafety.Safe)
+            });
 
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 1, true)),
@@ -633,7 +637,11 @@ public sealed class GuidanceRuntimeEditModeTests
         var unrelatedCritical = new PhysicalRiskState(
             boundaryRisk: "critical",
             unsafeDirections: new[] { "left" },
-            safeDirections: new[] { "forward" });
+            safeDirections: new[] { "forward" },
+            headingProfile: new[]
+            {
+                new HeadingSample(0f, Vector2.up, 2f, HeadingSafety.Safe)
+            });
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 2f, 0, false)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.Continue));
@@ -643,10 +651,15 @@ public sealed class GuidanceRuntimeEditModeTests
         var resetRequired = new PhysicalRiskState(
             resetRisk: "critical",
             unsafeDirections: new[] { "forward", "left", "right" },
-            resetRequired: true);
+            resetRequired: true,
+            headingProfile: new[]
+            {
+                new HeadingSample(0f, Vector2.up, 0.2f, HeadingSafety.Critical),
+                new HeadingSample(180f, Vector2.down, 0.2f, HeadingSafety.Critical)
+            });
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(resetRequired, "forward", 0.6f, 0, false)),
-            Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(
                 resetRequired,

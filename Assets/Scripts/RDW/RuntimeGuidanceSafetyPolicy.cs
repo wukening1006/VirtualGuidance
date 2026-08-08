@@ -20,6 +20,8 @@ public enum RuntimeGuidanceSafetyDecision
 /// </summary>
 public sealed class RuntimeGuidanceSafetyInput
 {
+    private const int UnsafeSamplesRequiredForIntervention = 2;
+
     /// <summary>当前活动决策 ID。</summary>
     public string ActiveDecisionId { get; }
     /// <summary>当前活动目标 ID。</summary>
@@ -47,7 +49,13 @@ public sealed class RuntimeGuidanceSafetyInput
     /// <summary>当前计划方向连续进入 unsafe 的风险样本数。</summary>
     public int ConsecutiveUnsafeSamples { get; }
     /// <summary>最新风险下是否存在明确 Eligible 的替代候选。</summary>
-    public bool SafeCandidateAvailable { get; }
+    public bool HasSafeSemanticCandidate { get; }
+    /// <summary>当前风险下是否存在可供自动恢复的 Safe 或 Unknown Heading。</summary>
+    public bool HasRecoveryHeading { get; }
+    /// <summary>当前计划方向是否已经需要安全层介入。</summary>
+    public bool RequiresSafetyIntervention { get; }
+    /// <summary>兼容旧日志字段的安全语义候选别名。</summary>
+    public bool SafeCandidateAvailable => HasSafeSemanticCandidate;
 
     /// <summary>
     /// 创建一次不依赖 Unity 场景对象的运行期安全输入。
@@ -67,6 +75,44 @@ public sealed class RuntimeGuidanceSafetyInput
         ResetLifecycleState resetState,
         int consecutiveUnsafeSamples,
         bool safeCandidateAvailable)
+        : this(
+            activeDecisionId,
+            targetId,
+            movementInstruction,
+            latestRisk,
+            trackingValid,
+            calibrationValid,
+            physicalSpaceMatches,
+            plannedDirection,
+            plannedDirectionClearanceMeters,
+            plannedDirectionAvailable,
+            plannedDirectionCritical,
+            resetState,
+            consecutiveUnsafeSamples,
+            ComputeRequiresSafetyIntervention(latestRisk, plannedDirection, plannedDirectionCritical, consecutiveUnsafeSamples),
+            safeCandidateAvailable,
+            HasRecoveryHeadingInRisk(latestRisk))
+    {
+    }
+
+    /// <summary>创建包含三项内部安全事实的不可变策略输入。</summary>
+    public RuntimeGuidanceSafetyInput(
+        string activeDecisionId,
+        string targetId,
+        string movementInstruction,
+        PhysicalRiskState latestRisk,
+        bool trackingValid,
+        bool calibrationValid,
+        bool physicalSpaceMatches,
+        string plannedDirection,
+        float plannedDirectionClearanceMeters,
+        bool plannedDirectionAvailable,
+        bool plannedDirectionCritical,
+        ResetLifecycleState resetState,
+        int consecutiveUnsafeSamples,
+        bool requiresSafetyIntervention,
+        bool hasSafeSemanticCandidate,
+        bool hasRecoveryHeading)
     {
         ActiveDecisionId = activeDecisionId ?? string.Empty;
         TargetId = targetId ?? string.Empty;
@@ -81,7 +127,69 @@ public sealed class RuntimeGuidanceSafetyInput
         PlannedDirectionCritical = plannedDirectionCritical;
         ResetState = resetState;
         ConsecutiveUnsafeSamples = Math.Max(0, consecutiveUnsafeSamples);
-        SafeCandidateAvailable = safeCandidateAvailable;
+        RequiresSafetyIntervention = requiresSafetyIntervention;
+        HasSafeSemanticCandidate = hasSafeSemanticCandidate;
+        HasRecoveryHeading = hasRecoveryHeading;
+    }
+
+    private static bool ComputeRequiresSafetyIntervention(
+        PhysicalRiskState risk,
+        string plannedDirection,
+        bool plannedDirectionCritical,
+        int consecutiveUnsafeSamples)
+    {
+        if (risk == null)
+        {
+            return true;
+        }
+
+        var requiresIntervention = plannedDirectionCritical ||
+                                   risk.reset_required ||
+                                   Contains(risk.unsafe_directions, plannedDirection);
+        if (!requiresIntervention)
+        {
+            return false;
+        }
+
+        return plannedDirectionCritical ||
+               risk.reset_required ||
+               consecutiveUnsafeSamples >= UnsafeSamplesRequiredForIntervention;
+    }
+
+    private static bool HasRecoveryHeadingInRisk(PhysicalRiskState risk)
+    {
+        if (risk == null || risk.heading_profile == null)
+        {
+            return false;
+        }
+
+        foreach (var sample in risk.heading_profile)
+        {
+            if (PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(sample))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
+    {
+        if (values == null || string.IsNullOrWhiteSpace(expected))
+        {
+            return false;
+        }
+
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
@@ -91,8 +199,6 @@ public sealed class RuntimeGuidanceSafetyInput
 /// </summary>
 public sealed class RuntimeGuidanceSafetyPolicy
 {
-    private const int UnsafeSamplesRequiredForReroute = 2;
-
     /// <summary>
     /// 对一份运行期安全输入做无副作用判定。
     /// </summary>
@@ -118,25 +224,19 @@ public sealed class RuntimeGuidanceSafetyPolicy
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
-        var plannedDirectionUnsafe = input.PlannedDirectionCritical ||
-                                     input.LatestRisk.reset_required ||
-                                     Contains(input.LatestRisk.unsafe_directions, input.PlannedDirection);
-        if (!plannedDirectionUnsafe)
+        if (!input.RequiresSafetyIntervention)
         {
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
-        // Critical 与 reset_required 立即处置；普通 unsafe 仍要求两个不同风险快照防抖。
-        if (!input.PlannedDirectionCritical &&
-            !input.LatestRisk.reset_required &&
-            input.ConsecutiveUnsafeSamples < UnsafeSamplesRequiredForReroute)
+        if (input.HasSafeSemanticCandidate)
         {
-            return RuntimeGuidanceSafetyDecision.Continue;
+            return RuntimeGuidanceSafetyDecision.SoftReroute;
         }
 
-        return input.SafeCandidateAvailable
-            ? RuntimeGuidanceSafetyDecision.SoftReroute
-            : RuntimeGuidanceSafetyDecision.PauseReset;
+        return input.HasRecoveryHeading
+            ? RuntimeGuidanceSafetyDecision.PauseReset
+            : RuntimeGuidanceSafetyDecision.HardStop;
     }
 
     private static bool IsNaturalDirection(string direction)
@@ -149,23 +249,5 @@ public sealed class RuntimeGuidanceSafetyPolicy
         return state == ResetLifecycleState.Required ||
                state == ResetLifecycleState.TurningToSafeDirection ||
                state == ResetLifecycleState.Completed;
-    }
-
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
-    {
-        if (values == null || string.IsNullOrWhiteSpace(expected))
-        {
-            return false;
-        }
-
-        foreach (var value in values)
-        {
-            if (string.Equals(value, expected, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

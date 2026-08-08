@@ -37,8 +37,12 @@ public sealed class ArrivalDetector : MonoBehaviour
         }
 
         var anchor = target.ViewPoint != null ? target.ViewPoint : target.transform;
-        // 到达判定使用虚拟世界坐标，阈值单位为米，并保留 0.05 米的最小有效半径。
-        var distance = Vector3.Distance(userPoseTracker.UserVirtualPosition, anchor.position);
+        // Room-scale 到达只比较水平面；HMD/Camera 高度不应阻塞展品到达。
+        var userPosition = userPoseTracker.UserVirtualPosition;
+        var userXZ = new Vector2(userPosition.x, userPosition.z);
+        var targetPosition = anchor.position;
+        var targetXZ = new Vector2(targetPosition.x, targetPosition.z);
+        var distance = Vector2.Distance(userXZ, targetXZ);
         if (distance <= Mathf.Max(0.05f, arrivalDistanceMeters))
         {
             var arrived = watchedReservation;

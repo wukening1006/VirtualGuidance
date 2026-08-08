@@ -123,3 +123,9 @@ Icon?
 # Python 缓存
 __pycache__/
 *.py[cod]
+
+# =========================
+# Documentation
+# =========================
+[Dd]oc/
+[Dd]ocs/

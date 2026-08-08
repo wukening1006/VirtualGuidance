@@ -996,6 +996,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         UpdateUnsafeSampleCount(riskState, plannedDirection, directionAvailable);
         var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeResponse.selected_target);
+        var plannedDirectionCritical = clearanceAvailable && riskEvaluator.IsCriticalClearance(plannedClearance);
+        var requiresSafetyIntervention = RequiresRuntimeSafetyIntervention(
+            riskState,
+            plannedDirection,
+            plannedDirectionCritical);
+        var hasRecoveryHeading = recoveryHeadingPlanner.Plan(
+            riskState != null ? riskState.heading_profile : null).IsSuccess;
         var input = new RuntimeGuidanceSafetyInput(
             activeSnapshot.decisionId,
             activeResponse.selected_target,
@@ -1007,10 +1014,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             plannedDirection,
             plannedClearance,
             directionAvailable && clearanceAvailable,
-            clearanceAvailable && riskEvaluator.IsCriticalClearance(plannedClearance),
+            plannedDirectionCritical,
             pauseResetController != null ? pauseResetController.State : ResetLifecycleState.Inactive,
             consecutiveUnsafeSamples,
-            safeCandidate != null);
+            requiresSafetyIntervention,
+            safeCandidate != null,
+            hasRecoveryHeading);
         var decision = runtimeSafetyPolicy.Evaluate(input);
         if (decision == RuntimeGuidanceSafetyDecision.SoftReroute)
         {
@@ -1607,6 +1616,25 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         lastRuntimeRiskSnapshotId = string.Empty;
     }
 
+    private bool RequiresRuntimeSafetyIntervention(
+        PhysicalRiskState riskState,
+        string plannedDirection,
+        bool plannedDirectionCritical)
+    {
+        if (riskState == null)
+        {
+            return true;
+        }
+
+        if (plannedDirectionCritical || riskState.reset_required)
+        {
+            return true;
+        }
+
+        return Contains(riskState.unsafe_directions, plannedDirection) &&
+               consecutiveUnsafeSamples >= 2;
+    }
+
     private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
     {
         if (values == null || string.IsNullOrWhiteSpace(expected))
@@ -1635,7 +1663,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (input.ResetState == ResetLifecycleState.Required ||
             input.ResetState == ResetLifecycleState.TurningToSafeDirection ||
             input.ResetState == ResetLifecycleState.Completed) return "Physical reset is active.";
-        if (input.LatestRisk.reset_required) return "All natural movement directions are unsafe; automatic reset is required.";
+        if (!input.HasRecoveryHeading) return "No acceptable physical recovery heading is available.";
+        if (input.LatestRisk.reset_required) return "The risk protocol reports no acceptable automatic recovery state.";
         if (input.PlannedDirectionCritical) return "Planned physical direction is critical and no eligible safety candidate is available.";
         return "No eligible runtime safety candidate is available.";
     }

@@ -8,7 +8,7 @@
         "com.unity.nuget.newtonsoft-json": "3.0.2",
         "com.unity.timeline": "1.7.7"
       },
-      "hash": "65f1dc950031d774f8a30be79ea1e804636d890b"
+      "hash": "d8a5d487b5ad25886a389dd305da35b0a9a1ecb5"
     },
     "com.coplaydev.unity-mcp": {
       "version": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main",
