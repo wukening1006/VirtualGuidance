@@ -268,28 +268,29 @@ public sealed class GuidanceRuntimeEditModeTests
             var replanningCount = 0;
             coordinator.Replanning += _ => replanningCount++;
 
-            var pose = root.AddComponent<UserPoseTracker>();
+            var pose = root.GetComponent<UserPoseTracker>();
             var reset = root.AddComponent<PauseResetController>();
-            reset.Configure(null, null, null, pose);
-            SetPrivateField(coordinator, "pauseResetController", reset);
-            reset.PauseForReset("critical risk", new PhysicalRiskState(
-                clearanceForward: 1.5f,
-                clearanceLeft: 0.4f,
-                clearanceRight: 0.3f,
-                resetRequired: true));
-            var space = root.AddComponent<PhysicalSpaceManager>();
-            space.LoadSpaces();
-            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
-            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
-            calibration.Configure(space, pose);
-            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
-            var tracking = root.AddComponent<XRTrackingAdapter>();
-            tracking.Configure(pose, calibration);
-            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
-            tracking.ApplyTrackedPose(Vector3.zero, Quaternion.identity);
-            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
-            var risk = root.AddComponent<PhysicalRiskEvaluator>();
-            risk.Configure(space, pose, calibration);
+            var space = root.GetComponent<PhysicalSpaceManager>();
+            var calibration = root.GetComponent<PhysicalSpaceCalibration>();
+            var risk = root.GetComponent<PhysicalRiskEvaluator>();
+            reset.Configure(null, null, null, pose, risk);
+            coordinator.Configure(
+                null,
+                null,
+                task,
+                root.GetComponent<NavigationTargetManager>(),
+                root.GetComponent<SemanticTargetSelector>(),
+                null,
+                risk,
+                root.GetComponent<LocalGuidanceValidator>(),
+                reset,
+                null,
+                null);
+            coordinator.ConfigureRequestClient(requests);
+            SetPrivateField(coordinator, "resetStabilizationSeconds", 0f);
+            RuntimeInterventionInfo lastIntervention = null;
+            coordinator.RuntimeIntervention += info => lastIntervention = info;
+            InvokePrivate(coordinator, "TriggerPauseReset", null, risk.CurrentRiskState, "critical risk");
             Assert.That(risk.CurrentRiskState.boundary_risk, Is.EqualTo("low"));
             var dashboard = root.AddComponent<ExperimentDashboard>();
             SetPrivateField(dashboard, "taskController", task);
@@ -298,14 +299,17 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(dashboard, "riskEvaluator", risk);
             SetPrivateField(dashboard, "physicalSpaceManager", space);
             SetPrivateField(dashboard, "physicalSpaceCalibration", calibration);
-            SetPrivateField(dashboard, "xrTrackingAdapter", tracking);
+            SetPrivateField<XRTrackingAdapter>(dashboard, "xrTrackingAdapter", null);
             SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
             InvokePrivate(dashboard, "Subscribe");
 
-            reset.ProcessPhysicalForward(Vector2.up);
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
 
             Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Running));
+            Assert.That(
+                dashboard.RunState,
+                Is.EqualTo(ExperimentRunState.Running),
+                lastIntervention != null ? lastIntervention.Reason : "no intervention");
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
             Assert.That(task.RuntimeState.currentExhibitId, Is.EqualTo("E3"));
             Assert.That(task.RuntimeState.nextTargetId, Is.EqualTo("E5"));
@@ -535,8 +539,8 @@ public sealed class GuidanceRuntimeEditModeTests
             virtualUser.transform.SetParent(go.transform, false);
             var pose = go.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualUserRoot(virtualUser.transform);
-            CreateExhibit(go.transform, "E3", Vector3.forward * 2f, "route_subgoal", null);
-            CreateExhibit(go.transform, "E5", Vector3.left * 2f, "main_target", null);
+            CreateExhibit(go.transform, "ValidatorE3", Vector3.forward * 2f, "route_subgoal", null);
+            CreateExhibit(go.transform, "ValidatorE5", Vector3.left * 2f, "main_target", null);
             var targets = go.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
@@ -544,7 +548,7 @@ public sealed class GuidanceRuntimeEditModeTests
             var validator = go.AddComponent<LocalGuidanceValidator>();
             validator.Configure(targets, riskEvaluator);
             var runtimeState = new GuidanceRuntimeState();
-            runtimeState.Begin("T2_main_target", "E1", "E3", "E5");
+            runtimeState.Begin("T2_main_target", "E1", "ValidatorE3", "ValidatorE5");
             var originalVersion = runtimeState.stateVersion;
 
             var riskState = new PhysicalRiskState(
@@ -560,12 +564,12 @@ public sealed class GuidanceRuntimeEditModeTests
                 physical_space_id = "narrow_room",
                 current_exhibit = "E1"
             };
-            ConfigureSingleCandidate(request, "E3", "navigable_detour");
+            ConfigureSingleCandidate(request, "ValidatorE3", "navigable_detour");
             var snapshot = GuidanceRequestSnapshot.Capture(request, riskState, runtimeState);
 
             var unsafeResponse = new GuidanceResponse
             {
-                selected_target = "E3",
+                selected_target = "ValidatorE3",
                 movement_instruction = "move_forward_slowly"
             };
             Assert.That(validator.Validate(unsafeResponse, snapshot, runtimeState, riskState, out var unsafeReason), Is.False);
@@ -976,6 +980,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 null);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
+            SetPrivateField(coordinator, "resetStabilizationSeconds", 0f);
             var pauseResetDecisions = 0;
             var recoveryReplans = 0;
             coordinator.RuntimeIntervention += info =>
@@ -1082,6 +1087,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 null);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
+            SetPrivateField(coordinator, "resetStabilizationSeconds", 0f);
             var pauseResetDecisions = 0;
             var hardStopDecisions = 0;
             coordinator.RuntimeIntervention += info =>
@@ -1865,6 +1871,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 clearanceLeft: 1.4f,
                 clearanceRight: 0.6f,
                 boundaryRisk: "critical",
+                unsafeDirections: new[] {"forward", "right"},
+                safeDirections: new[] {"left"},
                 resetRequired: true));
 
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
@@ -4407,7 +4415,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void GuidanceCoordinator_PendingRequestKeepsSafeCandidateThenHoldsForReplan()
+    public void GuidanceCoordinator_PendingRequestKeepsSafeAndUnknownThenHoldsWhenAllBlocked()
     {
         var root = new GameObject("GuidancePendingRiskTest");
         root.SetActive(false);
@@ -4467,9 +4475,22 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(pauseResetCount, Is.Zero);
             Assert.That(hardStopCount, Is.Zero);
 
-            var noSafeCandidate = CopyRiskWithDirections(
+            var unknownCandidates = CopyRiskWithDirections(
                 currentRisk,
                 currentRisk.risk_revision + 2,
+                System.Array.Empty<string>(),
+                System.Array.Empty<string>(),
+                1f);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unknownCandidates);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unknownCandidates);
+
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(coordinator.IsHoldingForReplan, Is.False);
+            Assert.That(requests.CancelCount, Is.Zero);
+
+            var noSafeCandidate = CopyRiskWithDirections(
+                currentRisk,
+                currentRisk.risk_revision + 3,
                 System.Array.Empty<string>(),
                 new[] { "forward", "left", "right" },
                 0.6f);
@@ -4489,9 +4510,89 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(coordinator.IsHoldingForReplan, Is.True);
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+            Assert.That(requests.CancelCount, Is.EqualTo(1));
             Assert.That(
                 GetPrivateField<float>(coordinator, "nextReplanAttemptTime"),
-                Is.GreaterThanOrEqualTo(Time.unscaledTime));
+                Is.GreaterThanOrEqualTo(Time.realtimeSinceStartup));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_ResponseExactHeadingRejectsCriticalGeometryDespiteSafeLabels()
+    {
+        var root = new GameObject("GuidanceExactResponseRiskTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var expiredCount = 0;
+            coordinator.GuidanceExpired += _ => expiredCount++;
+
+            coordinator.RequestNextGuidance();
+            var request = RequestForContext(requests.Contexts[0], "request-exact-response-risk");
+            InvokePrivate(coordinator, "HandleRequestBuilt", request);
+            var selectedTarget = request.model_candidate_ids[0];
+            var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
+            var targets = root.GetComponent<NavigationTargetManager>();
+            Assert.That(targets.TryGetTargetRelativeYawDegrees(selectedTarget, out var relativeYaw), Is.True);
+            var absoluteForward = RotatePhysicalForwardForTest(Vector2.up, relativeYaw);
+            var distanceToBoundary = DistanceToSquareBoundary(Vector2.one * 2.5f, absoluteForward, 5f);
+            var nearBoundaryPosition = Vector2.one * 2.5f +
+                                       absoluteForward * Mathf.Max(0f, distanceToBoundary - 0.2f);
+            var source = riskEvaluator.CurrentRiskState;
+            var deceptiveSafeRisk = new PhysicalRiskState(
+                riskSnapshotId: "risk-exact-response-critical",
+                riskRevision: source.risk_revision + 1,
+                calibrationId: source.calibration_id,
+                sampledAtUtc: source.sampled_at_utc,
+                riskPolicyVersion: source.risk_policy_version,
+                snapshotSource: source.source,
+                physicalSpace: source.physical_space,
+                physicalPosition: nearBoundaryPosition,
+                physicalForward: Vector2.up,
+                boundaryContext: source.boundary_context,
+                obstacleContext: source.obstacle_context,
+                clearanceForward: 2f,
+                clearanceLeft: 2f,
+                clearanceRight: 2f,
+                boundaryRisk: "low",
+                resetRisk: "none",
+                safeDirections: new[] { "forward", "left", "right" },
+                unsafeDirections: System.Array.Empty<string>(),
+                headingProfile: new[]
+                {
+                    new HeadingSample(relativeYaw, absoluteForward, 2f, HeadingSafety.Safe)
+                });
+            SetPrivateField(riskEvaluator, "currentRiskState", deceptiveSafeRisk);
+
+            Assert.That(riskEvaluator.TryEvaluateAbsoluteHeading(
+                deceptiveSafeRisk,
+                absoluteForward,
+                out var exact), Is.True);
+            Assert.That(exact.Safety, Is.EqualTo(HeadingSafety.Critical));
+
+            coordinator.HandleGuidanceResponse(ResponseForRequest(request, selectedTarget));
+
+            Assert.That(expiredCount, Is.EqualTo(1));
+            Assert.That(task.RuntimeState.CurrentGuidanceTarget, Is.Null);
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(2));
         }
         finally
         {
@@ -4880,6 +4981,27 @@ public sealed class GuidanceRuntimeEditModeTests
         return new[] { "forward", "left", "right" }
             .Where(direction => direction != unsafeDirection)
             .ToArray();
+    }
+
+    private static Vector2 RotatePhysicalForwardForTest(Vector2 forward, float yawDegrees)
+    {
+        var normalized = forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            normalized.x * cos + normalized.y * sin,
+            -normalized.x * sin + normalized.y * cos).normalized;
+    }
+
+    private static float DistanceToSquareBoundary(Vector2 origin, Vector2 direction, float sizeMeters)
+    {
+        var distance = float.PositiveInfinity;
+        if (direction.x > 0.0001f) distance = Mathf.Min(distance, (sizeMeters - origin.x) / direction.x);
+        if (direction.x < -0.0001f) distance = Mathf.Min(distance, -origin.x / direction.x);
+        if (direction.y > 0.0001f) distance = Mathf.Min(distance, (sizeMeters - origin.y) / direction.y);
+        if (direction.y < -0.0001f) distance = Mathf.Min(distance, -origin.y / direction.y);
+        return distance;
     }
 
     private static PhysicalRiskState CopyRiskWithDirections(

@@ -387,15 +387,29 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        if (pauseResetController != null &&
-            pauseResetController.State == ResetLifecycleState.Completed &&
-            !pauseResetController.ResumeAfterReset())
+        var requestedDuringResetRecovery = false;
+        if (taskController != null &&
+            taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
         {
-            RejectResearcherResume("reset turn has not completed");
+            if (guidanceCoordinator == null || !guidanceCoordinator.ResumeAfterResetAndReplan())
+            {
+                RejectResearcherResume("reset recovery is still stabilizing or not explicitly safe");
+                return;
+            }
+
+            requestedDuringResetRecovery = true;
+        }
+        else if (pauseResetController != null &&
+                 pauseResetController.State == ResetLifecycleState.Completed &&
+                 !pauseResetController.ResumeAfterReset())
+        {
+            RejectResearcherResume("manual reset turn has not completed");
             return;
         }
         if (restoreResearcherPause)
         {
+            guidanceCoordinator?.CancelActiveGuidance();
+            taskController?.PauseForResearcher();
             runtimeInterventionActive = false;
             stateBeforeSafetyHold = ExperimentRunState.Running;
             TransitionTo(ExperimentRunState.Paused, "Researcher pause restored after reset");
@@ -404,18 +418,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
         runtimeInterventionActive = false;
         experimentLogger?.Session?.EndPause();
-        var requestedDuringResetRecovery = false;
         if (taskController != null)
         {
-            if (taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
+            if (!requestedDuringResetRecovery)
             {
-                if (guidanceCoordinator != null)
-                    requestedDuringResetRecovery = guidanceCoordinator.ResumeAfterResetAndReplan();
-                else
-                    taskController.ResumeAfterReset();
-            }
-            else
                 taskController.ResumeAfterResearcherPause();
+            }
         }
 
         if (stateBeforeSafetyHold == ExperimentRunState.Completing && taskController != null && taskController.RuntimeState.IsCompleted)
@@ -1314,7 +1322,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        if (state == GuidanceRecoveryState.Stabilizing ||
+        if (state == GuidanceRecoveryState.HoldingForSafeHeading ||
+            state == GuidanceRecoveryState.Stabilizing ||
             state == GuidanceRecoveryState.Revalidating ||
             state == GuidanceRecoveryState.Replanning)
         {

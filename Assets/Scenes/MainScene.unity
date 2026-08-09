@@ -10311,18 +10311,18 @@ RectTransform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 140505075}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: 0, z: 0.000010282029}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1142060441}
   m_Father: {fileID: 1208479641}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 1, y: 1}
-  m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: -258, y: -669}
-  m_SizeDelta: {x: 700, y: 450}
-  m_Pivot: {x: 1, y: 1}
+  m_AnchorMin: {x: 0, y: 1}
+  m_AnchorMax: {x: 0, y: 1}
+  m_AnchoredPosition: {x: 566.0001, y: -669}
+  m_SizeDelta: {x: 700, y: 357.7}
+  m_Pivot: {x: 0, y: 1}
 --- !u!114 &140505077
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -10830,7 +10830,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 28.68, y: 8}
+  m_AnchoredPosition: {x: 48.7, y: 8}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!20 &251972321
@@ -12478,7 +12478,7 @@ Transform:
   m_GameObject: {fileID: 549286873}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 17.49, y: 7, z: 5.88}
+  m_LocalPosition: {x: 106.8, y: 7, z: 5.88}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -25940,7 +25940,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
   m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: 0, y: 0}
+  m_AnchoredPosition: {x: -4, y: 0}
   m_SizeDelta: {x: -20, y: -16}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1142060442
@@ -31206,8 +31206,14 @@ MonoBehaviour:
   turnCueReverseAbortDegrees: 5
   turnCueStableCompletionSeconds: 0.25
   turnCueTimeoutSeconds: 8
+  resetStabilizationSeconds: 0.25
+  recoveryHoldBudgetSeconds: 8
+  recoveryHoldRetryIntervalSeconds: 0.5
+  recoveryHoldMaxAttempts: 16
   replanInitialRetryDelaySeconds: 0.5
   replanMaxRetryDelaySeconds: 2
+  replanWakePositionMeters: 0.25
+  replanWakeHeadingDegrees: 12
 --- !u!114 &1761135464
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -32127,7 +32133,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
-  calibrationPointInRoom: {x: 2.5, y: 2.5}
+  calibrationPointInRoom: {x: 2.5, y: 1}
   calibrationForwardYawDegrees: 0
 --- !u!1 &1934046643
 GameObject:
@@ -32648,11 +32654,11 @@ RectTransform:
   m_Children: []
   m_Father: {fileID: 1861627924}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
-  m_AnchorMin: {x: 1, y: 1}
-  m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: -24, y: -24}
-  m_SizeDelta: {x: 610, y: 500}
-  m_Pivot: {x: 1, y: 1}
+  m_AnchorMin: {x: 0, y: 1}
+  m_AnchorMax: {x: 0, y: 1}
+  m_AnchoredPosition: {x: 1093.9004, y: -23.999878}
+  m_SizeDelta: {x: 568.1, y: 543.9}
+  m_Pivot: {x: 0, y: 1}
 --- !u!1 &1969055405
 GameObject:
   m_ObjectHideFlags: 0
@@ -46297,7 +46303,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: -0.49990866, y: 0.50007963, z: -0.4999204, w: 0.5000914}
   m_LocalPosition: {x: 1.42, y: 5.4, z: -7.69}
-  m_LocalScale: {x: -0.81864834, y: 0.34738386, z: 27.5}
+  m_LocalScale: {x: 0.77, y: 0.34738386, z: 27.5}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1812662820930559191}
@@ -65047,7 +65053,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: -0.49990866, y: 0.50007963, z: -0.4999204, w: 0.5000914}
   m_LocalPosition: {x: 1.42, y: 5.49, z: -2.02}
-  m_LocalScale: {x: -0.81864834, y: 0.34738386, z: 27.3}
+  m_LocalScale: {x: 0.85, y: 0.34738386, z: 27.3}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1812662820930559191}

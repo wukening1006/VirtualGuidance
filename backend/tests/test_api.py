@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from backend.agents.guide_mock import GuideMockAgent
 from backend.app import create_app
+from backend.pipeline import load_scene_semantics
 from backend.schemas import GuidanceRequest, GuidanceResponse
 
 
@@ -104,6 +105,20 @@ def test_health_reports_loaded_configs(tmp_path: Path) -> None:
         "l_shaped_room",
     }
     assert body["exhibit_count"] == 8
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_scene_semantics_accepts_utf8_with_or_without_bom(
+    tmp_path: Path,
+    encoding: str,
+) -> None:
+    payload = {"exhibits": [{"id": "E1"}]}
+    (tmp_path / "scene_semantics.json").write_text(
+        json.dumps(payload),
+        encoding=encoding,
+    )
+
+    assert load_scene_semantics(tmp_path) == payload
 
 
 def test_b1_narrow_room_returns_forward_and_logs_risk(tmp_path: Path) -> None:

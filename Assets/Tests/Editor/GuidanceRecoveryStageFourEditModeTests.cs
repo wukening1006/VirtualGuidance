@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
@@ -42,6 +43,124 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         Assert.That(plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
     }
 
+    /// <summary>验证 Unknown 航向不能作为 Reset 的安全恢复目标。</summary>
+    [Test]
+    public void RecoveryHeadingPlanner_UnknownHeadingIsNotAcceptable()
+    {
+        var planner = new RecoveryHeadingPlanner();
+        var plan = planner.Plan(new[]
+        {
+            Sample(0f, 1f, HeadingSafety.Unknown),
+            Sample(45f, 0.7f, HeadingSafety.Unsafe)
+        });
+
+        Assert.That(plan.IsSuccess, Is.False);
+        Assert.That(plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
+    }
+
+    /// <summary>验证绝对航向接口使用精确几何，而不是风险快照中最近的离散采样。</summary>
+    [Test]
+    public void PhysicalRiskEvaluator_AbsoluteHeadingIgnoresNearestDiscreteSample()
+    {
+        var root = new GameObject("StageFourAbsoluteHeadingTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out _, out _, out var risk, out _);
+            var fabricatedProfile = CopyRisk(risk.CurrentRiskState, new[]
+            {
+                new HeadingSample(0f, Vector2.up, 0.1f, HeadingSafety.Critical)
+            });
+
+            Assert.That(risk.TryEvaluateAbsoluteHeading(fabricatedProfile, Vector2.up, out var exact), Is.True);
+            Assert.That(exact.Safety, Is.EqualTo(HeadingSafety.Safe));
+            Assert.That(exact.ClearanceMeters, Is.GreaterThanOrEqualTo(1.2f));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证完成转向后先稳定等待，再按 Revalidating、Replanning 顺序恢复。</summary>
+    [Test]
+    public void GuidanceCoordinator_SafeRecoveryUsesRequiredStateSequence()
+    {
+        var root = new GameObject("StageFourSafeRecoverySequenceTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
+            SetPrivateField(coordinator, "resetStabilizationSeconds", 10f);
+            var states = new List<GuidanceRecoveryState>();
+            coordinator.RecoveryStateChanged += states.Add;
+
+            InvokePrivate(coordinator, "TriggerPauseReset", null, risk.CurrentRiskState, "planned heading unsafe");
+            states.Clear();
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
+
+            CollectionAssert.AreEqual(new[] {GuidanceRecoveryState.Stabilizing}, states);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Completed));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(coordinator.ResumeAfterResetAndReplan(), Is.False);
+
+            SetPrivateField(coordinator, "recoveryRevalidationAt", Time.realtimeSinceStartup);
+            InvokePrivate(coordinator, "Update");
+
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    GuidanceRecoveryState.Stabilizing,
+                    GuidanceRecoveryState.Revalidating,
+                    GuidanceRecoveryState.Replanning,
+                    GuidanceRecoveryState.Inactive
+                },
+                states);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证最新冻结航向为 Unknown 时不会恢复导航，而是选择新的 Safe 航向继续 Reset。</summary>
+    [Test]
+    public void GuidanceCoordinator_UnknownRevalidationDoesNotResumeNavigation()
+    {
+        var root = new GameObject("StageFourUnknownRevalidationTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
+            var pose = root.GetComponent<UserPoseTracker>();
+            var states = new List<GuidanceRecoveryState>();
+            coordinator.RecoveryStateChanged += states.Add;
+
+            InvokePrivate(coordinator, "TriggerPauseReset", null, risk.CurrentRiskState, "planned heading unsafe");
+            var originalForward = reset.SafePhysicalForward;
+            var originalYaw = Mathf.Atan2(originalForward.x, originalForward.y) * Mathf.Rad2Deg;
+            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 4.3f), originalYaw);
+            states.Clear();
+            reset.ProcessPhysicalForward(pose.PhysicalForwardXZ);
+
+            Assert.That(states[0], Is.EqualTo(GuidanceRecoveryState.Stabilizing));
+            Assert.That(states[1], Is.EqualTo(GuidanceRecoveryState.Revalidating));
+            Assert.That(states, Has.None.EqualTo(GuidanceRecoveryState.Replanning));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
+            Assert.That(coordinator.FrozenRecoveryPlan.Safety, Is.EqualTo(HeadingSafety.Safe));
+            Assert.That(Vector2.Angle(coordinator.FrozenRecoveryPlan.SafePhysicalForward, originalForward),
+                Is.GreaterThan(1f));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
     /// <summary>验证冻结朝向在普通风险样本变化时保持不变，变为 Critical 后才重新选择。</summary>
     [Test]
     public void GuidanceCoordinator_FrozenHeadingReselectsOnlyAfterCritical()
@@ -73,12 +192,32 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
                 Is.LessThan(0.001f));
             Assert.That(Vector2.Distance(reset.SafePhysicalForward, frozenForward), Is.LessThan(0.001f));
 
-            var frozenCritical = CopyRisk(risk.CurrentRiskState, new[]
+            var discreteFrozenCritical = CopyRisk(risk.CurrentRiskState, new[]
             {
                 new HeadingSample(60f, frozenForward, 0.2f, HeadingSafety.Critical),
                 Sample(-60f, 2.8f, HeadingSafety.Safe)
             });
-            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", frozenCritical);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", discreteFrozenCritical);
+
+            Assert.That(Vector2.Distance(coordinator.FrozenRecoveryPlan.SafePhysicalForward, frozenForward),
+                Is.LessThan(0.001f), "离散最近采样不得覆盖冻结航向的精确几何结果");
+
+            var pose = root.GetComponent<UserPoseTracker>();
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 2.5f) + frozenForward * 2.5f, 0f);
+            var latestRisk = risk.EvaluateNow();
+
+            Assert.That(risk.TryEvaluateAbsoluteHeading(latestRisk, frozenForward, out var exactFrozen), Is.True);
+            Assert.That(exactFrozen.Safety, Is.EqualTo(HeadingSafety.Critical),
+                "测试位姿必须让旧冻结航向真实进入 Critical 区间");
+            var replacement = new RecoveryHeadingPlanner().Plan(
+                latestRisk.heading_profile,
+                null,
+                coordinator.FrozenRecoveryPlan);
+            Assert.That(replacement.IsSuccess, Is.True, "最新真实 Profile 必须仍存在 Safe 替代航向");
+            Assert.That(Vector2.Distance(replacement.SafePhysicalForward, frozenForward), Is.GreaterThan(0.001f));
+
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", latestRisk);
 
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
             Assert.That(Vector2.Distance(coordinator.FrozenRecoveryPlan.SafePhysicalForward, frozenForward),
@@ -142,6 +281,152 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.Inactive));
             Assert.That(coordinator.IsHoldingForReplan, Is.True);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证暂时没有 Safe 恢复航向时保持任务暂停，事实恢复后继续 Reset。</summary>
+    [Test]
+    public void GuidanceCoordinator_RecoveryHoldResumesWhenSafeHeadingAppears()
+    {
+        var root = new GameObject("StageFourRecoveryHoldResumeTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
+            var noSafeRisk = CopyRisk(risk.CurrentRiskState, new[]
+            {
+                Sample(0f, 0.8f, HeadingSafety.Unsafe),
+                Sample(60f, 0.7f, HeadingSafety.Unknown),
+                Sample(-60f, 0.6f, HeadingSafety.Critical)
+            });
+
+            InvokePrivate(coordinator, "TriggerPauseReset", null, noSafeRisk, "planned heading unsafe");
+
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.HoldingForSafeHeading));
+            Assert.That(coordinator.IsHoldingForRecovery, Is.True);
+            Assert.That(coordinator.IsAutomaticRecoveryActive, Is.True);
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(task.RuntimeState.phase, Is.Not.EqualTo(GuidanceRuntimePhase.Ended));
+            Assert.That(reset.IsActive, Is.False);
+
+            var safeRisk = CopyRisk(noSafeRisk, new[]
+            {
+                Sample(90f, 2f, HeadingSafety.Safe)
+            });
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", safeRisk);
+
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(coordinator.FrozenRecoveryPlan, Is.Not.Null);
+            Assert.That(coordinator.FrozenRecoveryPlan.Safety, Is.EqualTo(HeadingSafety.Safe));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Recovery Hold 超过预算后才进入明确 HardStop。</summary>
+    [Test]
+    public void GuidanceCoordinator_RecoveryHoldHardStopsOnlyAfterBudgetExhausted()
+    {
+        var root = new GameObject("StageFourRecoveryHoldBudgetTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
+            var noSafeRisk = CopyRisk(risk.CurrentRiskState, new[]
+            {
+                Sample(0f, 0.8f, HeadingSafety.Unsafe)
+            });
+            InvokePrivate(coordinator, "TriggerPauseReset", null, noSafeRisk, "planned heading unsafe");
+
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.HoldingForSafeHeading));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            SetPrivateField(coordinator, "recoveryHoldStartedAt", Time.realtimeSinceStartup - 10f);
+            SetPrivateField(coordinator, "recoveryHoldBudgetSeconds", 0.1f);
+            InvokePrivate(coordinator, "Update");
+
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.Terminated));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Ended));
+            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Failed));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Hold 可由风险修订、位移、转向和重试计时分别唤醒。</summary>
+    [Test]
+    public void GuidanceCoordinator_ReplanHoldHasIndependentWakeSources()
+    {
+        var root = new GameObject("StageFourReplanHoldWakeTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "MissingFinal", out var coordinator, out _, out var risk, out _);
+            var pose = root.GetComponent<UserPoseTracker>();
+
+            coordinator.RequestNextGuidance();
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(1));
+
+            SetPrivateField(coordinator, "holdRiskRevision", risk.CurrentRiskState.risk_revision - 1);
+            coordinator.RequestNextGuidance();
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(2), "risk revision");
+
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            pose.SetCalibratedPhysicalPose(pose.PhysicalPositionXZ + new Vector2(0.3f, 0f), 0f);
+            var movedRisk = risk.EvaluateNow();
+            SetPrivateField(coordinator, "holdRiskRevision", movedRisk.risk_revision);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", movedRisk);
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(3), "physical position");
+
+            pose.SetCalibratedPhysicalPose(pose.PhysicalPositionXZ, 20f);
+            var turnedRisk = risk.EvaluateNow();
+            SetPrivateField(coordinator, "holdRiskRevision", turnedRisk.risk_revision);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", turnedRisk);
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(4), "physical heading");
+
+            SetPrivateField(coordinator, "nextReplanAttemptTime", Time.realtimeSinceStartup);
+            InvokePrivate(coordinator, "Update");
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(5), "retry timer");
+            Assert.That(coordinator.IsHoldingForReplan, Is.True);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Reset 完成会退出旧 Hold，并以最新位姿形成一次全新重规划检查。</summary>
+    [Test]
+    public void GuidanceCoordinator_ResetCompletionWakesExistingReplanHold()
+    {
+        var root = new GameObject("StageFourResetWakeHoldTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "MissingFinal", out var coordinator, out var task, out var risk, out var reset);
+            coordinator.RequestNextGuidance();
+            Assert.That(coordinator.IsHoldingForReplan, Is.True);
+            var holdTransitions = new List<bool>();
+            coordinator.ReplanHoldChanged += info => holdTransitions.Add(info.IsHolding);
+
+            InvokePrivate(coordinator, "TriggerPauseReset", null, risk.CurrentRiskState, "planned heading unsafe");
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
+
+            CollectionAssert.AreEqual(new[] {false, true}, holdTransitions);
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(coordinator.IsHoldingForReplan, Is.True);
+            Assert.That(coordinator.ReplanRetryCount, Is.EqualTo(1));
         }
         finally
         {
@@ -233,6 +518,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             null,
             null);
         coordinator.ConfigureRequestClient(new NoOpRequestClient());
+        SetPrivateField(coordinator, "resetStabilizationSeconds", 0f);
         root.SetActive(true);
     }
 
@@ -278,6 +564,13 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.That(method, Is.Not.Null, methodName);
         method.Invoke(target, arguments);
+    }
+
+    private static void SetPrivateField<T>(object target, string fieldName, T value)
+    {
+        var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(field, Is.Not.Null, fieldName);
+        field.SetValue(target, value);
     }
 
     private sealed class NoOpRequestClient : IGuidanceRequestClient

@@ -50,7 +50,7 @@ public sealed class RuntimeGuidanceSafetyInput
     public int ConsecutiveUnsafeSamples { get; }
     /// <summary>最新风险下是否存在明确 Eligible 的替代候选。</summary>
     public bool HasSafeSemanticCandidate { get; }
-    /// <summary>当前风险下是否存在可供自动恢复的 Safe 或 Unknown Heading。</summary>
+    /// <summary>当前风险下是否存在可供自动恢复的明确 Safe Heading。</summary>
     public bool HasRecoveryHeading { get; }
     /// <summary>当前计划方向是否已经需要安全层介入。</summary>
     public bool RequiresSafetyIntervention { get; }
@@ -234,9 +234,24 @@ public sealed class RuntimeGuidanceSafetyPolicy
             return RuntimeGuidanceSafetyDecision.SoftReroute;
         }
 
-        return input.HasRecoveryHeading
+        return input.HasRecoveryHeading || HasTrustedRecoveryHoldFacts(input)
             ? RuntimeGuidanceSafetyDecision.PauseReset
             : RuntimeGuidanceSafetyDecision.HardStop;
+    }
+
+    private static bool HasTrustedRecoveryHoldFacts(RuntimeGuidanceSafetyInput input)
+    {
+        var risk = input != null ? input.LatestRisk : null;
+        return input != null &&
+               input.TrackingValid &&
+               input.CalibrationValid &&
+               input.PhysicalSpaceMatches &&
+               risk != null &&
+               risk.boundary_context != null &&
+               risk.boundary_context.Count >= 3 &&
+               PhysicalSpaceGeometry.ContainsPoint(
+                   risk.boundary_context,
+                   risk.user_physical_position);
     }
 
     private static bool IsNaturalDirection(string direction)

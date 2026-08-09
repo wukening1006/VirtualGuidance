@@ -159,5 +159,6 @@ def load_scene_semantics(config_dir: Path) -> dict:
     path = config_dir / "scene_semantics.json"
     if not path.exists():
         return {"exhibits": []}
-    with path.open("r", encoding="utf-8") as handle:
+    # utf-8-sig 同时兼容带 BOM 和不带 BOM 的 UTF-8 配置文件。
+    with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)

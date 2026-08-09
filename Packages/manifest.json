@@ -1,7 +1,6 @@
 {
   "dependencies": {
     "com.besty.unity-skills": "https://github.com/Besty0728/Unity-Skills.git?path=/SkillsForUnity",
-    "com.coplaydev.unity-mcp": "https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.feature.development": "1.0.1",
     "com.unity.pico.livepreview": "file:D:/SoftwareFiles/Unity/Unity Live Preview Plugin-1.0.5-20250211",

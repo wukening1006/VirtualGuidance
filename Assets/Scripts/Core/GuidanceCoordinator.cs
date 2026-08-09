@@ -73,6 +73,8 @@ public enum GuidanceRecoveryState
     StoppingGuidance,
     /// <summary>正在从 Heading Profile 选择安全朝向。</summary>
     SelectingHeading,
+    /// <summary>当前没有明确 Safe 航向，任务保持暂停并等待最新可信物理事实。</summary>
+    HoldingForSafeHeading,
     /// <summary>等待参与者原地转向冻结朝向。</summary>
     WaitingForUserTurn,
     /// <summary>参与者已到达目标朝向，正在等待稳定。</summary>
@@ -178,11 +180,25 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [Tooltip("等待 TurnCue 完成的最长时间，单位：秒。")]
     [SerializeField] private float turnCueTimeoutSeconds = 8f;
 
+    [Header("Reset 恢复")]
+    [Tooltip("用户完成安全转向后，主动复验前需要保持稳定的时间，单位：秒。")]
+    [SerializeField, Min(0f)] private float resetStabilizationSeconds = 0.25f;
+    [Tooltip("没有明确 Safe 恢复航向时允许等待的最长时间，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float recoveryHoldBudgetSeconds = 8f;
+    [Tooltip("Recovery Hold 期间两次主动重试的最短间隔，单位：秒。")]
+    [SerializeField, Min(0.05f)] private float recoveryHoldRetryIntervalSeconds = 0.5f;
+    [Tooltip("单次 Recovery Hold 允许执行的最大选向次数。")]
+    [SerializeField, Min(1)] private int recoveryHoldMaxAttempts = 16;
+
     [Header("重规划等待")]
     [Tooltip("暂无可执行候选后首次重试的最短间隔，单位：秒。")]
     [SerializeField, Min(0.1f)] private float replanInitialRetryDelaySeconds = 0.5f;
     [Tooltip("连续暂无候选时允许使用的最大重试间隔，单位：秒。")]
     [SerializeField, Min(0.1f)] private float replanMaxRetryDelaySeconds = 2f;
+    [Tooltip("Hold 期间触发重新检查的最小物理位移，单位：米。")]
+    [SerializeField, Min(0.01f)] private float replanWakePositionMeters = 0.25f;
+    [Tooltip("Hold 期间触发重新检查的最小物理转角，单位：度。")]
+    [SerializeField, Range(1f, 180f)] private float replanWakeHeadingDegrees = 12f;
 
     private GuidanceRequestSnapshot activeSnapshot;
     private GuidanceResponse activeResponse;
@@ -201,10 +217,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private readonly RecoveryHeadingPlanner recoveryHeadingPlanner = new RecoveryHeadingPlanner();
     private RecoveryHeadingPlan frozenRecoveryPlan;
     private GuidanceRecoveryState recoveryState = GuidanceRecoveryState.Inactive;
+    private float recoveryRevalidationAt = float.PositiveInfinity;
+    private float recoveryHoldStartedAt = float.PositiveInfinity;
+    private float nextRecoveryHoldAttemptAt = float.PositiveInfinity;
+    private int recoveryHoldAttemptCount;
+    private int recoveryHoldRiskRevision = -1;
+    private Vector2 recoveryHoldPhysicalPosition;
+    private Vector2 recoveryHoldPhysicalForward = Vector2.up;
+    private bool recoveryHoldPoseCaptured;
     private bool holdForReplan;
     private int holdRiskRevision = -1;
     private string holdPlanningFingerprint = string.Empty;
     private string holdReason = string.Empty;
+    private Vector2 holdPhysicalPosition;
+    private Vector2 holdPhysicalForward = Vector2.up;
+    private bool holdPhysicalPoseCaptured;
     private int replanRetryCount;
     private float nextReplanAttemptTime;
     private float currentReplanRetryDelaySeconds;
@@ -257,7 +284,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <summary>当前恢复流程冻结的具体物理朝向计划。</summary>
     public RecoveryHeadingPlan FrozenRecoveryPlan => frozenRecoveryPlan;
     /// <summary>当前是否正在执行自动物理朝向恢复。</summary>
-    public bool IsAutomaticRecoveryActive => IsResetRecoveryActive;
+    public bool IsAutomaticRecoveryActive =>
+        recoveryState != GuidanceRecoveryState.Inactive &&
+        recoveryState != GuidanceRecoveryState.Terminated;
+    /// <summary>当前是否因没有明确 Safe 航向而保持恢复等待。</summary>
+    public bool IsHoldingForRecovery => recoveryState == GuidanceRecoveryState.HoldingForSafeHeading;
+    /// <summary>当前 Recovery Hold 已执行的选向次数。</summary>
+    public int RecoveryHoldAttemptCount => recoveryHoldAttemptCount;
     /// <summary>当前是否因没有可执行语义候选而等待下一份事实重规划。</summary>
     public bool IsHoldingForReplan => holdForReplan;
     /// <summary>当前重规划等待使用的规划指纹。</summary>
@@ -268,6 +301,26 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public float CurrentReplanRetryDelaySeconds => currentReplanRetryDelaySeconds;
 
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
+
+    private void Update()
+    {
+        if (recoveryState == GuidanceRecoveryState.Stabilizing &&
+            Time.realtimeSinceStartup >= recoveryRevalidationAt)
+        {
+            ReevaluateAfterReset();
+        }
+
+        if (recoveryState == GuidanceRecoveryState.HoldingForSafeHeading)
+        {
+            UpdateRecoveryHold(riskEvaluator != null ? riskEvaluator.CurrentRiskState : null);
+        }
+
+        if (holdForReplan && !IsResetRecoveryActive &&
+            !string.IsNullOrEmpty(GetReplanHoldWakeReason(riskEvaluator?.CurrentRiskState)))
+        {
+            RequestNextGuidance();
+        }
+    }
 
     private void OnEnable()
     {
@@ -406,9 +459,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         var planningFingerprint = BuildPlanningFingerprint(riskState);
-        if (holdForReplan &&
-            (string.Equals(holdPlanningFingerprint, planningFingerprint, StringComparison.Ordinal) ||
-             Time.unscaledTime < nextReplanAttemptTime))
+        if (holdForReplan && string.IsNullOrEmpty(GetReplanHoldWakeReason(riskState)))
         {
             return;
         }
@@ -503,6 +554,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 StringComparison.Ordinal))
         {
             ExpireAndReplan("Guidance response does not match the active Candidate-Set Reservation.");
+            return;
+        }
+
+        if (!TryValidateSelectedTargetExactHeading(
+                response.selected_target,
+                riskState,
+                out var exactHeadingReason))
+        {
+            ExpireAndReplan(exactHeadingReason);
             return;
         }
 
@@ -721,38 +781,23 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
-    /// ResetCompleted 且物理复验安全后恢复原任务，发布 Replanning 并请求下一段 Guidance。
+    /// 请求 Coordinator 继续 Completed Reset；稳定窗口与 Safe 复验尚未完成时不会恢复任务。
     /// </summary>
     /// <returns>任务从 PausedForReset 恢复并进入导航时返回 true。</returns>
     public bool ResumeAfterResetAndReplan()
     {
         if (taskController == null ||
-            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedForReset)
+            pauseResetController == null ||
+            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedForReset ||
+            pauseResetController.State != ResetLifecycleState.Completed)
         {
             return false;
         }
 
-        if (pauseResetController != null &&
-            pauseResetController.State == ResetLifecycleState.Completed &&
-            !pauseResetController.ResumeAfterReset())
-        {
-            return false;
-        }
-
-        taskController.ResumeAfterReset();
-        var state = taskController.RuntimeState;
-        if (!state.IsNavigating)
-        {
-            return false;
-        }
-
-        automaticResetAttempts = 0;
-        resetAbandonedTargetId = string.Empty;
-        TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "reset_resumed_and_replanning");
-        frozenRecoveryPlan = null;
-        Replanning?.Invoke(state);
-        RequestNextGuidance();
-        return true;
+        ReevaluateAfterReset();
+        return taskController.RuntimeState.IsNavigating &&
+               pauseResetController.State == ResetLifecycleState.Inactive &&
+               recoveryState == GuidanceRecoveryState.Inactive;
     }
 
     /// <summary>
@@ -762,7 +807,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         if (recoveryDecisionPending || pauseResetController == null || taskController == null ||
             pauseResetController.State != ResetLifecycleState.Completed ||
-            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedForReset)
+            taskController.RuntimeState.phase != GuidanceRuntimePhase.PausedForReset ||
+            recoveryState != GuidanceRecoveryState.Stabilizing ||
+            Time.realtimeSinceStartup < recoveryRevalidationAt)
         {
             return;
         }
@@ -770,9 +817,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryDecisionPending = true;
         try
         {
-            TransitionRecoveryTo(GuidanceRecoveryState.Revalidating, "reset_completed");
             // EvaluateNow 会同步发布 RiskStateChanged；Reset 抑制门保证该事件只更新事实与日志。
             var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+            TransitionRecoveryTo(GuidanceRecoveryState.Revalidating, "stabilization_completed");
             if (!HasTrustedRecoveryFacts(riskState))
             {
                 TriggerRecoveryHardStop(
@@ -786,7 +833,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 frozenRecoveryPlan = pauseResetController.ActivePlan;
             }
 
-            if (recoveryHeadingPlanner.IsFrozenHeadingCritical(frozenRecoveryPlan, riskState.heading_profile))
+            if (!TryEvaluateFrozenRecoveryHeading(riskState, out var frozenHeading) ||
+                !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(frozenHeading))
             {
                 if (!pauseResetController.ResumeAfterReset())
                 {
@@ -797,7 +845,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 TriggerPauseReset(
                     null,
                     riskState,
-                    "Frozen recovery heading became critical; selecting a new physical heading.");
+                    "Frozen recovery heading is not explicitly safe; selecting a new physical heading.");
                 return;
             }
 
@@ -835,6 +883,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             false,
             0,
             false));
+        ExitReplanHold("reset_recovery_completed");
         TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
         frozenRecoveryPlan = null;
         Replanning?.Invoke(state);
@@ -843,6 +892,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void TriggerRecoveryHardStop(string reason)
     {
+        ClearRecoveryHold();
         TransitionRecoveryTo(GuidanceRecoveryState.Terminated, reason);
         pauseResetController?.CancelReset(reason);
         taskController?.EndTask();
@@ -943,6 +993,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleRuntimeRiskStateChanged(PhysicalRiskState riskState)
     {
+        if (recoveryState == GuidanceRecoveryState.HoldingForSafeHeading)
+        {
+            TryResumeRecoveryHold(riskState, false);
+            return;
+        }
+
         if (IsResetRecoveryActive)
         {
             HandleActiveRecoveryRiskChanged(riskState);
@@ -956,9 +1012,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (holdForReplan)
         {
-            if (riskState == null ||
-                riskState.risk_revision <= holdRiskRevision ||
-                Time.unscaledTime < nextReplanAttemptTime)
+            if (string.IsNullOrEmpty(GetReplanHoldWakeReason(riskState)))
             {
                 return;
             }
@@ -1027,7 +1081,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
         else if (decision == RuntimeGuidanceSafetyDecision.PauseReset)
         {
-            if (CanStartAutomaticReset(riskState))
+            if (HasTrustedRecoveryFacts(riskState))
             {
                 TriggerPauseReset(activeResponse, riskState, RuntimeSafetyReason(input));
             }
@@ -1076,17 +1130,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         if (state == ResetLifecycleState.Completed)
         {
+            recoveryRevalidationAt = Time.realtimeSinceStartup + Mathf.Max(0f, resetStabilizationSeconds);
             TransitionRecoveryTo(GuidanceRecoveryState.Stabilizing, "user_turn_completed");
         }
         else if (state == ResetLifecycleState.Cancelled &&
+                 recoveryState != GuidanceRecoveryState.HoldingForSafeHeading &&
                  recoveryState != GuidanceRecoveryState.Terminated)
         {
+            recoveryRevalidationAt = float.PositiveInfinity;
             TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "reset_cancelled");
         }
     }
 
     private void HandleResetCompleted(ResetEventInfo _)
     {
+        // 测试或显式配置为零稳定时间时允许同步复验；生产默认由 Update 等待稳定窗口。
         ReevaluateAfterReset();
     }
 
@@ -1112,7 +1170,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (!recoveryHeadingPlanner.IsFrozenHeadingCritical(frozenRecoveryPlan, riskState.heading_profile))
+        if (!TryEvaluateFrozenRecoveryHeading(riskState, out var frozenHeading))
+        {
+            TriggerRecoveryHardStop("Frozen recovery heading could not be evaluated from trusted physical facts.");
+            return;
+        }
+
+        if (frozenHeading.Safety != HeadingSafety.Critical)
         {
             return;
         }
@@ -1124,7 +1188,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             frozenRecoveryPlan);
         if (!replacement.IsSuccess)
         {
-            TriggerRecoveryHardStop(RecoveryFailureReason(replacement.Failure));
+            EnterRecoveryHold(riskState, RecoveryFailureReason(replacement.Failure));
             return;
         }
 
@@ -1218,6 +1282,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Cancelled);
         TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "guidance_stopped");
+        taskController.PauseForReset();
         var semanticYaw = TryGetRecoverySemanticYaw(response);
         var nextPlan = recoveryHeadingPlanner.Plan(
             riskState != null ? riskState.heading_profile : null,
@@ -1225,11 +1290,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             frozenRecoveryPlan);
         if (!nextPlan.IsSuccess)
         {
-            TriggerRecoveryHardStop(RecoveryFailureReason(nextPlan.Failure));
+            EnterRecoveryHold(riskState, RecoveryFailureReason(nextPlan.Failure));
             return;
         }
 
-        taskController.PauseForReset();
+        ClearRecoveryHold();
         automaticResetAttempts++;
         frozenRecoveryPlan = nextPlan;
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
@@ -1267,17 +1332,169 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        if (!CanStartAutomaticReset(riskState))
+        if (!HasTrustedRecoveryFacts(riskState))
         {
             TriggerRecoveryHardStop(
-                HasTrustedRecoveryFacts(riskState)
-                    ? "No acceptable physical recovery heading is available."
-                    : "Automatic recovery has no trusted tracking, calibration, or boundary facts.");
+                "Automatic recovery has no trusted tracking, calibration, or boundary facts.");
             return false;
         }
 
         TriggerPauseReset(null, riskState, reason);
-        return IsResetRecoveryActive;
+        return IsAutomaticRecoveryActive;
+    }
+
+    private void EnterRecoveryHold(PhysicalRiskState riskState, string reason)
+    {
+        if (!HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerRecoveryHardStop(
+                "Automatic recovery lost trusted tracking, calibration, boundary, or risk identity facts.");
+            return;
+        }
+
+        taskController?.PauseForReset();
+        frozenRecoveryPlan = null;
+        recoveryRevalidationAt = float.PositiveInfinity;
+        recoveryHoldStartedAt = Time.realtimeSinceStartup;
+        nextRecoveryHoldAttemptAt = Time.realtimeSinceStartup + Mathf.Max(0.05f, recoveryHoldRetryIntervalSeconds);
+        recoveryHoldAttemptCount = 0;
+        CaptureRecoveryHoldFacts(riskState);
+        TransitionRecoveryTo(
+            GuidanceRecoveryState.HoldingForSafeHeading,
+            string.IsNullOrWhiteSpace(reason)
+                ? "No explicitly Safe recovery heading is currently available."
+                : reason);
+        pauseResetController?.CancelReset("recovery_holding_for_safe_heading");
+    }
+
+    private void UpdateRecoveryHold(PhysicalRiskState riskState)
+    {
+        if (IsRecoveryHoldBudgetExhausted())
+        {
+            TriggerRecoveryHardStop("Recovery Hold budget was exhausted without an explicitly Safe heading.");
+            return;
+        }
+
+        TryResumeRecoveryHold(riskState, true);
+    }
+
+    private void TryResumeRecoveryHold(PhysicalRiskState riskState, bool allowTimerWake)
+    {
+        if (recoveryDecisionPending || recoveryState != GuidanceRecoveryState.HoldingForSafeHeading)
+        {
+            return;
+        }
+
+        // Tracking/Calibration 的短暂丢失由会话层预算处理；此处保留 Recovery Hold。
+        if (riskEvaluator != null &&
+            (!riskEvaluator.IsTrackingValid || !riskEvaluator.IsCalibrationValid))
+        {
+            return;
+        }
+
+        if (!HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerRecoveryHardStop(
+                "Recovery Hold lost trusted boundary or risk identity facts.");
+            return;
+        }
+
+        if (IsRecoveryHoldBudgetExhausted())
+        {
+            TriggerRecoveryHardStop("Recovery Hold budget was exhausted without an explicitly Safe heading.");
+            return;
+        }
+
+        var factsChanged = HasRecoveryHoldFactsChanged(riskState);
+        var timerElapsed = allowTimerWake && Time.realtimeSinceStartup >= nextRecoveryHoldAttemptAt;
+        if (!factsChanged && !timerElapsed)
+        {
+            return;
+        }
+
+        recoveryDecisionPending = true;
+        try
+        {
+            recoveryHoldAttemptCount++;
+            CaptureRecoveryHoldFacts(riskState);
+            nextRecoveryHoldAttemptAt = Time.realtimeSinceStartup + Mathf.Max(0.05f, recoveryHoldRetryIntervalSeconds);
+            var plan = recoveryHeadingPlanner.Plan(
+                riskState.heading_profile,
+                TryGetRecoverySemanticYaw(null));
+            if (!plan.IsSuccess ||
+                !TryEvaluateRecoveryPlanHeading(riskState, plan, out var selectedHeading) ||
+                !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(selectedHeading))
+            {
+                if (IsRecoveryHoldBudgetExhausted())
+                {
+                    TriggerRecoveryHardStop(
+                        "Recovery Hold retry budget was exhausted without an explicitly Safe heading.");
+                }
+                return;
+            }
+
+            frozenRecoveryPlan = plan;
+            ClearRecoveryHold();
+            automaticResetAttempts++;
+            if (!pauseResetController.PauseForReset(
+                    "An explicitly Safe recovery heading became available.",
+                    frozenRecoveryPlan))
+            {
+                TriggerRecoveryHardStop("Automatic recovery controller rejected the recovered heading plan.");
+                return;
+            }
+
+            TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn, "recovery_hold_safe_heading_selected");
+        }
+        finally
+        {
+            recoveryDecisionPending = false;
+        }
+    }
+
+    private bool IsRecoveryHoldBudgetExhausted()
+    {
+        return recoveryState == GuidanceRecoveryState.HoldingForSafeHeading &&
+               (Time.realtimeSinceStartup - recoveryHoldStartedAt >= Mathf.Max(0.1f, recoveryHoldBudgetSeconds) ||
+                recoveryHoldAttemptCount >= Mathf.Max(1, recoveryHoldMaxAttempts));
+    }
+
+    private bool HasRecoveryHoldFactsChanged(PhysicalRiskState riskState)
+    {
+        if (riskState == null || !recoveryHoldPoseCaptured)
+        {
+            return riskState != null;
+        }
+
+        return riskState.risk_revision != recoveryHoldRiskRevision ||
+               Vector2.Distance(riskState.user_physical_position, recoveryHoldPhysicalPosition) >=
+               Mathf.Max(0.01f, replanWakePositionMeters) ||
+               Vector2.Angle(
+                   NormalizePhysicalForward(riskState.user_physical_forward),
+                   recoveryHoldPhysicalForward) >= Mathf.Clamp(replanWakeHeadingDegrees, 1f, 180f);
+    }
+
+    private void CaptureRecoveryHoldFacts(PhysicalRiskState riskState)
+    {
+        recoveryHoldPoseCaptured = riskState != null;
+        recoveryHoldRiskRevision = riskState != null ? riskState.risk_revision : -1;
+        recoveryHoldPhysicalPosition = riskState != null
+            ? riskState.user_physical_position
+            : Vector2.zero;
+        recoveryHoldPhysicalForward = riskState != null
+            ? NormalizePhysicalForward(riskState.user_physical_forward)
+            : Vector2.up;
+    }
+
+    private void ClearRecoveryHold()
+    {
+        recoveryHoldStartedAt = float.PositiveInfinity;
+        nextRecoveryHoldAttemptAt = float.PositiveInfinity;
+        recoveryHoldAttemptCount = 0;
+        recoveryHoldRiskRevision = -1;
+        recoveryHoldPhysicalPosition = Vector2.zero;
+        recoveryHoldPhysicalForward = Vector2.up;
+        recoveryHoldPoseCaptured = false;
     }
 
     private GuidanceTarget FindRuntimeSafetyCandidate(
@@ -1343,7 +1560,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         var reservation = taskController.RuntimeState.ActiveCandidateSetReservation;
-        if (HasCurrentFrozenSafetyCandidate(reservation, riskState))
+        if (reservation == null)
+        {
+            TriggerRuntimeIntervention(null, "Pending guidance request lost its frozen candidate reservation.");
+            return;
+        }
+
+        // Safe 或 Unknown 抖动都保留在途请求；只有全部模型候选明确 Blocked 才取消。
+        if (!AreAllFrozenCandidatesExplicitlyBlocked(reservation, riskState))
         {
             return;
         }
@@ -1354,7 +1578,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             "Pending guidance candidates are not currently executable; holding for replanning.");
     }
 
-    private bool HasCurrentFrozenSafetyCandidate(
+    private bool AreAllFrozenCandidatesExplicitlyBlocked(
         CandidateSetReservation reservation,
         PhysicalRiskState riskState)
     {
@@ -1363,23 +1587,28 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        var policy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
+        var found = false;
         foreach (var targetId in reservation.ModelCandidateIds)
         {
-            if (semanticTargetSelector.IsSelectedCandidateCurrent(
-                    reservation,
+            if (!reservation.TryGetCandidate(targetId, out var frozenCandidate) ||
+                !semanticTargetSelector.TryAssessCandidate(
                     targetId,
-                    taskController.RuntimeState,
+                    frozenCandidate.TargetRole,
                     riskState,
-                    policy,
-                    riskEvaluator,
-                    out _))
+                    out var assessment) ||
+                assessment == null)
             {
-                return true;
+                return false;
+            }
+
+            found = true;
+            if (assessment.ExecutionState != CandidateExecutionState.Blocked)
+            {
+                return false;
             }
         }
 
-        return false;
+        return found;
     }
 
     private void HandleUnavailableCandidatePlanning(
@@ -1415,16 +1644,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                IsUserInsidePhysicalBoundary(riskState);
     }
 
-    private bool CanStartAutomaticReset(PhysicalRiskState riskState)
-    {
-        if (!HasTrustedRecoveryFacts(riskState))
-        {
-            return false;
-        }
-
-        return recoveryHeadingPlanner.Plan(riskState.heading_profile).IsSuccess;
-    }
-
     private void EnterHoldAndReplan(
         PhysicalRiskState riskState,
         string planningFingerprint,
@@ -1454,12 +1673,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         holdRiskRevision = riskState != null ? riskState.risk_revision : -1;
         holdPlanningFingerprint = planningFingerprint ?? string.Empty;
         holdReason = reason ?? string.Empty;
+        holdPhysicalPoseCaptured = riskState != null;
+        holdPhysicalPosition = riskState != null ? riskState.user_physical_position : Vector2.zero;
+        holdPhysicalForward = riskState != null && riskState.user_physical_forward.sqrMagnitude > 0.0001f
+            ? riskState.user_physical_forward.normalized
+            : Vector2.up;
         replanRetryCount++;
         currentReplanRetryDelaySeconds = Mathf.Min(
             Mathf.Max(0.1f, replanMaxRetryDelaySeconds),
             Mathf.Max(0.1f, replanInitialRetryDelaySeconds) *
             Mathf.Pow(2f, Mathf.Max(0, replanRetryCount - 1)));
-        nextReplanAttemptTime = Time.unscaledTime + currentReplanRetryDelaySeconds;
+        nextReplanAttemptTime = Time.realtimeSinceStartup + currentReplanRetryDelaySeconds;
         ReplanHoldChanged?.Invoke(CreateReplanHoldInfo(true));
         if (firstEntry)
         {
@@ -1492,6 +1716,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         holdRiskRevision = -1;
         holdPlanningFingerprint = string.Empty;
         holdReason = string.Empty;
+        holdPhysicalPosition = Vector2.zero;
+        holdPhysicalForward = Vector2.up;
+        holdPhysicalPoseCaptured = false;
         replanRetryCount = 0;
         nextReplanAttemptTime = 0f;
         currentReplanRetryDelaySeconds = 0f;
@@ -1507,6 +1734,43 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             Math.Max(0, holdRiskRevision),
             replanRetryCount,
             currentReplanRetryDelaySeconds);
+    }
+
+    private string GetReplanHoldWakeReason(PhysicalRiskState riskState)
+    {
+        if (!holdForReplan)
+        {
+            return string.Empty;
+        }
+
+        if (riskState != null)
+        {
+            if (riskState.risk_revision != holdRiskRevision)
+            {
+                return "risk_revision_changed";
+            }
+
+            if (holdPhysicalPoseCaptured &&
+                Vector2.Distance(riskState.user_physical_position, holdPhysicalPosition) >=
+                Mathf.Max(0.01f, replanWakePositionMeters))
+            {
+                return "physical_position_changed";
+            }
+
+            var latestForward = riskState.user_physical_forward.sqrMagnitude > 0.0001f
+                ? riskState.user_physical_forward.normalized
+                : Vector2.up;
+            if (holdPhysicalPoseCaptured &&
+                Vector2.Angle(latestForward, holdPhysicalForward) >=
+                Mathf.Clamp(replanWakeHeadingDegrees, 1f, 180f))
+            {
+                return "physical_heading_changed";
+            }
+        }
+
+        return Time.realtimeSinceStartup >= nextReplanAttemptTime
+            ? "retry_timer_elapsed"
+            : string.Empty;
     }
 
     private string BuildPlanningFingerprint(PhysicalRiskState riskState)
@@ -1537,6 +1801,88 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return failure == RecoveryHeadingFailure.NoAcceptableHeading
             ? "No acceptable physical recovery heading is available."
             : "Automatic recovery has no valid Heading Profile.";
+    }
+
+    private bool TryEvaluateFrozenRecoveryHeading(
+        PhysicalRiskState riskState,
+        out HeadingSample heading)
+    {
+        heading = default;
+        return riskEvaluator != null &&
+               frozenRecoveryPlan != null &&
+               frozenRecoveryPlan.IsSuccess &&
+               riskEvaluator.TryEvaluateAbsoluteHeading(
+                   riskState,
+                   frozenRecoveryPlan.SafePhysicalForward,
+                   out heading);
+    }
+
+    private bool TryEvaluateRecoveryPlanHeading(
+        PhysicalRiskState riskState,
+        RecoveryHeadingPlan plan,
+        out HeadingSample heading)
+    {
+        heading = default;
+        return riskEvaluator != null &&
+               plan != null &&
+               plan.IsSuccess &&
+               riskEvaluator.TryEvaluateAbsoluteHeading(
+                   riskState,
+                   plan.SafePhysicalForward,
+                   out heading);
+    }
+
+    private bool TryValidateSelectedTargetExactHeading(
+        string targetId,
+        PhysicalRiskState riskState,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (riskEvaluator == null ||
+            navigationTargets == null ||
+            riskState == null ||
+            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
+            !navigationTargets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees))
+        {
+            reason = "Selected target exact physical heading could not be evaluated from current facts.";
+            return false;
+        }
+
+        var absolutePhysicalForward = RotatePhysicalForward(
+            riskState.user_physical_forward,
+            relativeYawDegrees);
+        if (!riskEvaluator.TryEvaluateAbsoluteHeading(
+                riskState,
+                absolutePhysicalForward,
+                out var heading))
+        {
+            reason = "Selected target exact physical heading evaluation failed.";
+            return false;
+        }
+
+        if (!PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(heading))
+        {
+            reason = $"Selected target exact physical heading is not Safe: {heading.Safety}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)
+    {
+        forward = NormalizePhysicalForward(forward);
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            forward.x * cos + forward.y * sin,
+            -forward.x * sin + forward.y * cos).normalized;
+    }
+
+    private static Vector2 NormalizePhysicalForward(Vector2 forward)
+    {
+        return forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
     }
 
     private void TransitionRecoveryTo(GuidanceRecoveryState nextState, string reason = "")
@@ -1873,7 +2219,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             currentHeadingCritical ||
             outsideBoundary)
         {
-            if (riskState != null && CanStartAutomaticReset(riskState))
+            if (HasTrustedRecoveryFacts(riskState))
             {
                 TriggerPauseReset(activeResponse, riskState, "TurnCue reevaluation is unsafe.");
             }
@@ -1942,7 +2288,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             turnCueCompletionTracker.Cancel();
             if ((info.Reason == "planned_heading_critical" || info.Reason == "reset_required") &&
                 riskEvaluator != null &&
-                CanStartAutomaticReset(riskEvaluator.CurrentRiskState))
+                HasTrustedRecoveryFacts(riskEvaluator.CurrentRiskState))
             {
                 TriggerPauseReset(activeResponse, riskEvaluator.CurrentRiskState, info.Reason);
             }
@@ -1983,7 +2329,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             rotationGainController?.CompleteReevaluation(false, reason);
             handlingGainTermination = false;
             turnCueCompletionTracker.Cancel();
-            if (!riskUnavailable && CanStartAutomaticReset(riskState))
+            if (!riskUnavailable && HasTrustedRecoveryFacts(riskState))
             {
                 TriggerPauseReset(activeResponse, riskState, reason);
             }

@@ -245,7 +245,53 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     /// <summary>判断 Heading Profile 采样是否可作为原地转向后的恢复朝向。</summary>
     public static bool IsRecoveryHeadingAcceptable(HeadingSample sample)
     {
-        return sample.Safety == HeadingSafety.Safe || sample.Safety == HeadingSafety.Unknown;
+        return sample.Safety == HeadingSafety.Safe;
+    }
+
+    /// <summary>
+    /// 基于指定风险快照的位置，对一条绝对 Physical Forward 执行精确走廊风险计算。
+    /// 本方法不发布新快照，也不修改 risk revision，供冻结恢复航向和响应终验使用。
+    /// </summary>
+    /// <param name="riskState">提供物理位置、校准与空间身份的最新可信风险快照。</param>
+    /// <param name="absolutePhysicalForward">Physical Room XZ 平面中的绝对单位朝向。</param>
+    /// <param name="sample">成功时返回精确 clearance 与安全等级。</param>
+    /// <returns>风险身份有效且朝向可计算时返回 true。</returns>
+    public bool TryEvaluateAbsoluteHeading(
+        PhysicalRiskState riskState,
+        Vector2 absolutePhysicalForward,
+        out HeadingSample sample)
+    {
+        sample = default;
+        ResolveReferences();
+        if (!IsRiskIdentityCurrent(riskState) ||
+            absolutePhysicalForward.sqrMagnitude <= Epsilon ||
+            float.IsNaN(absolutePhysicalForward.x) ||
+            float.IsNaN(absolutePhysicalForward.y) ||
+            float.IsInfinity(absolutePhysicalForward.x) ||
+            float.IsInfinity(absolutePhysicalForward.y))
+        {
+            return false;
+        }
+
+        var space = physicalSpaceManager.CurrentSpace;
+        var normalizedForward = absolutePhysicalForward.normalized;
+        var relativeYaw = SignedAngle(riskState.user_physical_forward, normalizedForward);
+        if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, riskState.user_physical_position))
+        {
+            sample = new HeadingSample(relativeYaw, normalizedForward, 0f, HeadingSafety.Critical);
+            return true;
+        }
+
+        var clearance = ComputeCorridorClearance(
+            space,
+            riskState.user_physical_position,
+            normalizedForward);
+        sample = new HeadingSample(
+            relativeYaw,
+            normalizedForward,
+            clearance,
+            ClassifyHeadingSafety(clearance));
+        return true;
     }
 
     private RiskSample Evaluate(PhysicalSpaceConfig space, Vector2 position, Vector2 forward)
@@ -295,7 +341,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             hasRecoveryHeading |= IsRecoveryHeadingAcceptable(heading);
         }
 
-        // medium/Unknown 仍可用于转向恢复；只有所有采样方向都低于最低净空才要求 Reset。
+        // 只有明确 Safe 的航向可用于恢复；Unknown 不足以证明 Reset 后可以安全恢复导航。
         sample.resetRequired = !hasRecoveryHeading;
         sample.resetRisk = sample.resetRequired ? "critical" : ClearanceToRisk(bestHeadingClearance);
 
@@ -571,6 +617,15 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         return new Vector2(
             forward.x * cos + forward.y * sin,
             -forward.x * sin + forward.y * cos).normalized;
+    }
+
+    private static float SignedAngle(Vector2 from, Vector2 to)
+    {
+        from = from.sqrMagnitude > Epsilon ? from.normalized : Vector2.up;
+        to = to.sqrMagnitude > Epsilon ? to.normalized : Vector2.up;
+        return Mathf.Atan2(
+                   from.x * to.y - from.y * to.x,
+                   Vector2.Dot(from, to)) * Mathf.Rad2Deg * -1f;
     }
 
     private static float DistanceToSegment(Vector2 point, Vector2 start, Vector2 end)

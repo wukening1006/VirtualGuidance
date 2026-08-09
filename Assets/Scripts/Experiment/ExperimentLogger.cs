@@ -1192,6 +1192,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         {
             case GuidanceRecoveryState.StoppingGuidance: return "stopping_guidance";
             case GuidanceRecoveryState.SelectingHeading: return "selecting_heading";
+            case GuidanceRecoveryState.HoldingForSafeHeading: return "holding_for_safe_heading";
             case GuidanceRecoveryState.WaitingForUserTurn: return "waiting_for_user_turn";
             case GuidanceRecoveryState.Stabilizing: return "stabilizing";
             case GuidanceRecoveryState.Revalidating: return "revalidating";

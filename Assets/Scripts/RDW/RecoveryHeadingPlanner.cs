@@ -130,35 +130,6 @@ public sealed class RecoveryHeadingPlanner
             : RecoveryHeadingPlan.Failed(RecoveryHeadingFailure.NoAcceptableHeading);
     }
 
-    /// <summary>
-    /// 判断冻结物理朝向在最新 Profile 中是否已经变为 Critical。
-    /// </summary>
-    public bool IsFrozenHeadingCritical(
-        RecoveryHeadingPlan plan,
-        IReadOnlyList<HeadingSample> headingProfile)
-    {
-        if (plan == null || !plan.IsSuccess || headingProfile == null || headingProfile.Count == 0)
-        {
-            return true;
-        }
-
-        var found = false;
-        var nearestAngle = float.PositiveInfinity;
-        var nearestSafety = HeadingSafety.Critical;
-        foreach (var sample in headingProfile)
-        {
-            var angle = Vector2.Angle(plan.SafePhysicalForward, sample.PhysicalForward);
-            if (angle < nearestAngle)
-            {
-                found = true;
-                nearestAngle = angle;
-                nearestSafety = sample.Safety;
-            }
-        }
-
-        return !found || nearestSafety == HeadingSafety.Critical;
-    }
-
     private float Score(
         HeadingSample sample,
         float? semanticTargetYawDegrees,
