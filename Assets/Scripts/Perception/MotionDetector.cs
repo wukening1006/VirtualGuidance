@@ -13,6 +13,7 @@ public sealed class MotionDetector : MonoBehaviour
 
     private bool hasPreviousForward;
     private Vector2 previousForward;
+    private bool externallyDriven;
 
     /// <summary>每次 Physical Forward 采样完成后触发，参数依次为转向状态、有符号 yaw delta 和采样时长。</summary>
     public event Action<bool, float, float> TurnSampled;
@@ -31,6 +32,11 @@ public sealed class MotionDetector : MonoBehaviour
 
     private void Update()
     {
+        if (externallyDriven)
+        {
+            return;
+        }
+
         if (userPoseTracker == null)
         {
             return;
@@ -81,6 +87,24 @@ public sealed class MotionDetector : MonoBehaviour
         {
             userPoseTracker = poseTracker;
         }
+        hasPreviousForward = false;
+        IsTurning = false;
+        LastSignedYawDeltaDegrees = 0f;
+        AngularSpeedDegreesPerSecond = 0f;
+    }
+
+    /// <summary>
+    /// 切换是否由 RDW 帧事务显式驱动采样；启用后 Update 不再重复消费同一 tracking pose。
+    /// </summary>
+    public void SetExternallyDriven(bool enabled)
+    {
+        externallyDriven = enabled;
+        ResetSamplingState();
+    }
+
+    /// <summary>清除上一份 tracking pose，防止恢复采样时产生跨丢帧的伪转角。</summary>
+    public void ResetSamplingState()
+    {
         hasPreviousForward = false;
         IsTurning = false;
         LastSignedYawDeltaDegrees = 0f;

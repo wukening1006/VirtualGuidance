@@ -119,6 +119,8 @@ public sealed class RotationGainController : MonoBehaviour
 
     private UserPoseTracker userPoseTracker;
     private Transform virtualRotationRoot;
+    private IRdwGainCommandSink rdwCommandSink;
+    private RdwGainApplier fallbackGainApplier;
 
     [Header("Gain 限制")]
     [Tooltip("真实水平转角转换为额外虚拟 yaw 的比例。")]
@@ -203,6 +205,11 @@ public sealed class RotationGainController : MonoBehaviour
 
     private void Update()
     {
+        if (rdwCommandSink != null)
+        {
+            return;
+        }
+
         if (motionDetector == null)
         {
             return;
@@ -220,7 +227,7 @@ public sealed class RotationGainController : MonoBehaviour
     /// <param name="isTurning">MotionDetector 当前是否判定用户正在转动。</param>
     /// <param name="signedYawDeltaDegrees">本帧水平转角；正值为左转，负值为右转，单位：度。</param>
     /// <param name="deltaTimeSeconds">本帧持续时间，单位：秒；负值时使用 unscaledDeltaTime。</param>
-    public void ProcessTurnSample(bool isTurning, float signedYawDeltaDegrees, float deltaTimeSeconds = -1f)
+    public void ProcessTurnSample(bool isTurning, float signedYawDeltaDegrees, float deltaTimeSeconds = -1f, long poseSequence = 0)
     {
         if (state != GainState.WaitingForUserTurn &&
             state != GainState.GainActive &&
@@ -311,14 +318,44 @@ public sealed class RotationGainController : MonoBehaviour
         accumulatedPhysicalYaw += physicalYaw;
         if (actualExtraYaw > 0f)
         {
-            var rotationPivot = userPoseTracker != null
-                ? userPoseTracker.UserVirtualPosition
-                : virtualRotationRoot.position;
-            virtualRotationRoot.RotateAround(
-                rotationPivot,
-                Vector3.up,
-                actualExtraYaw * expectedDirectionSign);
-            appliedExtraYaw += actualExtraYaw;
+            var appliedYaw = actualExtraYaw * expectedDirectionSign;
+            if (rdwCommandSink != null && poseSequence > 0)
+            {
+                var result = rdwCommandSink.Submit(new RdwGainCommand(
+                    appliedYaw,
+                    0f,
+                    Vector2.zero,
+                    RdwGainOwner.GuidanceTurnGain,
+                    "guidance_turn_gain",
+                    poseSequence));
+                if (!result.WasAccepted)
+                {
+                    AbortGain("gain_apply_rejected");
+                    return;
+                }
+
+                appliedExtraYaw += Mathf.Abs(result.AppliedYawDeltaDeg);
+            }
+            else
+            {
+                EnsureFallbackGainApplier();
+                var result = fallbackGainApplier != null
+                    ? fallbackGainApplier.Apply(new RdwGainCommand(
+                        appliedYaw,
+                        0f,
+                        Vector2.zero,
+                        RdwGainOwner.GuidanceTurnGain,
+                        "guidance_turn_gain_compatibility",
+                        fallbackGainApplier.AllocateStandaloneSequence()))
+                    : default;
+                if (fallbackGainApplier == null || !result.WasAccepted)
+                {
+                    AbortGain("gain_apply_rejected");
+                    return;
+                }
+
+                appliedExtraYaw += Mathf.Abs(result.AppliedYawDeltaDeg);
+            }
         }
 
         if (accumulatedPhysicalYaw >= Mathf.Max(YawEpsilon, currentTargetPhysicalYawDegrees))
@@ -350,11 +387,20 @@ public sealed class RotationGainController : MonoBehaviour
         {
             userPoseTracker = poseTracker;
             virtualRotationRoot = poseTracker.VirtualRotationRoot;
+            fallbackGainApplier = null;
         }
         if (detector != null) motionDetector = detector;
         if (evaluator != null) riskEvaluator = evaluator;
         if (calibration != null) physicalSpaceCalibration = calibration;
         BindSafetySources();
+    }
+
+    /// <summary>
+    /// 将最终 Root 注入委托给 Step 2A 的统一 RDW 帧管线。
+    /// </summary>
+    public void ConfigureRdwCommandSink(IRdwGainCommandSink commandSink)
+    {
+        rdwCommandSink = commandSink;
     }
 
     /// <summary>
@@ -370,6 +416,7 @@ public sealed class RotationGainController : MonoBehaviour
         }
 
         virtualRotationRoot = root;
+        fallbackGainApplier = null;
         return true;
     }
 
@@ -572,6 +619,17 @@ public sealed class RotationGainController : MonoBehaviour
     private void ResolveReferences()
     {
         if (motionDetector == null) motionDetector = FindObjectOfType<MotionDetector>();
+    }
+
+    private void EnsureFallbackGainApplier()
+    {
+        if (fallbackGainApplier != null && fallbackGainApplier.RotationRoot == virtualRotationRoot)
+        {
+            return;
+        }
+
+        var poseSource = userPoseTracker != null ? userPoseTracker.VirtualPoseSource : null;
+        fallbackGainApplier = new RdwGainApplier(virtualRotationRoot, poseSource);
     }
 
     private void BindSafetySources()

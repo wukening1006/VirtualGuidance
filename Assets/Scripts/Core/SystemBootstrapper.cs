@@ -58,6 +58,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [SerializeField] private TMP_Text researcherStatusText;
 
     private bool initialized;
+    private RdwGainApplier rdwGainApplier;
+    private RdwFrameCoordinator rdwFrameCoordinator;
 
     /// <summary>
     /// 当前组合根是否已完成一次成功初始化。
@@ -68,6 +70,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
     /// 最近一次场景引用校验结果。
     /// </summary>
     public SceneReadinessReport Readiness { get; private set; } = SceneReadinessReport.NotEvaluated;
+    /// <summary>Step 2A 当前使用的统一 RDW 帧事务入口。</summary>
+    public RdwFrameCoordinator RdwFrameCoordinator => rdwFrameCoordinator;
 
     private void Awake()
     {
@@ -210,6 +214,23 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainController,
             rejectionPanel,
             motionDetector);
+        rdwGainApplier = new RdwGainApplier(
+            userPoseTracker.VirtualRotationRoot,
+            userPoseTracker.VirtualPoseSource);
+        rdwFrameCoordinator = new RdwFrameCoordinator(
+            userPoseTracker,
+            physicalSpaceCalibration,
+            physicalSpaceManager,
+            riskEvaluator,
+            motionDetector,
+            pauseResetController,
+            rotationGainController,
+            guidanceCoordinator,
+            navigationTargetManager,
+            rdwGainApplier);
+        motionDetector.SetExternallyDriven(true);
+        rotationGainController.ConfigureRdwCommandSink(rdwFrameCoordinator);
+        BindRdwPipeline();
         experimentDashboard.Configure(
             physicalSpaceManager,
             userPoseTracker,
@@ -240,6 +261,78 @@ public sealed class SystemBootstrapper : MonoBehaviour
         agentClient.GuidanceRequestFailed.AddListener(guidanceDebugPanel.ShowStatus);
         agentClient.GuidanceRequestStarted.RemoveListener(guidanceDebugPanel.ShowStatus);
         agentClient.GuidanceRequestStarted.AddListener(guidanceDebugPanel.ShowStatus);
+    }
+
+    private void OnDestroy()
+    {
+        UnbindRdwPipeline();
+        rotationGainController?.ConfigureRdwCommandSink(null);
+        motionDetector?.SetExternallyDriven(false);
+    }
+
+    private void BindRdwPipeline()
+    {
+        UnbindRdwPipeline();
+        if (xrTrackingAdapter != null)
+        {
+            xrTrackingAdapter.TrackingSampleApplied += HandleTrackingSampleApplied;
+            xrTrackingAdapter.TrackingStateChanged += HandleTrackingStateChanged;
+        }
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged += HandleCalibrationStateChanged;
+        }
+        if (rdwFrameCoordinator != null)
+        {
+            rdwFrameCoordinator.FrameProcessed += HandleRdwFrameProcessed;
+        }
+    }
+
+    private void UnbindRdwPipeline()
+    {
+        if (xrTrackingAdapter != null)
+        {
+            xrTrackingAdapter.TrackingSampleApplied -= HandleTrackingSampleApplied;
+            xrTrackingAdapter.TrackingStateChanged -= HandleTrackingStateChanged;
+        }
+        if (physicalSpaceCalibration != null)
+        {
+            physicalSpaceCalibration.StateChanged -= HandleCalibrationStateChanged;
+        }
+        if (rdwFrameCoordinator != null)
+        {
+            rdwFrameCoordinator.FrameProcessed -= HandleRdwFrameProcessed;
+        }
+    }
+
+    private void HandleTrackingSampleApplied(float deltaTimeSeconds)
+    {
+        rdwFrameCoordinator?.ProcessTrackingSample(deltaTimeSeconds);
+    }
+
+    private void HandleTrackingStateChanged(bool trackingActive)
+    {
+        if (!trackingActive)
+        {
+            rdwFrameCoordinator?.InvalidatePoseChain("tracking_lost");
+        }
+    }
+
+    private void HandleCalibrationStateChanged(PhysicalCalibrationState state)
+    {
+        if (state != PhysicalCalibrationState.Calibrated)
+        {
+            rdwFrameCoordinator?.InvalidatePoseChain("calibration_invalid");
+        }
+    }
+
+    private void HandleRdwFrameProcessed(RdwFrameEventInfo frameInfo)
+    {
+        experimentLogger?.LogRdwFrame(
+            frameInfo,
+            LogTraceContext.Empty,
+            taskController != null ? taskController.RuntimeState : null,
+            riskEvaluator != null ? riskEvaluator.CurrentRiskState : null);
     }
 
     private void EvaluateInitialState()

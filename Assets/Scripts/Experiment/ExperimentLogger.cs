@@ -473,6 +473,27 @@ public sealed class ExperimentLogger : MonoBehaviour
             rotationGainEvent: gainEvent);
     }
 
+    /// <summary>记录一次 RDW 帧的 requested、limited、applied 和 owner 信息。</summary>
+    public void LogRdwFrame(
+        RdwFrameEventInfo frameInfo,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (frameInfo == null) return;
+        Write(
+            "rdw_frame",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            frameInfo.LimitedCommand.Reason,
+            trace,
+            emitUnityConsole: false,
+            rdwFrameInfo: frameInfo);
+    }
+
     /// <summary>记录重规划等待的规划指纹、风险修订与退避次数。</summary>
     public void LogReplanHold(
         ReplanHoldInfo holdInfo,
@@ -588,7 +609,8 @@ public sealed class ExperimentLogger : MonoBehaviour
         GuidanceRecoveryTransitionInfo recoveryTransition = null,
         RotationGainEventInfo rotationGainEvent = null,
         ReplanHoldInfo replanHoldInfo = null,
-        BackendHealthStatusInfo backendHealthInfo = null)
+        BackendHealthStatusInfo backendHealthInfo = null,
+        RdwFrameEventInfo rdwFrameInfo = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -762,6 +784,42 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["health_failure_elapsed_seconds"] = backendHealthInfo.FailureElapsedSeconds;
                 data["health_check_failure_threshold"] = backendHealthInfo.FailureThreshold;
                 data["backend_offline_grace_seconds"] = backendHealthInfo.OfflineGraceSeconds;
+            }
+            if (rdwFrameInfo != null)
+            {
+                data["pose_sequence"] = rdwFrameInfo.Pose.Sequence;
+                data["pose_timestamp"] = rdwFrameInfo.Pose.Timestamp;
+                data["physical_position_x"] = rdwFrameInfo.Pose.PhysicalPositionXZ.x;
+                data["physical_position_z"] = rdwFrameInfo.Pose.PhysicalPositionXZ.y;
+                data["physical_yaw_deg"] = rdwFrameInfo.Pose.PhysicalYaw;
+                data["physical_forward_x"] = rdwFrameInfo.Pose.PhysicalForwardXZ.x;
+                data["physical_forward_z"] = rdwFrameInfo.Pose.PhysicalForwardXZ.y;
+                data["delta_physical_position_x"] = rdwFrameInfo.Pose.DeltaPhysicalPositionXZ.x;
+                data["delta_physical_position_z"] = rdwFrameInfo.Pose.DeltaPhysicalPositionXZ.y;
+                data["delta_physical_yaw_deg"] = rdwFrameInfo.Pose.DeltaPhysicalYaw;
+                data["rdw_delta_time_seconds"] = rdwFrameInfo.Pose.DeltaTime;
+                data["virtual_position_x"] = rdwFrameInfo.Pose.VirtualPositionXZ.x;
+                data["virtual_position_z"] = rdwFrameInfo.Pose.VirtualPositionXZ.y;
+                data["virtual_forward_x"] = rdwFrameInfo.Pose.VirtualForwardXZ.x;
+                data["virtual_forward_z"] = rdwFrameInfo.Pose.VirtualForwardXZ.y;
+                data["virtual_yaw_deg"] = rdwFrameInfo.Pose.VirtualYaw;
+                data["rdw_active_owner"] = rdwFrameInfo.ActiveOwner.ToString();
+                data["requested_rotation_delta_deg"] = rdwFrameInfo.RequestedCommand.RotationYawDeltaDeg;
+                data["requested_curvature_delta_deg"] = rdwFrameInfo.RequestedCommand.CurvatureYawDeltaDeg;
+                data["requested_translation_x"] = rdwFrameInfo.RequestedCommand.TranslationDeltaXZ.x;
+                data["requested_translation_z"] = rdwFrameInfo.RequestedCommand.TranslationDeltaXZ.y;
+                data["limited_rotation_delta_deg"] = rdwFrameInfo.LimitedCommand.RotationYawDeltaDeg;
+                data["limited_curvature_delta_deg"] = rdwFrameInfo.LimitedCommand.CurvatureYawDeltaDeg;
+                data["limited_translation_x"] = rdwFrameInfo.LimitedCommand.TranslationDeltaXZ.x;
+                data["limited_translation_z"] = rdwFrameInfo.LimitedCommand.TranslationDeltaXZ.y;
+                data["applied_rotation_delta_deg"] = rdwFrameInfo.ApplyResult.AppliedYawDeltaDeg;
+                data["rdw_apply_status"] = rdwFrameInfo.ApplyResult.Status.ToString();
+                data["rdw_reason"] = rdwFrameInfo.LimitedCommand.Reason;
+                data["rdw_tracking_valid"] = rdwFrameInfo.Pose.IsValid;
+                data["rdw_calibration_id"] = rdwFrameInfo.Pose.CalibrationId;
+                data["rdw_physical_space_id"] = rdwFrameInfo.Pose.PhysicalSpaceId;
+                data["rdw_risk_snapshot_id"] = rdwFrameInfo.Geometry.RiskSnapshotId;
+                data["rdw_risk_revision"] = rdwFrameInfo.Geometry.RiskRevision;
             }
 
             if (descriptor.Level == LogType.Error)
@@ -965,6 +1023,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "gain_completed": return new EventDescriptor("rdw.gain_completed", "RDW", level);
             case "gain_cancelled": return new EventDescriptor("rdw.gain_cancelled", "RDW", level);
             case "gain_aborted": return new EventDescriptor("rdw.gain_aborted", "RDW", level);
+            case "rdw_frame": return new EventDescriptor("rdw.frame", "RDW", level);
             case "recovery_state_changed": return new EventDescriptor("rdw.recovery_state_changed", "RDW", level);
             default:
                 return new EventDescriptor(

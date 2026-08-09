@@ -41,6 +41,8 @@ public sealed class XRTrackingAdapter : MonoBehaviour
 
     /// <summary>Tracking 稳定有效状态发生变化时触发。</summary>
     public event Action<bool> TrackingStateChanged;
+    /// <summary>一份 tracking sample 被接受后触发，参数为该样本持续时间，单位：秒。</summary>
+    public event Action<float> TrackingSampleApplied;
 
     /// <summary>当前是否已取得足够连续样本，可用于校准与正式实验。</summary>
     public bool IsTrackingActive { get; private set; }
@@ -197,6 +199,8 @@ public sealed class XRTrackingAdapter : MonoBehaviour
             SetTrackingActive(true);
             physicalSpaceCalibration?.ReportTrackingRecovered();
         }
+
+        TrackingSampleApplied?.Invoke(Time.unscaledDeltaTime);
 
         return true;
     }
