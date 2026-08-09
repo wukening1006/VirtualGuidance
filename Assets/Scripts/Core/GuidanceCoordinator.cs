@@ -614,6 +614,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        // 提交前统一复验目标方向、动作方向和最新物理净空，避免先执行再由下一帧安全层终止。
+        if (!TryValidateExecutablePhysicalAction(
+                response,
+                riskState,
+                out _,
+                out _,
+                out var physicalActionReason))
+        {
+            ExpireAndReplan(physicalActionReason);
+            return;
+        }
+
         if (!taskController.TryValidateCandidateSelection(
                 candidateReservation,
                 response.selected_target,
@@ -1074,6 +1086,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             requiresSafetyIntervention,
             safeCandidate != null,
             hasRecoveryHeading);
+
+        // 方向事实缺失不必然代表实验不可恢复；基础身份有效时优先复用现有绕行或 Reset 链。
+        if (!input.PlannedDirectionAvailable &&
+            TryRouteUnavailablePlannedDirection(input, safeCandidate, riskState))
+        {
+            return;
+        }
+
         var decision = runtimeSafetyPolicy.Evaluate(input);
         if (decision == RuntimeGuidanceSafetyDecision.SoftReroute)
         {
@@ -1867,6 +1887,168 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         return true;
+    }
+
+    private bool TryValidateExecutablePhysicalAction(
+        GuidanceResponse response,
+        PhysicalRiskState riskState,
+        out string physicalDirection,
+        out float clearanceMeters,
+        out string reason)
+    {
+        physicalDirection = string.Empty;
+        clearanceMeters = 0f;
+        reason = string.Empty;
+
+        if (response == null ||
+            navigationTargets == null ||
+            !navigationTargets.TryGetTargetDirection(response.selected_target, out physicalDirection) ||
+            !IsNaturalPhysicalDirection(physicalDirection))
+        {
+            reason = "Guidance Physical Action Gate could not resolve the selected target direction.";
+            return false;
+        }
+
+        if (!TryGetMovementPhysicalDirection(response.movement_instruction, out var movementDirection) ||
+            !string.Equals(physicalDirection, movementDirection, StringComparison.Ordinal))
+        {
+            reason =
+                $"Guidance Physical Action Gate rejected movement '{response.movement_instruction}' for target direction '{physicalDirection}'.";
+            return false;
+        }
+
+        if (riskEvaluator == null ||
+            riskState == null ||
+            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
+            !riskEvaluator.TryGetDirectionClearance(riskState, physicalDirection, out clearanceMeters))
+        {
+            reason = "Guidance Physical Action Gate could not query current direction clearance.";
+            return false;
+        }
+
+        var safety = ResolveNaturalDirectionSafety(riskState, physicalDirection, clearanceMeters);
+        if (riskState.heading_profile != null && riskState.heading_profile.Count > 0)
+        {
+            var relativeYaw = PhysicalDirectionToRelativeYaw(physicalDirection);
+            if (!riskState.TryGetNearestHeading(relativeYaw, out var heading) ||
+                heading.Safety != HeadingSafety.Safe)
+            {
+                reason =
+                    $"Guidance Physical Action Gate rejected {physicalDirection} heading profile safety.";
+                return false;
+            }
+        }
+
+        if (safety != HeadingSafety.Safe)
+        {
+            reason =
+                $"Guidance Physical Action Gate rejected {physicalDirection} direction because its safety is {safety}.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryRouteUnavailablePlannedDirection(
+        RuntimeGuidanceSafetyInput input,
+        GuidanceTarget safeCandidate,
+        PhysicalRiskState riskState)
+    {
+        if (input == null || input.PlannedDirectionAvailable)
+        {
+            return false;
+        }
+
+        if (input.LatestRisk == null ||
+            !input.TrackingValid ||
+            !input.CalibrationValid ||
+            !input.PhysicalSpaceMatches ||
+            !IsUserInsidePhysicalBoundary(riskState))
+        {
+            return false;
+        }
+
+        if (safeCandidate != null)
+        {
+            TriggerSoftReroute(
+                safeCandidate,
+                "Planned physical direction became unavailable; rerouting to a safe semantic candidate.");
+            return true;
+        }
+
+        if (input.HasRecoveryHeading && HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerPauseReset(
+                activeResponse,
+                riskState,
+                "Planned physical direction became unavailable; starting trusted heading recovery.");
+            return true;
+        }
+
+        return false;
+    }
+
+    private HeadingSafety ResolveNaturalDirectionSafety(
+        PhysicalRiskState riskState,
+        string direction,
+        float clearanceMeters)
+    {
+        if (riskState == null ||
+            !IsNaturalPhysicalDirection(direction) ||
+            clearanceMeters <= 0f ||
+            float.IsNaN(clearanceMeters) ||
+            float.IsInfinity(clearanceMeters) ||
+            riskEvaluator == null ||
+            riskEvaluator.IsCriticalClearance(clearanceMeters))
+        {
+            return HeadingSafety.Critical;
+        }
+
+        if (Contains(riskState.unsafe_directions, direction))
+        {
+            return HeadingSafety.Unsafe;
+        }
+
+        return Contains(riskState.safe_directions, direction)
+            ? HeadingSafety.Safe
+            : HeadingSafety.Unknown;
+    }
+
+    private static bool TryGetMovementPhysicalDirection(string movementInstruction, out string direction)
+    {
+        direction = string.Empty;
+        switch (movementInstruction)
+        {
+            case "move_forward_slowly":
+            case "look_forward":
+                direction = "forward";
+                return true;
+            case "turn_left_slowly":
+            case "look_left":
+                direction = "left";
+                return true;
+            case "turn_right_slowly":
+            case "look_right":
+                direction = "right";
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsNaturalPhysicalDirection(string direction)
+    {
+        return direction == "forward" || direction == "left" || direction == "right";
+    }
+
+    private static float PhysicalDirectionToRelativeYaw(string direction)
+    {
+        switch (direction)
+        {
+            case "left": return -90f;
+            case "right": return 90f;
+            default: return 0f;
+        }
     }
 
     private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)

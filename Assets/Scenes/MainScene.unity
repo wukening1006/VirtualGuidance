@@ -12478,7 +12478,7 @@ Transform:
   m_GameObject: {fileID: 549286873}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 106.8, y: 7, z: 5.88}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -24828,10 +24828,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6ee4a5c2b55848b495b90fdcd863f866, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  guidanceExecutor: {fileID: 0}
-  rotationGainController: {fileID: 0}
-  userPoseTracker: {fileID: 0}
-  riskEvaluator: {fileID: 0}
+  guidanceExecutor: {fileID: 1780042341}
+  rotationGainController: {fileID: 1039273993}
+  userPoseTracker: {fileID: 2100100002}
+  riskEvaluator: {fileID: 2100100012}
   completionToleranceDegrees: 12
 --- !u!114 &1039273993
 MonoBehaviour:
@@ -24846,9 +24846,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   gainEnabled: 0
-  motionDetector: {fileID: 0}
-  riskEvaluator: {fileID: 0}
-  physicalSpaceCalibration: {fileID: 0}
+  motionDetector: {fileID: 2100100006}
+  riskEvaluator: {fileID: 2100100012}
+  physicalSpaceCalibration: {fileID: 1896314442}
   gainMultiplier: 0.15
   maxExtraYawDegrees: 8
   targetPhysicalYawDegrees: 30
@@ -24867,8 +24867,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b844b6e64d174cc1be63281737ab498a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  navigationTargets: {fileID: 0}
-  riskEvaluator: {fileID: 0}
+  navigationTargets: {fileID: 19950178}
+  riskEvaluator: {fileID: 2100100012}
 --- !u!1 &1063178337
 GameObject:
   m_ObjectHideFlags: 0
@@ -28808,7 +28808,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1281588211
 Transform:
   m_ObjectHideFlags: 0
@@ -33481,7 +33481,7 @@ MonoBehaviour:
   userPoseTracker: {fileID: 2100100002}
   riskEvaluator: {fileID: 2100100012}
   physicalSpaceCalibration: {fileID: 0}
-  visualizationOrigin: {x: 16.95, y: 7, z: 3.11}
+  visualizationOrigin: {x: 51.46, y: 7, z: -3.23}
   directionArrowLength: 0.9
   lineWidth: 0.04
   researcherOnlyLayerName: ResearcherOnly
