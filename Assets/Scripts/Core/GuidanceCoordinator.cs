@@ -1133,6 +1133,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         pauseResetController.StateChanged += HandleResetStateChanged;
         pauseResetController.ResetCompleted -= HandleResetCompleted;
         pauseResetController.ResetCompleted += HandleResetCompleted;
+        pauseResetController.MappingFailed -= HandleResetMappingFailed;
+        pauseResetController.MappingFailed += HandleResetMappingFailed;
     }
 
     private void UnbindRecoveryController()
@@ -1144,6 +1146,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         pauseResetController.StateChanged -= HandleResetStateChanged;
         pauseResetController.ResetCompleted -= HandleResetCompleted;
+        pauseResetController.MappingFailed -= HandleResetMappingFailed;
     }
 
     private void HandleResetStateChanged(ResetLifecycleState state)
@@ -1151,7 +1154,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (state == ResetLifecycleState.Completed)
         {
             recoveryRevalidationAt = Time.realtimeSinceStartup + Mathf.Max(0f, resetStabilizationSeconds);
-            TransitionRecoveryTo(GuidanceRecoveryState.Stabilizing, "user_turn_completed");
+            TransitionRecoveryTo(
+                GuidanceRecoveryState.Stabilizing,
+                "physical_heading_and_mapping_completed");
         }
         else if (state == ResetLifecycleState.Cancelled &&
                  recoveryState != GuidanceRecoveryState.HoldingForSafeHeading &&
@@ -1166,6 +1171,19 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     {
         // 测试或显式配置为零稳定时间时允许同步复验；生产默认由 Update 等待稳定窗口。
         ReevaluateAfterReset();
+    }
+
+    private void HandleResetMappingFailed(string reason)
+    {
+        if (recoveryDecisionPending ||
+            recoveryState != GuidanceRecoveryState.WaitingForUserTurn)
+        {
+            return;
+        }
+
+        EnterRecoveryHold(
+            riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+            string.IsNullOrWhiteSpace(reason) ? "Reset mapping failed." : reason);
     }
 
     private void HandleActiveRecoveryRiskChanged(PhysicalRiskState riskState)
@@ -1192,37 +1210,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (!TryEvaluateFrozenRecoveryHeading(riskState, out var frozenHeading))
         {
-            TriggerRecoveryHardStop("Frozen recovery heading could not be evaluated from trusted physical facts.");
+            EnterRecoveryHold(
+                riskState,
+                "Frozen recovery heading could not be evaluated; waiting for new trusted risk facts.");
             return;
         }
 
-        if (frozenHeading.Safety != HeadingSafety.Critical)
+        if (PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(frozenHeading))
         {
             return;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "frozen_heading_became_critical");
-        var replacement = recoveryHeadingPlanner.Plan(
-            riskState.heading_profile,
-            TryGetRecoverySemanticYaw(null),
-            frozenRecoveryPlan);
-        if (!replacement.IsSuccess)
-        {
-            EnterRecoveryHold(riskState, RecoveryFailureReason(replacement.Failure));
-            return;
-        }
-
-        frozenRecoveryPlan = replacement;
-        automaticResetAttempts++;
-        if (!pauseResetController.PauseForReset(
-                "Frozen recovery heading became critical; using a newly selected physical heading.",
-                replacement))
-        {
-            TriggerRecoveryHardStop("Automatic recovery controller rejected the replacement heading plan.");
-            return;
-        }
-
-        TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn, "replacement_heading_selected");
+        pauseResetController?.InvalidateMappingChain("frozen_heading_invalid");
+        EnterRecoveryHold(
+            riskState,
+            "Frozen recovery heading is no longer explicitly Safe; waiting for new risk facts.");
     }
 
     private void TriggerSoftReroute(
@@ -1384,7 +1386,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             string.IsNullOrWhiteSpace(reason)
                 ? "No explicitly Safe recovery heading is currently available."
                 : reason);
-        pauseResetController?.CancelReset("recovery_holding_for_safe_heading");
+        pauseResetController?.CancelReset("recovery_holding_for_safe_heading", true);
     }
 
     private void UpdateRecoveryHold(PhysicalRiskState riskState)

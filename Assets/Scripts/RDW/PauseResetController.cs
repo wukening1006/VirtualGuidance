@@ -72,8 +72,8 @@ public sealed class ResetEventInfo
 }
 
 /// <summary>
-/// 执行 Turn-to-Safe-Direction Reset：停止 Guidance/Gain 表现并执行协调层冻结的 Physical Forward，
-/// 在用户原地转入容差后发布 ResetCompleted。航向选择、复验与重规划由实验协调层处理。
+/// 执行 Turn-to-Safe-Direction Mapping Reset：停止 Guidance/Gain 表现并执行协调层冻结的 Physical Forward，
+/// 在 Physical heading 与 mapping target 均完成后发布 ResetCompleted。航向选择、复验与重规划由协调层处理。
 /// </summary>
 public sealed class PauseResetController : MonoBehaviour
 {
@@ -91,19 +91,38 @@ public sealed class PauseResetController : MonoBehaviour
     [Tooltip("用户朝向与安全目标的最大完成误差，单位：度。")]
     [SerializeField] private float completionToleranceDegrees = 12f;
 
+    [Header("Mapping Reset")]
+    [Tooltip("运行时使用的 Mapping Resetter；TwoOneTurnLike 仅用于管线验证。")]
+    [SerializeField] private RdwResetMappingStrategy mappingStrategy = RdwResetMappingStrategy.SafeHeadingMapping;
+    [Tooltip("每度 Physical yaw 请求注入的 Virtual Root yaw 倍率。")]
+    [SerializeField, Min(0f)] private float mappingInjectionRatio = 1f;
+    [Tooltip("TwoOneTurnLike 的累计注入目标，单位：度；不影响 SafeHeadingMapping。")]
+    [SerializeField, Min(0f)] private float twoOneTargetInjectedYawDegrees = 180f;
+    [Tooltip("累计 applied yaw 距离目标不超过该值时视为 mapping 完成，单位：度。")]
+    [SerializeField, Min(0.01f)] private float mappingCompletionToleranceDegrees = 0.25f;
+    [Tooltip("单次 Mapping Reset 的最长执行时间，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float mappingMaxDurationSeconds = 12f;
+
     private ResetLifecycleState state = ResetLifecycleState.Inactive;
     private string resetReason = string.Empty;
     private string safeDirection = string.Empty;
     private Vector2 safePhysicalForward = Vector2.up;
     private RecoveryHeadingPlan activePlan;
     private readonly RecoveryHeadingPlanner compatibilityPlanner = new RecoveryHeadingPlanner();
+    private bool mappingResetEnabled;
+    private bool physicalHeadingReached;
+    private bool mappingFailureRaised;
+    private IRdwResetter activeResetter;
+    private RdwResetPlan activeMappingPlan;
 
     /// <summary>Reset 状态发生变化时触发。</summary>
     public event Action<ResetLifecycleState> StateChanged;
     /// <summary>选定安全朝向并开始等待用户转向时触发。</summary>
     public event Action<ResetEventInfo> ResetStarted;
-    /// <summary>用户进入安全朝向容差时触发。</summary>
+    /// <summary>Physical heading 与 mapping target 均完成时触发。</summary>
     public event Action<ResetEventInfo> ResetCompleted;
+    /// <summary>Mapping Reset 超时或内部终止时触发，由 GuidanceCoordinator 决定 Hold 或 HardStop。</summary>
+    public event Action<string> MappingFailed;
 
     /// <summary>当前是否因 Reset 暂停导览。</summary>
     public bool IsPaused { get; private set; }
@@ -119,6 +138,37 @@ public sealed class PauseResetController : MonoBehaviour
     public Vector2 SafePhysicalForward => safePhysicalForward;
     /// <summary>本次 Reset 正在执行的冻结恢复计划。</summary>
     public RecoveryHeadingPlan ActivePlan => activePlan;
+    /// <summary>当前 Mapping Reset 计划；尚未收到首个有效 RDW 帧时为空。</summary>
+    public RdwResetPlan ActiveMappingPlan => activeMappingPlan;
+    /// <summary>当前 mapping 是否已接入 RDW 帧事务。</summary>
+    public bool MappingResetEnabled => mappingResetEnabled;
+    /// <summary>当前用户绝对 Physical heading 是否已进入目标容差。</summary>
+    public bool PhysicalHeadingReached => physicalHeadingReached;
+    /// <summary>当前 Resetter 是否已累计完成 mapping target。</summary>
+    public bool IsMappingComplete => !mappingResetEnabled ||
+                                     (activeResetter != null && activeResetter.IsMappingComplete);
+    /// <summary>当前 Mapping Reset 的累计进度。</summary>
+    public RdwResetProgress MappingProgress
+    {
+        get
+        {
+            if (!mappingResetEnabled ||
+                (state == ResetLifecycleState.Inactive && activeMappingPlan == null))
+            {
+                return default;
+            }
+
+            return new RdwResetProgress(
+                activeMappingPlan ?? activeResetter?.Plan,
+                activeResetter != null && activeResetter.IsActive,
+                physicalHeadingReached,
+                IsMappingComplete,
+                activeResetter != null ? activeResetter.AccumulatedPhysicalTurn : 0f,
+                activeResetter != null ? activeResetter.AccumulatedInjectedYaw : 0f,
+                activeResetter != null ? activeResetter.LastPoseSequence : 0,
+                activeResetter != null ? activeResetter.StatusReason : string.Empty);
+        }
+    }
     /// <summary>当前 Physical Forward 到安全目标的剩余角度，单位：度。</summary>
     public float RemainingYawDegrees => userPoseTracker == null
         ? 180f
@@ -149,6 +199,18 @@ public sealed class PauseResetController : MonoBehaviour
     }
 
     /// <summary>
+    /// 启用 Step 2B Mapping Reset；生产组合根调用一次，测试可注入指定纯计算 Resetter。
+    /// </summary>
+    public void ConfigureMappingReset(IRdwResetter resetter = null, bool enabled = true)
+    {
+        mappingResetEnabled = enabled;
+        activeResetter = resetter ?? CreateResetter(mappingStrategy);
+        activeMappingPlan = null;
+        physicalHeadingReached = false;
+        mappingFailureRaised = false;
+    }
+
+    /// <summary>
     /// 使用已冻结的恢复航向立即停止表现并启动安全转向；重复风险刷新不会重启活动 Reset。
     /// </summary>
     /// <param name="reason">触发 Reset 的安全原因。</param>
@@ -164,6 +226,11 @@ public sealed class PauseResetController : MonoBehaviour
         IsPaused = true;
         rotationGainController?.AbortGain("reset_required");
         guidanceExecutor?.Clear();
+
+        // 新 frozen heading 必须创建全新的 ResetPlan，不能沿用上一条 delta chain。
+        InvalidateMappingChain("reset_plan_replaced");
+        physicalHeadingReached = false;
+        mappingFailureRaised = false;
 
         if (state == ResetLifecycleState.TurningToSafeDirection || state == ResetLifecycleState.Required)
         {
@@ -213,13 +280,103 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         currentForward = NormalizeForward(currentForward);
-        if (Vector2.Angle(currentForward, safePhysicalForward) > Mathf.Max(0.1f, completionToleranceDegrees))
+        physicalHeadingReached = Vector2.Angle(currentForward, safePhysicalForward) <=
+                                 Mathf.Max(0.1f, completionToleranceDegrees);
+        TryCompleteReset();
+    }
+
+    /// <summary>
+    /// 在首个有效 Reset-owner 帧冻结起始 yaw，并创建本次不可变 RdwResetPlan。
+    /// </summary>
+    public bool TryInitializeMapping(in RdwPoseFrame pose)
+    {
+        if (!mappingResetEnabled || state != ResetLifecycleState.TurningToSafeDirection ||
+            activePlan == null || !activePlan.IsSuccess || !pose.IsValid)
+        {
+            return false;
+        }
+
+        if (activeMappingPlan != null && activeResetter != null)
+        {
+            return true;
+        }
+
+        activeResetter = activeResetter ?? CreateResetter(mappingStrategy);
+        activeMappingPlan = RdwResetPlan.Create(
+            activePlan,
+            pose,
+            mappingStrategy,
+            mappingInjectionRatio,
+            twoOneTargetInjectedYawDegrees,
+            mappingCompletionToleranceDegrees,
+            mappingMaxDurationSeconds);
+        if (activeMappingPlan == null)
+        {
+            return false;
+        }
+
+        activeResetter.Initialize(activeMappingPlan, pose);
+        mappingFailureRaised = false;
+        physicalHeadingReached = Vector2.Angle(pose.PhysicalForwardXZ, safePhysicalForward) <=
+                                 Mathf.Max(0.1f, completionToleranceDegrees);
+        return true;
+    }
+
+    /// <summary>由 RDW 帧事务请求当前 Resetter 计算 mapping command。</summary>
+    public RdwGainCommand EvaluateMapping(in RdwPoseFrame pose, in RdwGeometrySnapshot geometry)
+    {
+        if (!TryInitializeMapping(pose) || activeResetter == null)
+        {
+            return ResetZero(pose.Sequence, "reset_mapping_waiting_for_valid_plan");
+        }
+
+        var command = activeResetter.Evaluate(pose, geometry);
+        if (!activeResetter.IsActive && !activeResetter.IsMappingComplete &&
+            !mappingFailureRaised && activeMappingPlan != null)
+        {
+            mappingFailureRaised = true;
+            MappingFailed?.Invoke(activeResetter.StatusReason);
+        }
+
+        return command;
+    }
+
+    /// <summary>
+    /// 仅提交 GainApplier 的实际结果，并在 physical 与 mapping 两个目标都完成后结束 Reset。
+    /// </summary>
+    public void CommitMapping(in RdwGainApplyResult applyResult, Vector2 currentPhysicalForward)
+    {
+        if (!mappingResetEnabled || activeResetter == null ||
+            state != ResetLifecycleState.TurningToSafeDirection)
         {
             return;
         }
 
-        TransitionTo(ResetLifecycleState.Completed);
-        ResetCompleted?.Invoke(CreateEventInfo());
+        activeResetter.Commit(applyResult);
+        if (!applyResult.WasAccepted && !mappingFailureRaised)
+        {
+            mappingFailureRaised = true;
+            MappingFailed?.Invoke(string.IsNullOrWhiteSpace(activeResetter.StatusReason)
+                ? "reset_gain_not_applied"
+                : activeResetter.StatusReason);
+            return;
+        }
+
+        physicalHeadingReached = Vector2.Angle(
+            NormalizeForward(currentPhysicalForward), safePhysicalForward) <=
+            Mathf.Max(0.1f, completionToleranceDegrees);
+        TryCompleteReset();
+    }
+
+    /// <summary>
+    /// tracking/calibration/recenter/pose jump 后取消当前命令并丢弃 delta chain；恢复后从新帧创建新计划。
+    /// </summary>
+    public void InvalidateMappingChain(string reason)
+    {
+        activeResetter?.Cancel(reason);
+        activeMappingPlan = null;
+        physicalHeadingReached = false;
+        mappingFailureRaised = false;
     }
 
     /// <summary>
@@ -235,12 +392,13 @@ public sealed class PauseResetController : MonoBehaviour
 
         IsPaused = false;
         activePlan = null;
+        activeMappingPlan = null;
         TransitionTo(ResetLifecycleState.Inactive);
         return true;
     }
 
     /// <summary>会话终止时取消尚未完成的 Reset，并清除提示。</summary>
-    public void CancelReset(string reason)
+    public void CancelReset(string reason, bool preservePause = false)
     {
         if (state == ResetLifecycleState.Inactive || state == ResetLifecycleState.Cancelled)
         {
@@ -248,9 +406,35 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_cancelled" : reason;
-        IsPaused = false;
+        IsPaused = preservePause;
+        InvalidateMappingChain(resetReason);
         activePlan = null;
         TransitionTo(ResetLifecycleState.Cancelled);
+    }
+
+    private void TryCompleteReset()
+    {
+        if (state != ResetLifecycleState.TurningToSafeDirection ||
+            !physicalHeadingReached || !IsMappingComplete)
+        {
+            return;
+        }
+
+        TransitionTo(ResetLifecycleState.Completed);
+        ResetCompleted?.Invoke(CreateEventInfo());
+    }
+
+    private static IRdwResetter CreateResetter(RdwResetMappingStrategy strategy)
+    {
+        return strategy == RdwResetMappingStrategy.TwoOneTurnLike
+            ? (IRdwResetter)new TwoOneTurnLikeResetter()
+            : new SafeHeadingMappingResetter();
+    }
+
+    private static RdwGainCommand ResetZero(long poseSequence, string reason)
+    {
+        return new RdwGainCommand(
+            0f, 0f, Vector2.zero, RdwGainOwner.Resetter, reason, poseSequence);
     }
 
     private ResetEventInfo CreateEventInfo()

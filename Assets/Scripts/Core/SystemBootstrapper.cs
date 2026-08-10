@@ -200,6 +200,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainController,
             userPoseTracker,
             riskEvaluator);
+        pauseResetController.ConfigureMappingReset();
         rotationGainController.Configure(userPoseTracker, motionDetector, riskEvaluator, physicalSpaceCalibration);
         guidanceCoordinator.Configure(
             agentClient,

@@ -161,9 +161,9 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         }
     }
 
-    /// <summary>验证冻结朝向在普通风险样本变化时保持不变，变为 Critical 后才重新选择。</summary>
+    /// <summary>验证冻结朝向在普通风险样本变化时保持不变，失效后先 Hold，再依据新风险事实重选。</summary>
     [Test]
-    public void GuidanceCoordinator_FrozenHeadingReselectsOnlyAfterCritical()
+    public void GuidanceCoordinator_FrozenHeadingInvalidEntersHoldBeforeReselecting()
     {
         var root = new GameObject("StageFourFrozenRecoveryTest");
         root.SetActive(false);
@@ -219,7 +219,15 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
 
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", latestRisk);
 
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.HoldingForSafeHeading));
+            Assert.That(coordinator.FrozenRecoveryPlan, Is.Null);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
+
+            var refreshedRisk = CopyRisk(latestRisk, latestRisk.heading_profile);
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", refreshedRisk);
+
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
+            Assert.That(coordinator.FrozenRecoveryPlan, Is.Not.Null);
             Assert.That(Vector2.Distance(coordinator.FrozenRecoveryPlan.SafePhysicalForward, frozenForward),
                 Is.GreaterThan(0.001f));
             Assert.That(Vector2.Distance(reset.SafePhysicalForward, coordinator.FrozenRecoveryPlan.SafePhysicalForward),
@@ -522,7 +530,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         root.SetActive(true);
     }
 
-    private static PhysicalRiskState CopyRisk(PhysicalRiskState source, HeadingSample[] profile)
+    private static PhysicalRiskState CopyRisk(PhysicalRiskState source, IReadOnlyList<HeadingSample> profile)
     {
         return new PhysicalRiskState(
             riskSnapshotId: Guid.NewGuid().ToString("N"),

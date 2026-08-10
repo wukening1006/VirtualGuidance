@@ -18,6 +18,8 @@ public sealed class RdwFrameEventInfo
     public RdwNavigationIntent NavigationIntent { get; }
     /// <summary>当前帧冻结的 Physical Space 几何事实。</summary>
     public RdwGeometrySnapshot Geometry { get; }
+    /// <summary>当前帧结束后的 Mapping Reset 累计进度。</summary>
+    public RdwResetProgress ResetProgress { get; }
 
     /// <summary>创建不可变 RDW 帧事件。</summary>
     public RdwFrameEventInfo(
@@ -27,7 +29,8 @@ public sealed class RdwFrameEventInfo
         in RdwGainCommand limitedCommand,
         in RdwGainApplyResult applyResult,
         in RdwNavigationIntent navigationIntent,
-        in RdwGeometrySnapshot geometry)
+        in RdwGeometrySnapshot geometry,
+        in RdwResetProgress resetProgress = default)
     {
         Pose = pose;
         ActiveOwner = activeOwner;
@@ -36,6 +39,7 @@ public sealed class RdwFrameEventInfo
         ApplyResult = applyResult;
         NavigationIntent = navigationIntent;
         Geometry = geometry;
+        ResetProgress = resetProgress;
     }
 }
 
@@ -128,7 +132,8 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         }
 
         var hardStop = !frame.IsValid || IsImmediateHardStop();
-        var resetActive = pauseResetController != null && pauseResetController.IsActive;
+        var resetActive = pauseResetController != null && pauseResetController.IsActive ||
+                          guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive;
         var guidanceTurnActive = rotationGainController != null && rotationGainController.IsActive;
         var owner = ownerArbiter.Resolve(hardStop, resetActive, guidanceTurnActive, true);
         var requested = RdwGainCommand.Zero(frame.Sequence, OwnerReason(owner));
@@ -137,7 +142,12 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
 
         BeginFrameProcessing(frame, owner, hardStop);
 
-        if (owner == RdwGainOwner.GuidanceTurnGain && rotationGainController != null && motionDetector != null)
+        if (owner == RdwGainOwner.Resetter && pauseResetController != null)
+        {
+            Submit(pauseResetController.EvaluateMapping(frame, geometry));
+            pauseResetController.CommitMapping(processingApplied, frame.PhysicalForwardXZ);
+        }
+        else if (owner == RdwGainOwner.GuidanceTurnGain && rotationGainController != null && motionDetector != null)
         {
             rotationGainController.ProcessTurnSample(
                 motionDetector.IsTurning,
@@ -160,7 +170,11 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         applied = processingApplied;
         isProcessingFrame = false;
 
-        LastFrame = new RdwFrameEventInfo(frame, owner, requested, limited, applied, intent, geometry);
+        var resetProgress = pauseResetController != null
+            ? pauseResetController.MappingProgress
+            : default;
+        LastFrame = new RdwFrameEventInfo(
+            frame, owner, requested, limited, applied, intent, geometry, resetProgress);
         FrameProcessed?.Invoke(LastFrame);
         return LastFrame;
     }
@@ -206,6 +220,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         previousPhysicalYaw = 0f;
         previousTimestamp = 0d;
         motionDetector?.ResetSamplingState();
+        pauseResetController?.InvalidateMappingChain(reason);
     }
 
     private void BeginFrameProcessing(in RdwPoseFrame pose, RdwGainOwner owner, bool hardStop)

@@ -820,6 +820,26 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["rdw_physical_space_id"] = rdwFrameInfo.Pose.PhysicalSpaceId;
                 data["rdw_risk_snapshot_id"] = rdwFrameInfo.Geometry.RiskSnapshotId;
                 data["rdw_risk_revision"] = rdwFrameInfo.Geometry.RiskRevision;
+                var resetProgress = rdwFrameInfo.ResetProgress;
+                if (resetProgress.HasPlan)
+                {
+                    data["reset_id"] = resetProgress.Plan.ResetId;
+                    data["reset_start_pose_sequence"] = resetProgress.Plan.StartPoseSequence;
+                    data["reset_start_physical_yaw_deg"] = resetProgress.Plan.StartPhysicalYaw;
+                    data["reset_start_virtual_yaw_deg"] = resetProgress.Plan.StartVirtualYaw;
+                    data["reset_target_physical_heading_deg"] = resetProgress.Plan.TargetPhysicalHeading;
+                    data["reset_target_physical_turn_delta_deg"] = resetProgress.Plan.TargetPhysicalTurnDelta;
+                    data["reset_mapping_strategy"] = resetProgress.Plan.MappingStrategy.ToString();
+                    data["reset_injection_ratio"] = resetProgress.Plan.InjectionRatio;
+                    data["reset_target_injected_yaw_deg"] = resetProgress.Plan.TargetInjectedYawDelta;
+                    data["reset_max_duration_seconds"] = resetProgress.Plan.MaxDuration;
+                    data["reset_physical_turn_accumulated_deg"] = resetProgress.AccumulatedPhysicalTurn;
+                    data["reset_injected_yaw_accumulated_deg"] = resetProgress.AccumulatedInjectedYaw;
+                    data["reset_physical_heading_reached"] = resetProgress.PhysicalHeadingReached;
+                    data["reset_mapping_completed"] = resetProgress.IsMappingComplete;
+                    data["reset_mapping_active"] = resetProgress.IsActive;
+                    data["reset_mapping_reason"] = resetProgress.Reason;
+                }
             }
 
             if (descriptor.Level == LogType.Error)
