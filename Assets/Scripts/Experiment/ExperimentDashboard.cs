@@ -513,9 +513,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         if (Application.platform == RuntimePlatform.Android &&
-            xrTrackingAdapter.InputMode != TrackingInputMode.XRDevice)
+            xrTrackingAdapter.InputMode == TrackingInputMode.EditorSimulation)
         {
-            missingConditions = "XRDevice tracking mode";
+            missingConditions = "device tracking mode";
             return false;
         }
 

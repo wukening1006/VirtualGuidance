@@ -27,7 +27,7 @@ public readonly struct RdwGainApplyResult
     public RdwGainCommand Command { get; }
     /// <summary>最终注入到 Root 的 yaw，单位：度。</summary>
     public float AppliedYawDeltaDeg { get; }
-    /// <summary>最终注入的 Virtual XZ 平移，单位：米；Step 2A 固定为零。</summary>
+    /// <summary>最终注入的 Virtual XZ 平移，单位：米。</summary>
     public Vector2 AppliedTranslationDeltaXZ { get; }
     /// <summary>命令是否正常关闭该 sequence。</summary>
     public bool WasAccepted => Status == RdwGainApplyStatus.Applied || Status == RdwGainApplyStatus.ZeroCommand;
@@ -118,19 +118,33 @@ public sealed class RdwGainApplier
         }
 
         var yaw = command.RotationYawDeltaDeg + command.CurvatureYawDeltaDeg;
-        if (Mathf.Abs(yaw) <= 0.0001f)
+        var translation = command.TranslationDeltaXZ;
+        if (Mathf.Abs(yaw) <= 0.0001f && translation.sqrMagnitude <= 0.000001f)
         {
             return SetResult(RdwGainApplyStatus.ZeroCommand, command, 0f);
         }
 
-        var pivot = virtualPoseSource != null ? virtualPoseSource.position : virtualRotationRoot.position;
-        virtualRotationRoot.RotateAround(pivot, Vector3.up, yaw);
-        return SetResult(RdwGainApplyStatus.Applied, command, yaw);
+        if (Mathf.Abs(yaw) > 0.0001f)
+        {
+            var pivot = virtualPoseSource != null ? virtualPoseSource.position : virtualRotationRoot.position;
+            virtualRotationRoot.RotateAround(pivot, Vector3.up, yaw);
+        }
+
+        if (translation.sqrMagnitude > 0.000001f)
+        {
+            virtualRotationRoot.position += new Vector3(translation.x, 0f, translation.y);
+        }
+
+        return SetResult(RdwGainApplyStatus.Applied, command, yaw, translation);
     }
 
-    private RdwGainApplyResult SetResult(RdwGainApplyStatus status, in RdwGainCommand command, float appliedYaw)
+    private RdwGainApplyResult SetResult(
+        RdwGainApplyStatus status,
+        in RdwGainCommand command,
+        float appliedYaw,
+        Vector2 appliedTranslation = default)
     {
-        LastResult = new RdwGainApplyResult(status, command, appliedYaw, Vector2.zero);
+        LastResult = new RdwGainApplyResult(status, command, appliedYaw, appliedTranslation);
         return LastResult;
     }
 

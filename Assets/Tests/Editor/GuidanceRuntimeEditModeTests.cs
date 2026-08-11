@@ -1723,7 +1723,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             adapter.ReportTrackingUnavailable();
 
-            Assert.That(adapter.InputMode, Is.EqualTo(TrackingInputMode.XRDevice));
+            Assert.That(adapter.InputMode, Is.EqualTo(TrackingInputMode.PhysicalWalking));
             Assert.That(adapter.IsTrackingActive, Is.False);
             Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
             Assert.That(adapter.ApplyTrackedPose(new Vector3(2.6f, 1.65f, 2.5f), Quaternion.identity), Is.True);
@@ -4145,6 +4145,82 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(resetMessage, Is.Not.EqualTo(replanMessage));
             Assert.That(replanMessage, Is.Not.EqualTo(backendMessage));
             Assert.That(backendMessage, Is.Not.EqualTo(resetMessage));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void XRTrackingAdapter_ControllerSimulationMovesInRealHeadYawFrameWithoutRealXzDrift()
+    {
+        var root = new GameObject("XRControllerSimulationTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2f, 2f), 0f);
+            var adapter = root.AddComponent<XRTrackingAdapter>();
+            adapter.Configure(pose, calibration);
+            adapter.SetInputMode(TrackingInputMode.ControllerSimulation);
+            SetPrivateField(adapter, "simulatedMoveSpeedMetersPerSecond", 1f);
+
+            Assert.That(adapter.ApplyControllerSimulationPose(
+                new Vector3(1f, 1.65f, 1f), Quaternion.identity, Vector2.zero, 0f), Is.True);
+            adapter.ApplyControllerSimulationPose(
+                new Vector3(1f, 1.65f, 1f), Quaternion.identity, Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            adapter.ApplyControllerSimulationPose(
+                new Vector3(1f, 1.65f, 1f), Quaternion.identity, Vector2.up, 1f);
+            Assert.That(pose.PhysicalPositionXZ.x, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ.y, Is.EqualTo(3f).Within(0.001f));
+
+            adapter.ApplyControllerSimulationPose(
+                new Vector3(9f, 1.65f, -4f), Quaternion.identity, Vector2.right, 1f);
+            Assert.That(pose.PhysicalPositionXZ.x, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ.y, Is.EqualTo(3f).Within(0.001f));
+
+            adapter.ApplyControllerSimulationPose(
+                new Vector3(-8f, 1.65f, 7f), Quaternion.Euler(0f, 90f, 0f), Vector2.up, 1f);
+            Assert.That(pose.PhysicalPositionXZ.x, Is.EqualTo(4f).Within(0.001f));
+            Assert.That(pose.PhysicalPositionXZ.y, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(adapter.LastHeadLocalPosition, Is.EqualTo(new Vector3(-8f, 1.65f, 7f)));
+            Assert.That(adapter.PhysicalYawDegrees, Is.EqualTo(90f).Within(0.001f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void XRTrackingAdapter_ControllerSimulationStopsWhileTrackingIsInvalid()
+    {
+        var root = new GameObject("XRControllerSimulationTrackingLossTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out _, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2f, 2f), 0f);
+            var adapter = root.AddComponent<XRTrackingAdapter>();
+            adapter.Configure(pose, calibration);
+            adapter.SetInputMode(TrackingInputMode.ControllerSimulation);
+            SetPrivateField(adapter, "simulatedMoveSpeedMetersPerSecond", 1f);
+            adapter.ApplyControllerSimulationPose(Vector3.zero, Quaternion.identity, Vector2.zero, 0f);
+            adapter.ApplyControllerSimulationPose(Vector3.zero, Quaternion.identity, Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var positionBeforeLoss = pose.PhysicalPositionXZ;
+
+            adapter.ReportTrackingUnavailable();
+
+            Assert.That(adapter.IsTrackingActive, Is.False);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.TemporarilyTrackingLost));
+            adapter.ApplyControllerSimulationPose(Vector3.zero, Quaternion.identity, Vector2.up, 1f);
+            adapter.ApplyControllerSimulationPose(Vector3.zero, Quaternion.identity, Vector2.up, 1f);
+
+            Assert.That(adapter.IsTrackingActive, Is.True);
+            Assert.That(calibration.State, Is.EqualTo(PhysicalCalibrationState.Calibrated));
+            Assert.That(pose.PhysicalPositionXZ, Is.EqualTo(positionBeforeLoss));
         }
         finally
         {

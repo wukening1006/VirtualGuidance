@@ -46,7 +46,7 @@ public readonly struct RdwGainCommand
     public float RotationYawDeltaDeg { get; }
     /// <summary>由真实位移产生的曲率 yaw，单位：度。</summary>
     public float CurvatureYawDeltaDeg { get; }
-    /// <summary>虚拟 XZ 平移增量，单位：米；Step 2A 强制为零。</summary>
+    /// <summary>虚拟 XZ 平移增量，单位：米；仅合法 ContinuousRedirector owner 可提交。</summary>
     public Vector2 TranslationDeltaXZ { get; }
     /// <summary>提交该命令的 RDW owner。</summary>
     public RdwGainOwner Source { get; }

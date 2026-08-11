@@ -228,7 +228,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainController,
             guidanceCoordinator,
             navigationTargetManager,
-            rdwGainApplier);
+            rdwGainApplier,
+            new ControllerSimulationLocomotionRedirector(xrTrackingAdapter));
         motionDetector.SetExternallyDriven(true);
         rotationGainController.ConfigureRdwCommandSink(rdwFrameCoordinator);
         BindRdwPipeline();

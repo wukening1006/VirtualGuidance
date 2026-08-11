@@ -76,8 +76,17 @@ public sealed class RdwGainLimiter
         }
 
         var limitedYaw = Mathf.Clamp(requestedYaw, -cap, cap);
-        // Step 2A 禁止 translation 注入；字段保留给后续阶段，但行为保持为零。
-        return new RdwGainCommand(limitedYaw, 0f, Vector2.zero, command.Source, command.Reason, command.PoseSequence);
+        // 虚拟平移只开放给 ContinuousRedirector；Reset 与 Rotation Gain 仍只拥有 yaw。
+        var limitedTranslation = command.Source == RdwGainOwner.ContinuousRedirector
+            ? command.TranslationDeltaXZ
+            : Vector2.zero;
+        return new RdwGainCommand(
+            limitedYaw,
+            0f,
+            limitedTranslation,
+            command.Source,
+            command.Reason,
+            command.PoseSequence);
     }
 
     /// <summary>判断位移是否达到 curvature 计算所需的最小阈值。</summary>
