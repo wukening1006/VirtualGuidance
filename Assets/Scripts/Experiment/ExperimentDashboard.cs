@@ -726,6 +726,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         if (runState != ExperimentRunState.Paused)
         {
+            participantUiController?.HideResetHud();
             participantUiController?.ShowRecoveryReplanning();
         }
         experimentLogger?.LogStatus(
@@ -1307,6 +1308,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
+        participantUiController?.HideResetHud();
         experimentLogger?.LogStatus(
             "reset_cancelled",
             activeGuidanceTrace,

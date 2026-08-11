@@ -4123,7 +4123,21 @@ public sealed class GuidanceRuntimeEditModeTests
 
             controller.ShowAutomaticReset();
             var resetMessage = safetyText.text;
+            controller.ShowRecoveryStarted(new ResetEventInfo("left", Vector2.left, "test_left"));
+            Assert.That(controller.ResetHudVisible, Is.True);
+            Assert.That(safetyText.text, Does.Contain("请停止前进"));
+            Assert.That(safetyText.text, Does.Contain("请原地向左转身 ←"));
+
+            controller.ShowRecoveryStarted(new ResetEventInfo("right", Vector2.right, "test_right"));
+            Assert.That(controller.ResetHudVisible, Is.True);
+            Assert.That(safetyText.text, Does.Contain("请原地向右转身 →"));
+
+            controller.HideResetHud();
+            Assert.That(controller.ResetHudVisible, Is.False);
+            Assert.That(safetyGroup.alpha, Is.EqualTo(0f));
+
             controller.ShowReplanningHold();
+            Assert.That(controller.ResetHudVisible, Is.False);
             var replanMessage = safetyText.text;
             controller.ShowBackendHold();
             var backendMessage = safetyText.text;
@@ -4131,6 +4145,79 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(resetMessage, Is.Not.EqualTo(replanMessage));
             Assert.That(replanMessage, Is.Not.EqualTo(backendMessage));
             Assert.That(backendMessage, Is.Not.EqualTo(resetMessage));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_ResetHudSwitchesToFreshReplanPromptOnCompletion()
+    {
+        var root = new GameObject("ExperimentDashboardResetHudCompletionTest");
+        try
+        {
+            var guidanceRoot = new GameObject("GuidancePanel");
+            guidanceRoot.transform.SetParent(root.transform, false);
+            var safetyRoot = new GameObject("SafetyPanel");
+            safetyRoot.transform.SetParent(root.transform, false);
+            var guidanceGroup = guidanceRoot.AddComponent<CanvasGroup>();
+            var safetyGroup = safetyRoot.AddComponent<CanvasGroup>();
+            var safetyText = CreateText(safetyRoot.transform, "SafetyText");
+            var participantUi = root.AddComponent<ParticipantUiController>();
+            participantUi.Configure(guidanceGroup, safetyGroup, null, null, null, safetyText);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "participantUiController", participantUi);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+
+            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            Assert.That(participantUi.ResetHudVisible, Is.True);
+            Assert.That(safetyText.text, Does.Contain("请停止前进"));
+            Assert.That(safetyText.text, Does.Contain("请原地向左转身 ←"));
+
+            InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+
+            Assert.That(participantUi.ResetHudVisible, Is.False);
+            Assert.That(safetyGroup.alpha, Is.EqualTo(1f));
+            Assert.That(safetyText.text, Is.EqualTo("请保持朝向，正在重新规划"));
+            Assert.That(guidanceGroup.alpha, Is.EqualTo(0f));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void ExperimentDashboard_CancelledResetClearsResetHudWithoutGuidanceRestore()
+    {
+        var root = new GameObject("ExperimentDashboardResetHudCancelTest");
+        try
+        {
+            var guidanceRoot = new GameObject("GuidancePanel");
+            guidanceRoot.transform.SetParent(root.transform, false);
+            var safetyRoot = new GameObject("SafetyPanel");
+            safetyRoot.transform.SetParent(root.transform, false);
+            var guidanceGroup = guidanceRoot.AddComponent<CanvasGroup>();
+            var safetyGroup = safetyRoot.AddComponent<CanvasGroup>();
+            var safetyText = CreateText(safetyRoot.transform, "SafetyText");
+            var participantUi = root.AddComponent<ParticipantUiController>();
+            participantUi.Configure(guidanceGroup, safetyGroup, null, null, null, safetyText);
+            var dashboard = root.AddComponent<ExperimentDashboard>();
+            SetPrivateField(dashboard, "participantUiController", participantUi);
+            SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
+
+            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("right", Vector2.right, "critical risk"));
+            Assert.That(participantUi.ResetHudVisible, Is.True);
+            Assert.That(safetyText.text, Does.Contain("请原地向右转身 →"));
+
+            InvokePrivate(dashboard, "HandleResetStateChanged", ResetLifecycleState.Cancelled);
+
+            Assert.That(participantUi.ResetHudVisible, Is.False);
+            Assert.That(safetyText.text, Is.Empty);
+            Assert.That(safetyGroup.alpha, Is.EqualTo(0f));
+            Assert.That(guidanceGroup.alpha, Is.EqualTo(0f));
         }
         finally
         {

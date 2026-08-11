@@ -15,6 +15,8 @@ public sealed class ParticipantUiController : MonoBehaviour
     [SerializeField] private TMP_Text safetyText;
 
     public bool SafetyVisible => safetyPanel != null && safetyPanel.alpha > 0.5f;
+    /// <summary>当前安全面板是否正在显示本次 Reset 的 participant-facing HUD。</summary>
+    public bool ResetHudVisible { get; private set; }
 
     private void Awake()
     {
@@ -40,6 +42,7 @@ public sealed class ParticipantUiController : MonoBehaviour
 
     public void ShowGuidance()
     {
+        ResetHudVisible = false;
         SetPanels(showGuidance: true, showSafety: false);
     }
 
@@ -59,23 +62,40 @@ public sealed class ParticipantUiController : MonoBehaviour
     {
         if (info == null)
         {
-            ShowAutomaticReset();
+            ShowSafetyMessage("请停止前进\n请原地转身", true);
             return;
         }
 
         var approximateDegrees = Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5);
         if (string.Equals(info.SafeDirection, "left", System.StringComparison.Ordinal))
         {
-            ShowSafetyMessage($"请停止移动，原地缓慢向左转约 {approximateDegrees}°");
+            ShowSafetyMessage($"请停止前进\n请原地向左转身 ←\n约 {approximateDegrees}°", true);
         }
         else if (string.Equals(info.SafeDirection, "right", System.StringComparison.Ordinal))
         {
-            ShowSafetyMessage($"请停止移动，原地缓慢向右转约 {approximateDegrees}°");
+            ShowSafetyMessage($"请停止前进\n请原地向右转身 →\n约 {approximateDegrees}°", true);
         }
         else
         {
-            ShowSafetyMessage("请停止移动并保持当前安全朝向");
+            ShowSafetyMessage("请停止前进\n请保持当前安全朝向", true);
         }
+    }
+
+    /// <summary>清理 Reset HUD；不会冻结 Camera、XR Tracking 或时间流逝。</summary>
+    public void HideResetHud()
+    {
+        if (!ResetHudVisible)
+        {
+            return;
+        }
+
+        ResetHudVisible = false;
+        if (safetyText != null)
+        {
+            safetyText.text = string.Empty;
+        }
+
+        SetPanels(showGuidance: false, showSafety: false);
     }
 
     /// <summary>显示安全朝向已到达，系统正在复验并重新规划。</summary>
@@ -95,8 +115,9 @@ public sealed class ParticipantUiController : MonoBehaviour
         if (gazeText != null) gazeText.text = string.Empty;
     }
 
-    private void ShowSafetyMessage(string message)
+    private void ShowSafetyMessage(string message, bool isResetHud = false)
     {
+        ResetHudVisible = isResetHud;
         ClearGuidanceText();
         if (safetyText != null)
         {
