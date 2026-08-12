@@ -54,6 +54,12 @@ def base_payload(condition: str) -> dict:
                 "id": target_id,
                 "target_role": "final_target" if target_id == "E5" else "navigable_detour",
                 "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
+                "relative_yaw_deg": {"E5": 0.0, "E3": -90.0, "E4": 90.0}[target_id],
+                "suggested_movement_instruction": {
+                    "E5": "move_forward_slowly",
+                    "E3": "turn_left_slowly",
+                    "E4": "turn_right_slowly",
+                }[target_id],
             }
             for target_id in model_candidate_ids
         ],

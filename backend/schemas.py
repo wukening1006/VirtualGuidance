@@ -122,6 +122,12 @@ class SemanticCandidate(BaseModel):
     id: str = Field(min_length=1)
     target_role: NavigationTargetRole
     relative_direction: Literal["forward", "left", "right", "behind"]
+    relative_yaw_deg: float = Field(ge=-180.0, le=180.0, exclude=True)
+    suggested_movement_instruction: Literal[
+        "move_forward_slowly",
+        "turn_left_slowly",
+        "turn_right_slowly",
+    ] = Field(exclude=True)
     name: str = ""
     description: str = ""
     semantic_role: str = ""
@@ -168,6 +174,22 @@ def movement_for_direction(direction: str) -> MovementInstruction:
     """把语义方向映射为唯一可执行的 movement enum；未知方向按原地等待兜底。"""
 
     return MOVEMENT_BY_DIRECTION.get(direction, MovementInstruction.PAUSE_AND_WAIT)
+
+
+def movement_for_candidate_bearing(
+    suggested_movement_instruction: str,
+    relative_yaw_deg: float,
+) -> MovementInstruction:
+    """复用 Unity 动作分类，并以连续偏航符号校验转向语义。"""
+
+    suggested_movement = MovementInstruction(suggested_movement_instruction)
+    if suggested_movement == MovementInstruction.MOVE_FORWARD_SLOWLY:
+        return suggested_movement
+    if relative_yaw_deg < 0.0:
+        return MovementInstruction.TURN_LEFT_SLOWLY
+    if relative_yaw_deg > 0.0:
+        return MovementInstruction.TURN_RIGHT_SLOWLY
+    return suggested_movement
 
 
 def gaze_cue_for_direction(direction: str) -> str:

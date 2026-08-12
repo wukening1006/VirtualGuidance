@@ -143,12 +143,18 @@ public sealed class GuidanceRiskSnapshot
 [Serializable]
 public sealed class GuidanceSemanticCandidate
 {
+    private static readonly GuidanceActionPlanner ActionPlanner = new GuidanceActionPlanner();
+
     /// <summary>场景目标 ID。</summary>
     public string id;
     /// <summary>冻结的导航目标角色。</summary>
     public string target_role;
     /// <summary>目标相对用户虚拟朝向的方向。</summary>
     public string relative_direction;
+    /// <summary>目标相对请求位姿的连续偏航角，单位：度。</summary>
+    public float relative_yaw_deg;
+    /// <summary>Unity 本地规划器按连续偏航生成的动作语义。</summary>
+    public string suggested_movement_instruction;
     /// <summary>面向参与者的展品名称。</summary>
     public string name;
     /// <summary>展品语义描述。</summary>
@@ -170,6 +176,14 @@ public sealed class GuidanceSemanticCandidate
                 id = candidate.TargetId,
                 target_role = GuidanceTypeUtility.TargetRoleToProtocol(candidate.TargetRole),
                 relative_direction = candidate.RelativeDirection,
+                relative_yaw_deg = candidate.RelativeYawDegrees,
+                suggested_movement_instruction = GuidanceActionProtocolMapper.ToMovementInstruction(
+                    ActionPlanner.Plan(new TargetBearing(
+                        candidate.TargetId,
+                        candidate.RelativeYawDegrees,
+                        candidate.DistanceMeters,
+                        candidate.DisplayLabel,
+                        candidate.PoseRevision))),
                 name = candidate.Name,
                 description = candidate.Description,
                 semantic_role = candidate.SemanticRole,

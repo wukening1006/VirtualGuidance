@@ -129,6 +129,16 @@ def request_for(
                         "E3": "left",
                         "E4": "right",
                     }[target_id],
+                    "relative_yaw_deg": {
+                        "E5": 0.0,
+                        "E3": -90.0,
+                        "E4": 90.0,
+                    }[target_id],
+                    "suggested_movement_instruction": {
+                        "E5": "move_forward_slowly",
+                        "E3": "turn_left_slowly",
+                        "E4": "turn_right_slowly",
+                    }[target_id],
                     "name": f"展品 {target_id}",
                     "description": "候选展品说明",
                     "semantic_role": "route_candidate",
@@ -149,6 +159,18 @@ def affordance() -> Affordance:
         physical_goal="avoid_forward_boundary",
         avoided_direction="forward",
     )
+
+
+def request_payload(request: GuidanceRequest) -> dict[str, Any]:
+    """模拟 Unity 请求序列化，同时保留不进入日志/模型上下文的动作事实。"""
+
+    payload = request.model_dump(mode="json")
+    candidates_by_id = {candidate.id: candidate for candidate in request.semantic_candidates}
+    for candidate_payload in payload["semantic_candidates"]:
+        candidate = candidates_by_id[candidate_payload["id"]]
+        candidate_payload["relative_yaw_deg"] = candidate.relative_yaw_deg
+        candidate_payload["suggested_movement_instruction"] = candidate.suggested_movement_instruction
+    return payload
 
 
 def provider_settings(**overrides: Any) -> VLLMProviderSettings:
@@ -780,7 +802,7 @@ def test_b4_risk_phase_uses_scripted_reset_without_mllm(tmp_path: Path) -> None:
 
     response = TestClient(app).post(
         "/api/guidance",
-        json=request.model_dump(mode="json"),
+        json=request_payload(request),
     )
 
     assert response.status_code == 200
@@ -805,7 +827,7 @@ def test_formal_request_does_not_silently_fallback_to_mock(
 
     response = TestClient(app).post(
         "/api/guidance",
-        json=request.model_dump(mode="json"),
+        json=request_payload(request),
     )
 
     assert response.status_code == 503

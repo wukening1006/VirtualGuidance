@@ -78,6 +78,12 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
                 "id": target_id,
                 "target_role": "final_target" if target_id == "E5" else "navigable_detour",
                 "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
+                "relative_yaw_deg": {"E5": 0.0, "E3": -90.0, "E4": 90.0}[target_id],
+                "suggested_movement_instruction": {
+                    "E5": "move_forward_slowly",
+                    "E3": "turn_left_slowly",
+                    "E4": "turn_right_slowly",
+                }[target_id],
             }
             for target_id in model_candidates
         ],
@@ -113,52 +119,115 @@ def test_condition_policy_matrix_freezes_all_six_capability_boundaries() -> None
     assert policies[Condition.OURS_FULL].policy_version == "condition-policy-v1"
 
 
-def test_verifier_rejects_unsafe_forward_movement() -> None:
+def verify_candidate_movement(
+    relative_direction: str,
+    relative_yaw_deg: float,
+    suggested_movement: MovementInstruction,
+    movement: MovementInstruction,
+    unsafe_directions: list[str] | None = None,
+):
     request = request_for()
+    candidate = request.candidate_for("E3")
+    assert candidate is not None
+    candidate.relative_direction = relative_direction
+    candidate.relative_yaw_deg = relative_yaw_deg
+    candidate.suggested_movement_instruction = suggested_movement.value
     state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
         request.physical_space_id,
         request.physical_position_xz,
         request.physical_forward_xz,
     )
+    state.unsafe_directions = list(unsafe_directions or [])
+    state.safe_directions = [
+        direction
+        for direction in ("forward", "left", "right")
+        if direction not in state.unsafe_directions
+    ]
+    state.reset_required = False
     draft = GuideDraft(
-        selected_target="E5",
+        selected_target="E3",
         route_decision="direct_to_target",
-        narration="Go forward.",
+        narration="Proceed.",
         gaze_cue="look_forward",
-        gaze_target_id="E5_GazeTarget",
-        movement_instruction=MovementInstruction.MOVE_FORWARD_SLOWLY,
+        gaze_target_id="E3_GazeTarget",
+        movement_instruction=movement,
         physical_intent="test",
         intervention_type="test",
     )
-
-    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state, request)
-
-    assert result.approved is False
-    assert "movement_instruction" in result.reason
+    return SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state, request)
 
 
-def test_verifier_rejects_unsafe_selected_target() -> None:
-    request = request_for()
-    state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
-        request.physical_space_id,
-        request.physical_position_xz,
-        request.physical_forward_xz,
-    )
-    draft = GuideDraft(
-        selected_target="E4",
-        route_decision="semantic_redirect",
-        narration="Look right.",
-        gaze_cue="look_left",
-        gaze_target_id="E4_GazeTarget",
-        movement_instruction=MovementInstruction.TURN_LEFT_SLOWLY,
-        physical_intent="test",
-        intervention_type="test",
+def test_verifier_allows_negative_behind_turn_when_coarse_left_is_unsafe() -> None:
+    result = verify_candidate_movement(
+        "behind",
+        -150.0,
+        MovementInstruction.TURN_LEFT_SLOWLY,
+        MovementInstruction.TURN_LEFT_SLOWLY,
+        unsafe_directions=["left"],
     )
 
-    result = SafetyVerifierAgent().verify(Condition.OURS_FULL.value, draft, state, request)
+    assert result.approved is True
+    assert "delegated to Unity" in result.reason
+
+
+def test_verifier_allows_positive_behind_turn_when_coarse_right_is_unsafe() -> None:
+    result = verify_candidate_movement(
+        "behind",
+        150.0,
+        MovementInstruction.TURN_RIGHT_SLOWLY,
+        MovementInstruction.TURN_RIGHT_SLOWLY,
+        unsafe_directions=["right"],
+    )
+
+    assert result.approved is True
+
+
+def test_verifier_rejects_left_turn_for_positive_yaw() -> None:
+    result = verify_candidate_movement(
+        "right",
+        80.0,
+        MovementInstruction.TURN_RIGHT_SLOWLY,
+        MovementInstruction.TURN_LEFT_SLOWLY,
+    )
 
     assert result.approved is False
-    assert "selected_target" in result.reason
+    assert "expected turn_right_slowly" in result.reason
+
+
+def test_verifier_rejects_right_turn_for_negative_yaw() -> None:
+    result = verify_candidate_movement(
+        "left",
+        -80.0,
+        MovementInstruction.TURN_LEFT_SLOWLY,
+        MovementInstruction.TURN_RIGHT_SLOWLY,
+    )
+
+    assert result.approved is False
+    assert "expected turn_left_slowly" in result.reason
+
+
+def test_verifier_allows_forward_movement_in_existing_forward_deadzone() -> None:
+    result = verify_candidate_movement(
+        "forward",
+        10.0,
+        MovementInstruction.MOVE_FORWARD_SLOWLY,
+        MovementInstruction.MOVE_FORWARD_SLOWLY,
+        unsafe_directions=["forward"],
+    )
+
+    assert result.approved is True
+
+
+def test_verifier_rejects_forward_movement_when_existing_rule_requires_turn() -> None:
+    result = verify_candidate_movement(
+        "right",
+        80.0,
+        MovementInstruction.TURN_RIGHT_SLOWLY,
+        MovementInstruction.MOVE_FORWARD_SLOWLY,
+    )
+
+    assert result.approved is False
+    assert "expected turn_right_slowly" in result.reason
 
 
 def test_b5_stably_outputs_safe_candidate_with_unsafe_forward_without_verifier() -> None:

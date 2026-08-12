@@ -1,8 +1,7 @@
-"""SafetyVerifierAgent：对 ours_full 的 guidance 执行最终确定性安全校验。"""
+"""SafetyVerifierAgent：校验 ours_full guidance 的协议与动作语义一致性。"""
 
 from __future__ import annotations
 
-from backend.agents.rdw_affordance_agent import get_unity_direction
 from backend.schemas import (
     Condition,
     ConditionCapabilityMode,
@@ -12,21 +11,12 @@ from backend.schemas import (
     PhysicalRiskState,
     VerifierResult,
     condition_policy_for,
+    movement_for_candidate_bearing,
 )
 
 
-MOVEMENT_DIRECTION = {
-    MovementInstruction.MOVE_FORWARD_SLOWLY.value: "forward",
-    MovementInstruction.LOOK_FORWARD.value: "forward",
-    MovementInstruction.TURN_LEFT_SLOWLY.value: "left",
-    MovementInstruction.LOOK_LEFT.value: "left",
-    MovementInstruction.TURN_RIGHT_SLOWLY.value: "right",
-    MovementInstruction.LOOK_RIGHT.value: "right",
-}
-
-
 class SafetyVerifierAgent:
-    """proposed full system 的最终确定性安全门。"""
+    """验证候选成员、协议状态与 Unity 候选动作语义。"""
 
     def verify(
         self,
@@ -57,22 +47,39 @@ class SafetyVerifierAgent:
                 reason="All natural directions are unsafe; only pause/reset guidance is allowed.",
             )
 
-        movement_direction = MOVEMENT_DIRECTION.get(draft.movement_instruction.value)
-        if movement_direction in risk_state.unsafe_directions:
-            # Unity 不应执行 rejected guidance；返回 reason 供前端暂停或请求重新生成。
+        candidate = request.candidate_for(draft.selected_target)
+        if candidate is None:
             return VerifierResult(
                 approved=False,
-                reason=f"movement_instruction points to unsafe {movement_direction} direction.",
+                reason="selected_target must belong to the frozen model candidate set.",
             )
 
-        selected_direction = get_unity_direction(request, draft.selected_target)
-        if selected_direction in risk_state.unsafe_directions:
+        if draft.movement_instruction in {
+            MovementInstruction.PAUSE_AND_WAIT,
+            MovementInstruction.RESET_REQUIRED,
+        }:
+            return VerifierResult(
+                approved=True,
+                reason="Non-movement guidance satisfies the verifier contract.",
+            )
+
+        expected_movement = movement_for_candidate_bearing(
+            candidate.suggested_movement_instruction,
+            candidate.relative_yaw_deg,
+        )
+        if draft.movement_instruction != expected_movement:
             return VerifierResult(
                 approved=False,
-                reason=f"selected_target is in unsafe {selected_direction} direction.",
+                reason=(
+                    "movement_instruction is inconsistent with the selected target bearing: "
+                    f"expected {expected_movement.value}."
+                ),
             )
 
         return VerifierResult(
             approved=True,
-            reason="Guidance avoids unsafe directions.",
+            reason=(
+                "Guidance action matches the selected target bearing; "
+                "physical safety is delegated to Unity."
+            ),
         )
