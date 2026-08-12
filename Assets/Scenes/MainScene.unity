@@ -453,6 +453,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   navigationTargets: {fileID: 0}
+  riskEvaluator: {fileID: 0}
 --- !u!114 &19950178
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -32138,7 +32139,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
-  calibrationPointInRoom: {x: 2.5, y: 1}
+  calibrationPointInRoom: {x: 2.5, y: 2.5}
   calibrationForwardYawDegrees: 0
 --- !u!1 &1934046643
 GameObject:
@@ -33518,9 +33519,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 0}
-  inputMode: 0
+  inputMode: 1
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
+  simulatedMoveSpeedMetersPerSecond: 1.5
   editorSimulationLocalPosition: {x: 1, y: 1.65, z: 2.5}
   editorSimulationLocalEulerAngles: {x: 0, y: 0, z: 0}
 --- !u!114 &2100100006

@@ -227,6 +227,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private bool recoveryHoldPoseCaptured;
     private bool holdForReplan;
     private int holdRiskRevision = -1;
+    private int holdTaskStateVersion;
     private string holdPlanningFingerprint = string.Empty;
     private string holdReason = string.Empty;
     private Vector2 holdPhysicalPosition;
@@ -236,6 +237,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private float nextReplanAttemptTime;
     private float currentReplanRetryDelaySeconds;
     private bool planningRequestInProgress;
+    private string lastDeterministicRejectionFingerprint = string.Empty;
+    private bool replanHoldRequiresNewFacts;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -553,7 +556,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 GuidanceTypeUtility.TargetRoleToProtocol(frozenCandidate.TargetRole),
                 StringComparison.Ordinal))
         {
-            ExpireAndReplan("Guidance response does not match the active Candidate-Set Reservation.");
+            ExpireAndReplan(response, "Guidance response does not match the active Candidate-Set Reservation.");
             return;
         }
 
@@ -562,7 +565,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 riskState,
                 out var exactHeadingReason))
         {
-            ExpireAndReplan(exactHeadingReason);
+            ExpireAndReplan(response, exactHeadingReason);
             return;
         }
 
@@ -576,7 +579,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 riskEvaluator,
                 out var candidateReason))
         {
-            ExpireAndReplan(candidateReason);
+            ExpireAndReplan(response, candidateReason);
             return;
         }
 
@@ -588,7 +591,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 out var selectedAssessment) ||
             !selectedAssessment.IsExecutable)
         {
-            ExpireAndReplan("Selected candidate cannot produce an executable local action.");
+            ExpireAndReplan(response, "Selected candidate cannot produce an executable local action.");
             return;
         }
         response.movement_instruction =
@@ -599,7 +602,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         {
             if (reason.IndexOf("changed", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                ExpireAndReplan(reason);
+                ExpireAndReplan(response, reason);
                 return;
             }
 
@@ -622,7 +625,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 out _,
                 out var physicalActionReason))
         {
-            ExpireAndReplan(physicalActionReason);
+            ExpireAndReplan(response, physicalActionReason);
             return;
         }
 
@@ -642,6 +645,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         SetRequestPhase(GuidanceRequestPhase.Verified);
         guidanceExecutor?.Apply(response);
+        lastDeterministicRejectionFingerprint = string.Empty;
         if (selectedCandidate.TargetRole != NavigationTargetRole.TurnCueAnchor)
         {
             arrivalDetector?.WatchReservation(targetReservation);
@@ -969,8 +973,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             false));
     }
 
-    private void ExpireAndReplan(string reason)
+    private void ExpireAndReplan(GuidanceResponse response, string reason)
     {
+        var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
+        var rejectionFingerprint = BuildRejectionFingerprint(response, riskState, reason);
+        if (!string.IsNullOrEmpty(rejectionFingerprint) &&
+            string.Equals(lastDeterministicRejectionFingerprint, rejectionFingerprint, StringComparison.Ordinal))
+        {
+            EnterHoldAndReplan(
+                riskState,
+                rejectionFingerprint,
+                reason,
+                true);
+            return;
+        }
+
+        lastDeterministicRejectionFingerprint = rejectionFingerprint;
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_expired");
         arrivalDetector?.WatchReservation(null);
@@ -1047,25 +1065,28 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        var plannedDirection = string.Empty;
-        var directionAvailable = navigationTargets != null &&
-                                 navigationTargets.TryGetTargetDirection(
-                                     activeResponse.selected_target,
-                                     out plannedDirection);
-        var plannedClearance = 0f;
-        var clearanceAvailable = directionAvailable &&
-                                 riskEvaluator != null &&
-                                 riskEvaluator.TryGetDirectionClearance(
-                                     riskState,
-                                     plannedDirection,
-                                     out plannedClearance);
-
-        UpdateUnsafeSampleCount(riskState, plannedDirection, directionAvailable);
-        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeResponse.selected_target);
-        var plannedDirectionCritical = clearanceAvailable && riskEvaluator.IsCriticalClearance(plannedClearance);
-        var requiresSafetyIntervention = RequiresRuntimeSafetyIntervention(
+        var plannedDirection = navigationTargets != null &&
+                               navigationTargets.TryGetTargetDirection(
+                                   activeResponse.selected_target,
+                                   out var displayDirection)
+            ? displayDirection
+            : "exact";
+        var directionAvailable = TryEvaluateTargetExactHeading(
+            activeResponse.selected_target,
             riskState,
-            plannedDirection,
+            out var plannedHeading);
+        var plannedClearance = directionAvailable ? plannedHeading.ClearanceMeters : 0f;
+
+        UpdateUnsafeSampleCount(
+            riskState,
+            activeResponse.selected_target,
+            directionAvailable,
+            plannedHeading.Safety);
+        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeResponse.selected_target);
+        var plannedDirectionCritical = directionAvailable && plannedHeading.Safety == HeadingSafety.Critical;
+        var requiresSafetyIntervention = RequiresRuntimeSafetyIntervention(
+            directionAvailable,
+            plannedHeading.Safety,
             plannedDirectionCritical);
         var hasRecoveryHeading = recoveryHeadingPlanner.Plan(
             riskState != null ? riskState.heading_profile : null).IsSuccess;
@@ -1079,7 +1100,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             riskEvaluator != null && riskEvaluator.IsRiskIdentityCurrent(riskState),
             plannedDirection,
             plannedClearance,
-            directionAvailable && clearanceAvailable,
+            directionAvailable,
             plannedDirectionCritical,
             pauseResetController != null ? pauseResetController.State : ResetLifecycleState.Inactive,
             consecutiveUnsafeSamples,
@@ -1310,9 +1331,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             riskState != null ? riskState.heading_profile : null,
             semanticYaw,
             frozenRecoveryPlan);
-        if (!nextPlan.IsSuccess)
+        if (!nextPlan.IsSuccess ||
+            !TryEvaluateRecoveryPlanHeading(riskState, nextPlan, out var exactRecoveryHeading) ||
+            !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(exactRecoveryHeading))
         {
-            EnterRecoveryHold(riskState, RecoveryFailureReason(nextPlan.Failure));
+            EnterRecoveryHold(
+                riskState,
+                nextPlan.IsSuccess
+                    ? "Selected recovery heading failed exact final validation."
+                    : RecoveryFailureReason(nextPlan.Failure));
             return;
         }
 
@@ -1544,13 +1571,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             if (candidate == null ||
                 string.Equals(candidate.TargetId, activeTargetId, StringComparison.Ordinal) ||
                 semanticTargetSelector.GetCandidateSafetyState(candidate.TargetId, riskState) !=
-                CandidateSafetyState.Eligible ||
-                riskEvaluator == null ||
-                !riskEvaluator.TryGetDirectionClearance(
-                    riskState,
-                    candidate.RelativeDirection,
-                    out var clearanceMeters) ||
-                riskEvaluator.IsCriticalClearance(clearanceMeters))
+                CandidateSafetyState.Eligible)
             {
                 continue;
             }
@@ -1660,16 +1681,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                riskEvaluator.IsRiskIdentityCurrent(riskState) &&
                riskState.boundary_context != null &&
                riskState.boundary_context.Count >= 3 &&
-               riskState.safe_directions != null &&
-               riskState.unsafe_directions != null &&
-               HasFiniteNaturalDirectionClearances(riskState) &&
                IsUserInsidePhysicalBoundary(riskState);
     }
 
     private void EnterHoldAndReplan(
         PhysicalRiskState riskState,
         string planningFingerprint,
-        string reason)
+        string reason,
+        bool requiresNewFacts = false)
     {
         var firstEntry = !holdForReplan;
         requestClient?.CancelPendingRequest();
@@ -1693,8 +1712,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         holdForReplan = true;
         holdRiskRevision = riskState != null ? riskState.risk_revision : -1;
+        holdTaskStateVersion = taskController != null && taskController.RuntimeState != null
+            ? taskController.RuntimeState.stateVersion
+            : 0;
         holdPlanningFingerprint = planningFingerprint ?? string.Empty;
         holdReason = reason ?? string.Empty;
+        replanHoldRequiresNewFacts = requiresNewFacts;
         holdPhysicalPoseCaptured = riskState != null;
         holdPhysicalPosition = riskState != null ? riskState.user_physical_position : Vector2.zero;
         holdPhysicalForward = riskState != null && riskState.user_physical_forward.sqrMagnitude > 0.0001f
@@ -1736,8 +1759,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             currentReplanRetryDelaySeconds);
         holdForReplan = false;
         holdRiskRevision = -1;
+        holdTaskStateVersion = 0;
         holdPlanningFingerprint = string.Empty;
         holdReason = string.Empty;
+        replanHoldRequiresNewFacts = false;
         holdPhysicalPosition = Vector2.zero;
         holdPhysicalForward = Vector2.up;
         holdPhysicalPoseCaptured = false;
@@ -1765,6 +1790,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return string.Empty;
         }
 
+        var currentTaskStateVersion = taskController != null && taskController.RuntimeState != null
+            ? taskController.RuntimeState.stateVersion
+            : 0;
+        if (currentTaskStateVersion != holdTaskStateVersion)
+        {
+            return "task_state_changed";
+        }
+
         if (riskState != null)
         {
             if (riskState.risk_revision != holdRiskRevision)
@@ -1790,9 +1823,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             }
         }
 
-        return Time.realtimeSinceStartup >= nextReplanAttemptTime
-            ? "retry_timer_elapsed"
-            : string.Empty;
+        return replanHoldRequiresNewFacts
+            ? string.Empty
+            : Time.realtimeSinceStartup >= nextReplanAttemptTime
+                ? "retry_timer_elapsed"
+                : string.Empty;
     }
 
     private string BuildPlanningFingerprint(PhysicalRiskState riskState)
@@ -1802,6 +1837,20 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             : 0;
         var riskRevision = riskState != null ? riskState.risk_revision : -1;
         return $"state:{stateVersion}|risk:{riskRevision}";
+    }
+
+    /// <summary>构造本地确定性拒绝指纹，用于阻止相同事实下重复请求。</summary>
+    private string BuildRejectionFingerprint(GuidanceResponse response, PhysicalRiskState riskState, string reason)
+    {
+        var stateVersion = taskController != null && taskController.RuntimeState != null
+            ? taskController.RuntimeState.stateVersion
+            : 0;
+        var riskRevision = riskState != null ? riskState.risk_revision : -1;
+        var targetId = response != null ? response.selected_target : string.Empty;
+        var normalizedReason = string.IsNullOrWhiteSpace(reason) ? string.Empty : reason.Trim();
+        return string.IsNullOrWhiteSpace(targetId) || string.IsNullOrWhiteSpace(normalizedReason)
+            ? string.Empty
+            : $"target:{targetId}|state:{stateVersion}|risk:{riskRevision}|reason:{normalizedReason}";
     }
 
     private float? TryGetRecoverySemanticYaw(GuidanceResponse response)
@@ -1860,25 +1909,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         out string reason)
     {
         reason = string.Empty;
-        if (riskEvaluator == null ||
-            navigationTargets == null ||
-            riskState == null ||
-            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
-            !navigationTargets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees))
+        if (!TryEvaluateTargetExactHeading(targetId, riskState, out var heading))
         {
             reason = "Selected target exact physical heading could not be evaluated from current facts.";
-            return false;
-        }
-
-        var absolutePhysicalForward = RotatePhysicalForward(
-            riskState.user_physical_forward,
-            relativeYawDegrees);
-        if (!riskEvaluator.TryEvaluateAbsoluteHeading(
-                riskState,
-                absolutePhysicalForward,
-                out var heading))
-        {
-            reason = "Selected target exact physical heading evaluation failed.";
             return false;
         }
 
@@ -1902,49 +1935,26 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         clearanceMeters = 0f;
         reason = string.Empty;
 
-        if (response == null ||
-            navigationTargets == null ||
-            !navigationTargets.TryGetTargetDirection(response.selected_target, out physicalDirection) ||
-            !IsNaturalPhysicalDirection(physicalDirection))
+        if (response == null || navigationTargets == null ||
+            !navigationTargets.TryGetTargetBearing(response.selected_target, out var bearing))
         {
             reason = "Guidance Physical Action Gate could not resolve the selected target direction.";
             return false;
         }
+        // DisplayLabel 仅是风险摘要；动作已由最新连续 Bearing 生成，不再与 coarse label 做等值比较。
+        physicalDirection = $"relative_yaw:{bearing.RelativeYawDegrees:0.###}";
 
-        if (!TryGetMovementPhysicalDirection(response.movement_instruction, out var movementDirection) ||
-            !string.Equals(physicalDirection, movementDirection, StringComparison.Ordinal))
+        if (!TryEvaluateTargetExactHeading(response.selected_target, riskState, out var heading))
         {
-            reason =
-                $"Guidance Physical Action Gate rejected movement '{response.movement_instruction}' for target direction '{physicalDirection}'.";
+            reason = "Guidance Physical Action Gate could not query the exact target direction.";
             return false;
         }
+        clearanceMeters = heading.ClearanceMeters;
 
-        if (riskEvaluator == null ||
-            riskState == null ||
-            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
-            !riskEvaluator.TryGetDirectionClearance(riskState, physicalDirection, out clearanceMeters))
-        {
-            reason = "Guidance Physical Action Gate could not query current direction clearance.";
-            return false;
-        }
-
-        var safety = ResolveNaturalDirectionSafety(riskState, physicalDirection, clearanceMeters);
-        if (riskState.heading_profile != null && riskState.heading_profile.Count > 0)
-        {
-            var relativeYaw = PhysicalDirectionToRelativeYaw(physicalDirection);
-            if (!riskState.TryGetNearestHeading(relativeYaw, out var heading) ||
-                heading.Safety != HeadingSafety.Safe)
-            {
-                reason =
-                    $"Guidance Physical Action Gate rejected {physicalDirection} heading profile safety.";
-                return false;
-            }
-        }
-
-        if (safety != HeadingSafety.Safe)
+        if (!PhysicalRiskEvaluator.IsMovementSafe(heading))
         {
             reason =
-                $"Guidance Physical Action Gate rejected {physicalDirection} direction because its safety is {safety}.";
+                $"Guidance Physical Action Gate rejected exact target direction because its safety is {heading.Safety}.";
             return false;
         }
 
@@ -1990,67 +2000,23 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return false;
     }
 
-    private HeadingSafety ResolveNaturalDirectionSafety(
+    private bool TryEvaluateTargetExactHeading(
+        string targetId,
         PhysicalRiskState riskState,
-        string direction,
-        float clearanceMeters)
+        out HeadingSample heading)
     {
-        if (riskState == null ||
-            !IsNaturalPhysicalDirection(direction) ||
-            clearanceMeters <= 0f ||
-            float.IsNaN(clearanceMeters) ||
-            float.IsInfinity(clearanceMeters) ||
-            riskEvaluator == null ||
-            riskEvaluator.IsCriticalClearance(clearanceMeters))
+        heading = default;
+        if (riskEvaluator == null || navigationTargets == null || riskState == null ||
+            !riskEvaluator.IsRiskIdentityCurrent(riskState) ||
+            !navigationTargets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees))
         {
-            return HeadingSafety.Critical;
+            return false;
         }
 
-        if (Contains(riskState.unsafe_directions, direction))
-        {
-            return HeadingSafety.Unsafe;
-        }
-
-        return Contains(riskState.safe_directions, direction)
-            ? HeadingSafety.Safe
-            : HeadingSafety.Unknown;
-    }
-
-    private static bool TryGetMovementPhysicalDirection(string movementInstruction, out string direction)
-    {
-        direction = string.Empty;
-        switch (movementInstruction)
-        {
-            case "move_forward_slowly":
-            case "look_forward":
-                direction = "forward";
-                return true;
-            case "turn_left_slowly":
-            case "look_left":
-                direction = "left";
-                return true;
-            case "turn_right_slowly":
-            case "look_right":
-                direction = "right";
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private static bool IsNaturalPhysicalDirection(string direction)
-    {
-        return direction == "forward" || direction == "left" || direction == "right";
-    }
-
-    private static float PhysicalDirectionToRelativeYaw(string direction)
-    {
-        switch (direction)
-        {
-            case "left": return -90f;
-            case "right": return 90f;
-            default: return 0f;
-        }
+        var physicalDirection = RotatePhysicalForward(
+            riskState.user_physical_forward,
+            relativeYawDegrees);
+        return riskEvaluator.TryEvaluateAbsoluteHeading(riskState, physicalDirection, out heading);
     }
 
     private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)
@@ -2086,13 +2052,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             frozenRecoveryPlan));
     }
 
-    private bool HasFiniteNaturalDirectionClearances(PhysicalRiskState riskState)
-    {
-        return riskEvaluator.TryGetDirectionClearance(riskState, "forward", out _) &&
-               riskEvaluator.TryGetDirectionClearance(riskState, "left", out _) &&
-               riskEvaluator.TryGetDirectionClearance(riskState, "right", out _);
-    }
-
     private static bool IsUserInsidePhysicalBoundary(PhysicalRiskState riskState)
     {
         if (riskState == null || riskState.boundary_context == null || riskState.boundary_context.Count < 3)
@@ -2111,10 +2070,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void UpdateUnsafeSampleCount(
         PhysicalRiskState riskState,
-        string plannedDirection,
-        bool directionAvailable)
+        string directionIdentity,
+        bool directionAvailable,
+        HeadingSafety safety)
     {
-        if (!directionAvailable || !Contains(riskState != null ? riskState.unsafe_directions : null, plannedDirection))
+        if (!directionAvailable ||
+            (safety != HeadingSafety.Unsafe && safety != HeadingSafety.Critical))
         {
             ResetRuntimeSafetySampling();
             return;
@@ -2129,9 +2090,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         lastRuntimeRiskSnapshotId = riskState != null ? riskState.risk_snapshot_id : string.Empty;
 
-        if (!string.Equals(sampledUnsafeDirection, plannedDirection, StringComparison.Ordinal))
+        if (!string.Equals(sampledUnsafeDirection, directionIdentity, StringComparison.Ordinal))
         {
-            sampledUnsafeDirection = plannedDirection;
+            sampledUnsafeDirection = directionIdentity;
             consecutiveUnsafeSamples = 1;
             return;
         }
@@ -2147,21 +2108,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     private bool RequiresRuntimeSafetyIntervention(
-        PhysicalRiskState riskState,
-        string plannedDirection,
+        bool directionAvailable,
+        HeadingSafety safety,
         bool plannedDirectionCritical)
     {
-        if (riskState == null)
+        if (!directionAvailable)
         {
             return true;
         }
 
-        if (plannedDirectionCritical || riskState.reset_required)
+        if (plannedDirectionCritical)
         {
             return true;
         }
 
-        return Contains(riskState.unsafe_directions, plannedDirection) &&
+        return safety == HeadingSafety.Unsafe &&
                consecutiveUnsafeSamples >= 2;
     }
 
@@ -2533,20 +2494,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
-    private static bool IsCurrentHeadingCritical(PhysicalRiskState riskState)
+    private bool IsCurrentHeadingCritical(PhysicalRiskState riskState)
     {
-        if (riskState == null)
-        {
-            return false;
-        }
-
-        if (riskState.heading_profile != null && riskState.heading_profile.Count > 0)
-        {
-            return riskState.TryGetNearestHeading(0f, out var currentHeading) &&
-                   currentHeading.Safety == HeadingSafety.Critical;
-        }
-
-        return string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(riskState.reset_risk, "critical", StringComparison.OrdinalIgnoreCase);
+        return riskEvaluator != null && riskState != null &&
+               riskEvaluator.TryEvaluateAbsoluteHeading(
+                   riskState,
+                   riskState.user_physical_forward,
+                   out var currentHeading) &&
+               currentHeading.Safety == HeadingSafety.Critical;
     }
 }

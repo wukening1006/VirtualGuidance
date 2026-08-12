@@ -22,8 +22,8 @@ public enum CandidateSafetyState
 public sealed class SemanticTargetSelector : MonoBehaviour
 {
     [SerializeField] private NavigationTargetManager navigationTargets;
+    [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
     private readonly GuidanceActionPlanner actionPlanner = new GuidanceActionPlanner();
-    private readonly GuidanceActionSafetyEvaluator actionSafetyEvaluator = new GuidanceActionSafetyEvaluator();
 
     private void Awake()
     {
@@ -31,11 +31,15 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     }
 
     /// <summary>注入用于查询目标、关联展品及方向的导航索引。</summary>
-    public void Configure(NavigationTargetManager targetManager)
+    public void Configure(NavigationTargetManager targetManager, PhysicalRiskEvaluator evaluator = null)
     {
         if (targetManager != null)
         {
             navigationTargets = targetManager;
+        }
+        if (evaluator != null)
+        {
+            riskEvaluator = evaluator;
         }
     }
 
@@ -291,6 +295,10 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         {
             navigationTargets = FindObjectOfType<NavigationTargetManager>();
         }
+        if (riskEvaluator == null)
+        {
+            riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
+        }
     }
 
     private void TryAddCandidate(
@@ -366,8 +374,55 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             candidate.DisplayLabel,
             candidate.PoseRevision);
         var action = actionPlanner.Plan(bearing);
-        var executionState = actionSafetyEvaluator.Evaluate(action, riskState, out var reason);
+        var executionState = EvaluateExactTargetDirection(candidate, riskState, out var reason);
         return new CandidateAssessment(candidate, bearing, action, executionState, reason);
+    }
+
+    private CandidateExecutionState EvaluateExactTargetDirection(
+        NavigationCandidate candidate,
+        PhysicalRiskState riskState,
+        out string reason)
+    {
+        if (candidate == null || riskState == null || riskEvaluator == null ||
+            !riskEvaluator.IsRiskIdentityCurrent(riskState))
+        {
+            reason = "exact_direction_facts_unavailable";
+            return CandidateExecutionState.Unknown;
+        }
+
+        // Candidate Safety 始终评估目标的连续 physical direction，不读取离散 Profile 或方向标签。
+        var physicalDirection = RotatePhysicalForward(
+            riskState.user_physical_forward,
+            candidate.RelativeYawDegrees);
+        if (!riskEvaluator.TryEvaluateAbsoluteHeading(riskState, physicalDirection, out var heading))
+        {
+            reason = "exact_direction_evaluation_failed";
+            return CandidateExecutionState.Unknown;
+        }
+
+        if (heading.Safety == HeadingSafety.Safe)
+        {
+            reason = string.Empty;
+            return CandidateExecutionState.Executable;
+        }
+
+        reason = heading.Safety == HeadingSafety.Unknown
+            ? "exact_direction_requires_hold"
+            : "exact_direction_clearance_blocked";
+        return heading.Safety == HeadingSafety.Unknown
+            ? CandidateExecutionState.TemporarilyBlocked
+            : CandidateExecutionState.Blocked;
+    }
+
+    private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)
+    {
+        forward = forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            forward.x * cos + forward.y * sin,
+            -forward.x * sin + forward.y * cos).normalized;
     }
 
     private static bool SameCandidates(

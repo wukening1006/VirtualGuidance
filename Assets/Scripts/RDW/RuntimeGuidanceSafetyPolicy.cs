@@ -143,9 +143,8 @@ public sealed class RuntimeGuidanceSafetyInput
             return true;
         }
 
-        var requiresIntervention = plannedDirectionCritical ||
-                                   risk.reset_required ||
-                                   Contains(risk.unsafe_directions, plannedDirection);
+        // Runtime Safety 的连续 HeadingSample 由 Coordinator 计算；labels 仅保留为兼容 DTO。
+        var requiresIntervention = plannedDirectionCritical || risk.reset_required;
         if (!requiresIntervention)
         {
             return false;
@@ -174,23 +173,6 @@ public sealed class RuntimeGuidanceSafetyInput
         return false;
     }
 
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
-    {
-        if (values == null || string.IsNullOrWhiteSpace(expected))
-        {
-            return false;
-        }
-
-        foreach (var value in values)
-        {
-            if (string.Equals(value, expected, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 }
 
 /// <summary>
@@ -212,8 +194,7 @@ public sealed class RuntimeGuidanceSafetyPolicy
             !input.TrackingValid ||
             !input.CalibrationValid ||
             !input.PhysicalSpaceMatches ||
-            !input.PlannedDirectionAvailable ||
-            !IsNaturalDirection(input.PlannedDirection))
+            !input.PlannedDirectionAvailable)
         {
             return RuntimeGuidanceSafetyDecision.HardStop;
         }
@@ -252,11 +233,6 @@ public sealed class RuntimeGuidanceSafetyPolicy
                PhysicalSpaceGeometry.ContainsPoint(
                    risk.boundary_context,
                    risk.user_physical_position);
-    }
-
-    private static bool IsNaturalDirection(string direction)
-    {
-        return direction == "forward" || direction == "left" || direction == "right";
     }
 
     private static bool IsResetActive(ResetLifecycleState state)

@@ -9,7 +9,6 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
     [SerializeField] private NavigationTargetManager navigationTargets;
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
     private readonly GuidanceActionPlanner actionPlanner = new GuidanceActionPlanner();
-    private readonly GuidanceActionSafetyEvaluator actionSafetyEvaluator = new GuidanceActionSafetyEvaluator();
 
     private void Awake()
     {
@@ -63,19 +62,6 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
-        if (currentRiskState.unsafe_directions == null || currentRiskState.safe_directions == null)
-        {
-            reason = "Local RDW check received incomplete direction risk data.";
-            return false;
-        }
-
-        // reset_required 优先于普通移动指令，防止所有方向危险时继续诱导用户移动。
-        if (currentRiskState.reset_required)
-        {
-            reason = "Local RDW check requires pause/reset before executing guidance.";
-            return false;
-        }
-
         if (!TryGetMovementDirection(response.movement_instruction, out var movementDirection))
         {
             reason = $"Local RDW check rejected unknown movement '{response.movement_instruction}'.";
@@ -106,15 +92,6 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
-        if (currentRiskState.heading_profile == null || currentRiskState.heading_profile.Count == 0)
-        {
-            return ValidateLegacyDirection(
-                response,
-                currentRiskState,
-                movementDirection,
-                out reason);
-        }
-
         var plannedAction = actionPlanner.Plan(bearing);
         var expectedMovement = GuidanceActionProtocolMapper.ToMovementInstruction(plannedAction);
         if (!string.Equals(
@@ -127,59 +104,26 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
             return false;
         }
 
-        var executionState = actionSafetyEvaluator.Evaluate(
-            plannedAction,
-            currentRiskState,
-            out var executionReason);
-        if (executionState != CandidateExecutionState.Executable)
-        {
-            reason = $"Local RDW check rejected planned action: {executionReason}.";
-            return false;
-        }
-
-        return true;
-    }
-
-    private bool ValidateLegacyDirection(
-        GuidanceResponse response,
-        PhysicalRiskState riskState,
-        string movementDirection,
-        out string reason)
-    {
-        if (!navigationTargets.TryGetTargetDirection(response.selected_target, out var targetDirection) ||
-            !IsNaturalDirection(targetDirection))
-        {
-            reason = "Local RDW check cannot calculate an executable target direction.";
-            return false;
-        }
-
         if (riskEvaluator == null ||
-            !riskEvaluator.TryGetDirectionClearance(riskState, targetDirection, out _))
+            !riskEvaluator.IsRiskIdentityCurrent(currentRiskState))
         {
-            reason = "Local RDW check cannot query planned direction clearance.";
+            reason = "Local RDW check has no current exact-direction evaluator.";
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(movementDirection) && movementDirection != targetDirection)
+        var exactPhysicalDirection = RotatePhysicalForward(
+            currentRiskState.user_physical_forward,
+            bearing.RelativeYawDegrees);
+        if (!riskEvaluator.TryEvaluateAbsoluteHeading(
+                currentRiskState,
+                exactPhysicalDirection,
+                out var exactHeading) ||
+            !PhysicalRiskEvaluator.IsMovementSafe(exactHeading))
         {
-            reason =
-                $"Local RDW check rejected conflicting movement '{movementDirection}' for target direction '{targetDirection}'.";
+            reason = "Local RDW check rejected the selected target exact physical direction.";
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(movementDirection) && IsUnsafe(movementDirection, riskState))
-        {
-            reason = $"Local RDW check rejected unsafe {movementDirection} movement.";
-            return false;
-        }
-
-        if (IsUnsafe(targetDirection, riskState))
-        {
-            reason = $"Local RDW check rejected target in unsafe {targetDirection} direction.";
-            return false;
-        }
-
-        reason = string.Empty;
         return true;
     }
 
@@ -188,6 +132,10 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
         if (navigationTargets == null)
         {
             navigationTargets = FindObjectOfType<NavigationTargetManager>();
+        }
+        if (riskEvaluator == null)
+        {
+            riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         }
     }
 
@@ -216,27 +164,15 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
         }
     }
 
-    private static bool IsNaturalDirection(string direction)
+    private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)
     {
-        return direction == "forward" || direction == "left" || direction == "right";
-    }
-
-    private static bool IsUnsafe(string direction, PhysicalRiskState riskState)
-    {
-        if (string.IsNullOrWhiteSpace(direction) || riskState == null || riskState.unsafe_directions == null)
-        {
-            return false;
-        }
-
-        foreach (var unsafeDirection in riskState.unsafe_directions)
-        {
-            if (unsafeDirection == direction)
-            {
-                return true;
-            }
-        }
-
-        return false;
+        forward = forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            forward.x * cos + forward.y * sin,
+            -forward.x * sin + forward.y * cos).normalized;
     }
 
 }

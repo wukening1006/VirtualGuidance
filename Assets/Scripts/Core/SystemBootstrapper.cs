@@ -167,7 +167,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
         boundaryVisualizer.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, physicalSpaceCalibration);
         navigationTargetManager.Configure(userPoseTracker);
         navigationTargetManager.RebuildIndex();
-        semanticTargetSelector.Configure(navigationTargetManager);
+        semanticTargetSelector.Configure(navigationTargetManager, riskEvaluator);
         arrivalDetector.Configure(userPoseTracker, navigationTargetManager);
         localGuidanceValidator.Configure(navigationTargetManager, riskEvaluator);
         narrationPlayer.Configure(narrationText);

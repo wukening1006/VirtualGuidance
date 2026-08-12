@@ -617,7 +617,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void RuntimeGuidanceSafetyPolicy_UsesActiveDirectionAndFailsClosed()
+    public void RuntimeGuidanceSafetyPolicy_UsesExactDirectionFactsAndFailsClosed()
     {
         var policy = new RuntimeGuidanceSafetyPolicy();
         var unsafeForward = new PhysicalRiskState(
@@ -637,6 +637,14 @@ public sealed class GuidanceRuntimeEditModeTests
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 2, false)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
+
+        var relabeledRisk = new PhysicalRiskState(
+            unsafeDirections: new[] { "left", "right" },
+            safeDirections: new[] { "forward" },
+            headingProfile: unsafeForward.heading_profile);
+        Assert.That(
+            policy.Evaluate(CreateRuntimeSafetyInput(relabeledRisk, "forward", 0.6f, 2, true)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
 
         var unrelatedCritical = new PhysicalRiskState(
             boundaryRisk: "critical",
@@ -4375,6 +4383,12 @@ public sealed class GuidanceRuntimeEditModeTests
         bool plannedDirectionAvailable = true,
         ResetLifecycleState resetState = ResetLifecycleState.Inactive)
     {
+        var requiresSafetyIntervention = plannedDirectionCritical ||
+                                          (risk != null && risk.reset_required) ||
+                                          unsafeSamples >= 2;
+        var hasRecoveryHeading = risk != null && risk.heading_profile != null &&
+                                 risk.heading_profile.Any(sample =>
+                                     PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(sample));
         return new RuntimeGuidanceSafetyInput(
             "decision-runtime-safety",
             "E3",
@@ -4389,7 +4403,9 @@ public sealed class GuidanceRuntimeEditModeTests
             plannedDirectionCritical,
             resetState,
             unsafeSamples,
-            safeCandidateAvailable);
+            requiresSafetyIntervention,
+            safeCandidateAvailable,
+            hasRecoveryHeading);
     }
 
     [Test]
@@ -4755,6 +4771,126 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(expiredCount, Is.EqualTo(1));
             Assert.That(task.RuntimeState.CurrentGuidanceTarget, Is.Null);
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
+            Assert.That(requests.Contexts, Has.Count.EqualTo(2));
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_PhysicalActionGateUsesContinuousBearingInsteadOfBehindLabel()
+    {
+        var root = new GameObject("GuidanceContinuousActionGateTest");
+        try
+        {
+            var user = new GameObject("ContinuousActionUser");
+            user.transform.SetParent(root.transform, false);
+            user.transform.forward = Vector3.forward;
+            CreateExhibit(
+                root.transform,
+                "BehindLeftTarget",
+                new Vector3(-1f, 0f, -1f),
+                "main_target",
+                null);
+
+            var pose = root.AddComponent<UserPoseTracker>();
+            pose.ConfigureVirtualUserRoot(user.transform);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(2.5f, 2.5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+            var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            riskEvaluator.Configure(space, pose, calibration);
+            var targets = root.AddComponent<NavigationTargetManager>();
+            targets.Configure(pose);
+            targets.RebuildIndex();
+            Assert.That(targets.TryGetTargetBearing("BehindLeftTarget", out var bearing), Is.True);
+            Assert.That(bearing.DisplayLabel, Is.EqualTo(BearingLabel.Behind));
+            Assert.That(bearing.RelativeYawDegrees, Is.LessThan(-90f));
+
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            var risk = riskEvaluator.CurrentRiskState;
+            Assert.That(risk, Is.Not.Null);
+            SetPrivateField(coordinator, "navigationTargets", targets);
+            SetPrivateField(coordinator, "riskEvaluator", riskEvaluator);
+
+            var arguments = new object[]
+            {
+                new GuidanceResponse
+                {
+                    selected_target = "BehindLeftTarget",
+                    movement_instruction = "turn_left_slowly"
+                },
+                risk,
+                string.Empty,
+                0f,
+                string.Empty
+            };
+            var accepted = (bool)InvokePrivateWithResult(
+                coordinator,
+                "TryValidateExecutablePhysicalAction",
+                arguments);
+
+            Assert.That(accepted, Is.True);
+            Assert.That((string)arguments[2], Does.StartWith("relative_yaw:"));
+            Assert.That((float)arguments[3], Is.GreaterThan(1f));
+            Assert.That((string)arguments[4], Is.Empty);
+        }
+        finally
+        {
+            Object.DestroyImmediate(root);
+        }
+    }
+
+    [Test]
+    public void GuidanceCoordinator_RepeatedDeterministicRejectionWaitsForNewFacts()
+    {
+        var root = new GameObject("GuidanceDeterministicRejectionHoldTest");
+        root.SetActive(false);
+        try
+        {
+            var task = root.AddComponent<GuidanceTaskController>();
+            task.ConfigureTask(new GuidanceTaskDefinition
+            {
+                condition = "ours_full",
+                startExhibitId = "E1",
+                finalTargetId = "E5",
+                routeTargetIds = new[] { "E1", "E5" }
+            });
+            task.StartTask();
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+            ConfigureT2CoordinatorHarness(root, coordinator, task);
+            var requests = new RecordingGuidanceRequestClient();
+            coordinator.ConfigureRequestClient(requests);
+            var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
+            var risk = riskEvaluator.CurrentRiskState;
+            var response = new GuidanceResponse { selected_target = "E5" };
+            const string reason = "deterministic local rejection";
+
+            InvokePrivate(coordinator, "ExpireAndReplan", response, reason);
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+
+            InvokePrivate(coordinator, "ExpireAndReplan", response, reason);
+            Assert.That(coordinator.IsHoldingForReplan, Is.True);
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1));
+
+            SetPrivateField(coordinator, "nextReplanAttemptTime", Time.realtimeSinceStartup - 1f);
+            InvokePrivate(coordinator, "Update");
+            Assert.That(requests.Contexts, Has.Count.EqualTo(1), "timer must not wake a deterministic rejection hold");
+
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            var pose = root.GetComponent<UserPoseTracker>();
+            var yaw = Mathf.Atan2(pose.PhysicalForwardXZ.x, pose.PhysicalForwardXZ.y) * Mathf.Rad2Deg;
+            pose.SetCalibratedPhysicalPose(pose.PhysicalPositionXZ + new Vector2(0.3f, 0f), yaw);
+            var movedRisk = riskEvaluator.EvaluateNow();
+            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", movedRisk);
+
             Assert.That(requests.Contexts, Has.Count.EqualTo(2));
         }
         finally

@@ -479,6 +479,13 @@ public sealed class PauseResetController : MonoBehaviour
         float clearanceMeters,
         PhysicalRiskState riskState)
     {
+        if (riskEvaluator != null && riskState != null &&
+            riskEvaluator.TryEvaluateAbsoluteHeading(riskState, physicalForward, out var exactSample))
+        {
+            return exactSample;
+        }
+
+        // 仅兼容缺失 evaluator 的旧场景；生产 Recovery 由 exact evaluator 负责。
         var safety = clearanceMeters <= 0f || float.IsNaN(clearanceMeters) || float.IsInfinity(clearanceMeters)
             ? HeadingSafety.Critical
             : Contains(riskState != null ? riskState.unsafe_directions : null, direction)

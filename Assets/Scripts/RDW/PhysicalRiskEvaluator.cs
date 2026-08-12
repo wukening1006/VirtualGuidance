@@ -273,25 +273,78 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             return false;
         }
 
-        var space = physicalSpaceManager.CurrentSpace;
         var normalizedForward = absolutePhysicalForward.normalized;
         var relativeYaw = SignedAngle(riskState.user_physical_forward, normalizedForward);
-        if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, riskState.user_physical_position))
+        return TryEvaluateDirectionInternal(
+            riskState.user_physical_position,
+            normalizedForward,
+            relativeYaw,
+            out sample);
+    }
+
+    /// <summary>
+    /// 对任意 Physical XZ 位置和方向执行精确走廊风险计算。
+    /// 本查询不读取或量化到 Heading Profile，也不修改当前风险快照。
+    /// </summary>
+    /// <param name="physicalPositionXZ">Physical Room XZ 位置，单位：米。</param>
+    /// <param name="physicalDirectionXZ">Physical Room XZ 连续方向向量。</param>
+    /// <param name="sample">成功时返回精确 clearance 与安全等级。</param>
+    /// <returns>空间配置和方向有效时返回 true。</returns>
+    public bool TryEvaluateDirection(
+        Vector2 physicalPositionXZ,
+        Vector2 physicalDirectionXZ,
+        out HeadingSample sample)
+    {
+        sample = default;
+        ResolveReferences();
+        if (physicalSpaceManager == null || physicalSpaceManager.CurrentSpace == null ||
+            !IsFiniteDirection(physicalDirectionXZ))
         {
-            sample = new HeadingSample(relativeYaw, normalizedForward, 0f, HeadingSafety.Critical);
+            return false;
+        }
+
+        var normalizedForward = physicalDirectionXZ.normalized;
+        var referenceForward = userPoseTracker != null
+            ? userPoseTracker.PhysicalForwardXZ
+            : Vector2.up;
+        return TryEvaluateDirectionInternal(
+            physicalPositionXZ,
+            normalizedForward,
+            SignedAngle(referenceForward, normalizedForward),
+            out sample);
+    }
+
+    private bool TryEvaluateDirectionInternal(
+        Vector2 physicalPositionXZ,
+        Vector2 normalizedForward,
+        float relativeYawDegrees,
+        out HeadingSample sample)
+    {
+        var space = physicalSpaceManager.CurrentSpace;
+        if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, physicalPositionXZ))
+        {
+            sample = new HeadingSample(
+                relativeYawDegrees,
+                normalizedForward,
+                0f,
+                HeadingSafety.Critical);
             return true;
         }
 
-        var clearance = ComputeCorridorClearance(
-            space,
-            riskState.user_physical_position,
-            normalizedForward);
+        var clearance = ComputeCorridorClearance(space, physicalPositionXZ, normalizedForward);
         sample = new HeadingSample(
-            relativeYaw,
+            relativeYawDegrees,
             normalizedForward,
             clearance,
             ClassifyHeadingSafety(clearance));
         return true;
+    }
+
+    private static bool IsFiniteDirection(Vector2 direction)
+    {
+        return direction.sqrMagnitude > Epsilon &&
+               !float.IsNaN(direction.x) && !float.IsNaN(direction.y) &&
+               !float.IsInfinity(direction.x) && !float.IsInfinity(direction.y);
     }
 
     private RiskSample Evaluate(PhysicalSpaceConfig space, Vector2 position, Vector2 forward)

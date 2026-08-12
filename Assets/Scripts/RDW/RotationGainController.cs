@@ -599,8 +599,12 @@ public sealed class RotationGainController : MonoBehaviour
         {
             AbortGain("outside_physical_boundary");
         }
-        else if (riskState.TryGetNearestHeading(
-                     expectedDirectionSign * Mathf.Min(180f, currentTargetPhysicalYawDegrees),
+        else if (riskEvaluator != null &&
+                 riskEvaluator.TryEvaluateAbsoluteHeading(
+                     riskState,
+                     RotatePhysicalForward(
+                         riskState.user_physical_forward,
+                         expectedDirectionSign * Mathf.Min(180f, currentTargetPhysicalYawDegrees)),
                      out var plannedHeading) &&
                  plannedHeading.Safety == HeadingSafety.Critical)
         {
@@ -619,6 +623,17 @@ public sealed class RotationGainController : MonoBehaviour
     private void ResolveReferences()
     {
         if (motionDetector == null) motionDetector = FindObjectOfType<MotionDetector>();
+    }
+
+    private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)
+    {
+        forward = forward.sqrMagnitude > YawEpsilon ? forward.normalized : Vector2.up;
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            forward.x * cos + forward.y * sin,
+            -forward.x * sin + forward.y * cos).normalized;
     }
 
     private void EnsureFallbackGainApplier()

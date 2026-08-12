@@ -117,6 +117,50 @@ public sealed class SafetyPlanningStageOneEditModeTests
         }
     }
 
+    /// <summary>验证任意连续 physical direction 均直接返回精确净空，不经过最近 Profile 采样。</summary>
+    [Test]
+    public void PhysicalRiskEvaluator_EvaluatesArbitraryContinuousDirections()
+    {
+        var root = new GameObject("ExactDirectionQueryTest");
+        try
+        {
+            CreateCalibrationRig(root, out var pose, out var space, out var calibration);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(Vector2.zero, 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
+
+            var evaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            evaluator.Configure(space, pose, calibration);
+            var risk = evaluator.CurrentRiskState ?? evaluator.EvaluateNow();
+            Assert.That(risk, Is.Not.Null);
+
+            foreach (var yaw in new[] { 17.3f, 47.5f, 83.2f, -41.6f })
+            {
+                var direction = Rotate(Vector2.up, yaw);
+                Assert.That(
+                    evaluator.TryEvaluateAbsoluteHeading(risk, direction, out var sample),
+                    Is.True,
+                    $"exact heading {yaw} should be queryable");
+                Assert.That(sample.RelativeYawDegrees, Is.EqualTo(yaw).Within(0.01f));
+                Assert.That(sample.ClearanceMeters, Is.GreaterThan(0f));
+            }
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    private static Vector2 Rotate(Vector2 forward, float yawDegrees)
+    {
+        var radians = yawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        return new Vector2(
+            forward.x * cos + forward.y * sin,
+            -forward.x * sin + forward.y * cos).normalized;
+    }
+
     private static void CreateCalibrationRig(
         GameObject root,
         out UserPoseTracker pose,
