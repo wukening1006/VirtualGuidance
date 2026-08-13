@@ -76,13 +76,18 @@ public sealed class RdwGainLimiter
         }
 
         var limitedYaw = Mathf.Clamp(requestedYaw, -cap, cap);
+        var yawScale = Mathf.Abs(requestedYaw) > 0.0001f
+            ? Mathf.Abs(limitedYaw / requestedYaw)
+            : 1f;
+        var limitedRotationYaw = command.RotationYawDeltaDeg * yawScale;
+        var limitedCurvatureYaw = curvatureYaw * yawScale;
         // 虚拟平移只开放给 ContinuousRedirector；Reset 与 Rotation Gain 仍只拥有 yaw。
         var limitedTranslation = command.Source == RdwGainOwner.ContinuousRedirector
             ? command.TranslationDeltaXZ
             : Vector2.zero;
         return new RdwGainCommand(
-            limitedYaw,
-            0f,
+            limitedRotationYaw,
+            limitedCurvatureYaw,
             limitedTranslation,
             command.Source,
             command.Reason,

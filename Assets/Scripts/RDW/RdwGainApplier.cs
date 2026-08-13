@@ -27,6 +27,10 @@ public readonly struct RdwGainApplyResult
     public RdwGainCommand Command { get; }
     /// <summary>最终注入到 Root 的 yaw，单位：度。</summary>
     public float AppliedYawDeltaDeg { get; }
+    /// <summary>最终注入的 rotation yaw 分量，单位：度。</summary>
+    public float AppliedRotationYawDeltaDeg { get; }
+    /// <summary>最终注入的 curvature yaw 分量，单位：度。</summary>
+    public float AppliedCurvatureYawDeltaDeg { get; }
     /// <summary>最终注入的 Virtual XZ 平移，单位：米。</summary>
     public Vector2 AppliedTranslationDeltaXZ { get; }
     /// <summary>命令是否正常关闭该 sequence。</summary>
@@ -34,10 +38,23 @@ public readonly struct RdwGainApplyResult
 
     /// <summary>创建不可变 Gain 应用结果。</summary>
     public RdwGainApplyResult(RdwGainApplyStatus status, in RdwGainCommand command, float appliedYawDeltaDeg, Vector2 appliedTranslationDeltaXZ)
+        : this(status, command, appliedYawDeltaDeg, 0f, appliedTranslationDeltaXZ)
+    {
+    }
+
+    /// <summary>创建包含独立 rotation 与 curvature 分量的应用结果。</summary>
+    public RdwGainApplyResult(
+        RdwGainApplyStatus status,
+        in RdwGainCommand command,
+        float appliedRotationYawDeltaDeg,
+        float appliedCurvatureYawDeltaDeg,
+        Vector2 appliedTranslationDeltaXZ)
     {
         Status = status;
         Command = command;
-        AppliedYawDeltaDeg = appliedYawDeltaDeg;
+        AppliedRotationYawDeltaDeg = appliedRotationYawDeltaDeg;
+        AppliedCurvatureYawDeltaDeg = appliedCurvatureYawDeltaDeg;
+        AppliedYawDeltaDeg = appliedRotationYawDeltaDeg + appliedCurvatureYawDeltaDeg;
         AppliedTranslationDeltaXZ = appliedTranslationDeltaXZ;
     }
 }
@@ -135,16 +152,27 @@ public sealed class RdwGainApplier
             virtualRotationRoot.position += new Vector3(translation.x, 0f, translation.y);
         }
 
-        return SetResult(RdwGainApplyStatus.Applied, command, yaw, translation);
+        return SetResult(
+            RdwGainApplyStatus.Applied,
+            command,
+            command.RotationYawDeltaDeg,
+            command.CurvatureYawDeltaDeg,
+            translation);
     }
 
     private RdwGainApplyResult SetResult(
         RdwGainApplyStatus status,
         in RdwGainCommand command,
-        float appliedYaw,
+        float appliedRotationYaw,
+        float appliedCurvatureYaw = 0f,
         Vector2 appliedTranslation = default)
     {
-        LastResult = new RdwGainApplyResult(status, command, appliedYaw, appliedTranslation);
+        LastResult = new RdwGainApplyResult(
+            status,
+            command,
+            appliedRotationYaw,
+            appliedCurvatureYaw,
+            appliedTranslation);
         return LastResult;
     }
 

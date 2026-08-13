@@ -85,6 +85,13 @@ public interface IRdwRedirector
         in RdwNavigationIntent intent);
 }
 
+/// <summary>允许 Redirector 在仲裁前声明当前是否有连续能力可用。</summary>
+public interface IRdwRedirectorAvailability
+{
+    /// <summary>当前是否应参与 Continuous owner 仲裁。</summary>
+    bool IsAvailable { get; }
+}
+
 /// <summary>接收逻辑 Gain 来源提交的命令，并统一完成限幅与 Root 应用。</summary>
 public interface IRdwGainCommandSink
 {
@@ -93,8 +100,11 @@ public interface IRdwGainCommandSink
 }
 
 /// <summary>Step 2A 的零行为 Redirector，确保 Step 1 行为不变。</summary>
-public sealed class NullRedirector : IRdwRedirector
+public sealed class NullRedirector : IRdwRedirector, IRdwRedirectorAvailability
 {
+    /// <summary>None 对照模式不参与 Continuous owner 仲裁。</summary>
+    public bool IsAvailable => false;
+
     /// <summary>返回同一 pose sequence 的零命令，不改变 Step 1 行为。</summary>
     public RdwGainCommand Evaluate(
         in RdwPoseFrame pose,

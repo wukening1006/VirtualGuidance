@@ -91,7 +91,7 @@ public sealed class RdwInfrastructureEditModeTests
         AssertZero(ownerVeto, "owner_mismatch");
     }
 
-    /// <summary>验证非有限命令被拒绝，Step 2A translation 始终为零。</summary>
+    /// <summary>验证非有限命令被拒绝，translation 只对 Continuous owner 开放。</summary>
     [Test]
     public void GainLimiter_RejectsNonFiniteAndDisablesTranslation()
     {
@@ -102,7 +102,11 @@ public sealed class RdwInfrastructureEditModeTests
         var translation = Command(0f, 0f, new Vector2(1f, 2f), RdwGainOwner.ContinuousRedirector, 2);
 
         AssertZero(limiter.Limit(invalid, context), "invalid_command");
-        Assert.That(limiter.Limit(translation, context).TranslationDeltaXZ, Is.EqualTo(Vector2.zero));
+        Assert.That(limiter.Limit(translation, context).TranslationDeltaXZ, Is.EqualTo(new Vector2(1f, 2f)));
+        var guidanceContext = Context(
+            RdwGainOwner.GuidanceTurnGain, true, true, true, false, true, 0.02f);
+        var guidanceTranslation = Command(0f, 0f, new Vector2(1f, 2f), RdwGainOwner.GuidanceTurnGain, 3);
+        Assert.That(limiter.Limit(guidanceTranslation, guidanceContext).TranslationDeltaXZ, Is.EqualTo(Vector2.zero));
     }
 
     /// <summary>验证每帧、每秒上限以及静止时 curvature 为零。</summary>
@@ -116,8 +120,12 @@ public sealed class RdwInfrastructureEditModeTests
             RdwGainOwner.ContinuousRedirector, true, true, true, false, false, 0.1f);
         var command = Command(0f, 5f, Vector2.zero, RdwGainOwner.ContinuousRedirector, 1);
 
-        Assert.That(limiter.Limit(command, moving).RotationYawDeltaDeg, Is.EqualTo(2f).Within(Epsilon));
-        Assert.That(limiter.Limit(command, stationary).RotationYawDeltaDeg, Is.Zero.Within(Epsilon));
+        var movingResult = limiter.Limit(command, moving);
+        var stationaryResult = limiter.Limit(command, stationary);
+        Assert.That(movingResult.RotationYawDeltaDeg, Is.Zero.Within(Epsilon));
+        Assert.That(movingResult.CurvatureYawDeltaDeg, Is.EqualTo(2f).Within(Epsilon));
+        Assert.That(stationaryResult.RotationYawDeltaDeg, Is.Zero.Within(Epsilon));
+        Assert.That(stationaryResult.CurvatureYawDeltaDeg, Is.Zero.Within(Epsilon));
         Assert.That(limiter.IsMoving(new Vector2(0.009f, 0f)), Is.False);
         Assert.That(limiter.IsMoving(new Vector2(0.01f, 0f)), Is.True);
     }

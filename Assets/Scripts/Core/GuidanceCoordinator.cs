@@ -499,7 +499,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
-    /// 对后端响应执行本地时效与安全校验，通过后更新导览表现、到达目标和旋转增益。
+    /// 对后端响应执行本地时效与安全校验，通过后更新导览表现、到达目标和连续导航意图。
     /// </summary>
     /// <param name="response">后端返回的 guidance；null 会被本地校验拒绝。</param>
     public void HandleGuidanceResponse(GuidanceResponse response)
@@ -666,10 +666,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         else
         {
             turnCueCompletionTracker.Cancel();
-            rotationGainController?.QueueFromMovementInstruction(
-                response.movement_instruction,
-                activeSnapshot != null ? activeSnapshot.decisionId : string.Empty,
-                Mathf.Abs(selectedAssessment.SuggestedAction.TargetYawDegrees));
         }
     }
 

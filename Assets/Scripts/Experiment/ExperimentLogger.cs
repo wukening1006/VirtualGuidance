@@ -804,17 +804,36 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["virtual_forward_z"] = rdwFrameInfo.Pose.VirtualForwardXZ.y;
                 data["virtual_yaw_deg"] = rdwFrameInfo.Pose.VirtualYaw;
                 data["rdw_active_owner"] = rdwFrameInfo.ActiveOwner.ToString();
+                data["redirector_type"] = rdwFrameInfo.RedirectorDiagnostics.RedirectorType;
+                data["steering_center_x"] = rdwFrameInfo.RedirectorDiagnostics.SteeringCenterXZ.x;
+                data["steering_center_z"] = rdwFrameInfo.RedirectorDiagnostics.SteeringCenterXZ.y;
+                data["center_direction_x"] = rdwFrameInfo.RedirectorDiagnostics.CenterDirectionXZ.x;
+                data["center_direction_z"] = rdwFrameInfo.RedirectorDiagnostics.CenterDirectionXZ.y;
+                data["steering_angle_deg"] = rdwFrameInfo.RedirectorDiagnostics.SteeringAngleDegrees;
+                data["steering_side"] = rdwFrameInfo.RedirectorDiagnostics.SteeringSide;
+                data["raw_rotation_proposal_deg"] = rdwFrameInfo.RedirectorDiagnostics.RawRotationProposalDegrees;
+                data["raw_curvature_proposal_deg"] = rdwFrameInfo.RedirectorDiagnostics.RawCurvatureProposalDegrees;
+                data["smoothed_rotation_deg"] = rdwFrameInfo.RedirectorDiagnostics.SmoothedRotationDegrees;
+                data["smoothed_curvature_deg"] = rdwFrameInfo.RedirectorDiagnostics.SmoothedCurvatureDegrees;
+                data["redirector_reason"] = rdwFrameInfo.RedirectorDiagnostics.Reason;
+                data["navigation_target_id"] = rdwFrameInfo.NavigationIntent.TargetId;
+                data["navigation_target_role"] = rdwFrameInfo.NavigationIntent.TargetRole.ToString();
                 data["requested_rotation_delta_deg"] = rdwFrameInfo.RequestedCommand.RotationYawDeltaDeg;
                 data["requested_curvature_delta_deg"] = rdwFrameInfo.RequestedCommand.CurvatureYawDeltaDeg;
+                data["requested_total_yaw_delta_deg"] = rdwFrameInfo.RequestedCommand.RotationYawDeltaDeg + rdwFrameInfo.RequestedCommand.CurvatureYawDeltaDeg;
                 data["requested_translation_x"] = rdwFrameInfo.RequestedCommand.TranslationDeltaXZ.x;
                 data["requested_translation_z"] = rdwFrameInfo.RequestedCommand.TranslationDeltaXZ.y;
                 data["limited_rotation_delta_deg"] = rdwFrameInfo.LimitedCommand.RotationYawDeltaDeg;
                 data["limited_curvature_delta_deg"] = rdwFrameInfo.LimitedCommand.CurvatureYawDeltaDeg;
+                data["limited_total_yaw_delta_deg"] = rdwFrameInfo.LimitedCommand.RotationYawDeltaDeg + rdwFrameInfo.LimitedCommand.CurvatureYawDeltaDeg;
                 data["limited_translation_x"] = rdwFrameInfo.LimitedCommand.TranslationDeltaXZ.x;
                 data["limited_translation_z"] = rdwFrameInfo.LimitedCommand.TranslationDeltaXZ.y;
-                data["applied_rotation_delta_deg"] = rdwFrameInfo.ApplyResult.AppliedYawDeltaDeg;
+                data["applied_rotation_delta_deg"] = rdwFrameInfo.ApplyResult.AppliedRotationYawDeltaDeg;
+                data["applied_curvature_delta_deg"] = rdwFrameInfo.ApplyResult.AppliedCurvatureYawDeltaDeg;
+                data["applied_total_yaw_delta_deg"] = rdwFrameInfo.ApplyResult.AppliedYawDeltaDeg;
                 data["rdw_apply_status"] = rdwFrameInfo.ApplyResult.Status.ToString();
                 data["rdw_reason"] = rdwFrameInfo.LimitedCommand.Reason;
+                data["rdw_veto_reason"] = IsRdwVetoReason(rdwFrameInfo.LimitedCommand.Reason) ? rdwFrameInfo.LimitedCommand.Reason : string.Empty;
                 data["rdw_tracking_valid"] = rdwFrameInfo.Pose.IsValid;
                 data["rdw_calibration_id"] = rdwFrameInfo.Pose.CalibrationId;
                 data["rdw_physical_space_id"] = rdwFrameInfo.Pose.PhysicalSpaceId;
@@ -875,6 +894,13 @@ public sealed class ExperimentLogger : MonoBehaviour
         {
             ReportStorageError("event_serialize", exception);
         }
+    }
+
+    private static bool IsRdwVetoReason(string reason)
+    {
+        return string.Equals(reason, "safety_veto", StringComparison.Ordinal) ||
+               string.Equals(reason, "owner_mismatch", StringComparison.Ordinal) ||
+               string.Equals(reason, "invalid_command", StringComparison.Ordinal);
     }
 
     private bool ShouldEmitUnityConsole(string eventType, PhysicalRiskState riskState)

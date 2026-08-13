@@ -847,6 +847,10 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(calibration.CalibrateCurrentPose(), Is.True);
             var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
             riskEvaluator.Configure(space, pose, calibration);
+            Assert.That(pose.ConfigureVirtualRotationRoot(root.transform), Is.True);
+            var gain = root.AddComponent<RotationGainController>();
+            gain.Configure(pose, null, riskEvaluator, calibration);
+            gain.SetGainEnabled(true);
 
             root.SetActive(true);
             var targets = root.AddComponent<NavigationTargetManager>();
@@ -877,7 +881,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskEvaluator,
                 validator,
                 null,
-                null,
+                gain,
                 null);
             var requests = new RecordingGuidanceRequestClient();
             coordinator.ConfigureRequestClient(requests);
@@ -902,6 +906,8 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
             coordinator.HandleGuidanceResponse(ResponseForRequest(request, "E3"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
+            Assert.That(gain.IsActive, Is.False,
+                "普通 left/right Guidance 不得启动 Semantic Rotation Gain。");
             var selectedDirection = CandidateDirectionForRequest(request, "E3");
 
             var unsafeForward = new PhysicalRiskState(
@@ -931,6 +937,8 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
 
             Assert.That(softRerouteCount, Is.EqualTo(1));
+            Assert.That(gain.IsActive, Is.False,
+                "Semantic Reroute 只能更新目标和意图，不得启动 Rotation Gain。");
             Assert.That(softRerouteReportedSafeCandidate, Is.True);
             Assert.That(replanCount, Is.EqualTo(1));
             Assert.That(requests.Contexts.Count, Is.EqualTo(2));

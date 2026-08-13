@@ -34,6 +34,33 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Header("RDW 与安全")]
     [SerializeField] private PauseResetController pauseResetController;
     [SerializeField] private RotationGainController rotationGainController;
+    [Header("Continuous RDW")]
+    [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
+    [SerializeField] private bool continuousRdwEnabled = true;
+    [Tooltip("Continuous Redirector 模式；None 为零行为，S2C 为中心导向。")]
+    [SerializeField] private ContinuousRedirectorMode continuousRedirectorMode = ContinuousRedirectorMode.S2C;
+    [Tooltip("触发曲率增益的最小物理移动速度，单位：米/秒。")]
+    [SerializeField] private float s2cMovementThresholdMetersPerSecond = 0.2f;
+    [Tooltip("触发旋转增益的最小物理转速，单位：度/秒。")]
+    [SerializeField] private float s2cRotationThresholdDegreesPerSecond = 1.5f;
+    [Tooltip("S2C 曲率半径，单位：米。")]
+    [SerializeField] private float s2cCurvatureRadiusMeters = 10f;
+    [Tooltip("S2C 最大曲率转速，单位：度/秒。")]
+    [SerializeField] private float s2cMaxCurvatureDegreesPerSecond = 15f;
+    [Tooltip("S2C 最大旋转增益转速，单位：度/秒。")]
+    [SerializeField] private float s2cMaxRotationDegreesPerSecond = 30f;
+    [Tooltip("物理转动映射为额外虚拟 yaw 的比例。")]
+    [SerializeField] private float s2cRotationGainMultiplier = 0.05f;
+    [Tooltip("steering angle 对增益的衰减权重，范围 0-1。")]
+    [Range(0f, 1f)] [SerializeField] private float s2cSteeringDampening = 0.75f;
+    [Tooltip("S2C 跨帧平滑系数，范围 0-1。")]
+    [Range(0f, 1f)] [SerializeField] private float s2cSmoothingFactor = 0.125f;
+    [Tooltip("距 Steering Center 小于该值时停止导向，单位：米。")]
+    [SerializeField] private float s2cCenterToleranceMeters = 0.15f;
+    [Tooltip("进入 near-180 临时目标处理的角度阈值，单位：度。")]
+    [Range(90f, 179f)] [SerializeField] private float s2cNearOppositeAngleDegrees = 160f;
+    [Tooltip("near-180 时临时 steering bearing，单位：度。")]
+    [Range(1f, 90f)] [SerializeField] private float s2cOppositeTemporaryBearingDegrees = 90f;
 
     [Header("实验与表现")]
     [SerializeField] private GuidanceExecutor guidanceExecutor;
@@ -229,7 +256,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
             guidanceCoordinator,
             navigationTargetManager,
             rdwGainApplier,
-            new ControllerSimulationLocomotionRedirector(xrTrackingAdapter));
+            CreateContinuousRedirector(),
+            dashboard: experimentDashboard,
+            continuousEnabled: continuousRdwEnabled);
         motionDetector.SetExternallyDriven(true);
         rotationGainController.ConfigureRdwCommandSink(rdwFrameCoordinator);
         BindRdwPipeline();
@@ -249,6 +278,26 @@ public sealed class SystemBootstrapper : MonoBehaviour
             participantUiController,
             researcherStatusText,
             physicalSpaceCalibration);
+    }
+
+    private IRdwRedirector CreateContinuousRedirector()
+    {
+        return new CompositeContinuousRedirector(
+            new ControllerSimulationLocomotionRedirector(xrTrackingAdapter),
+            continuousRedirectorMode == ContinuousRedirectorMode.S2C
+                ? new SteerToCenterRedirector(
+                    s2cMovementThresholdMetersPerSecond,
+                    s2cRotationThresholdDegreesPerSecond,
+                    s2cCurvatureRadiusMeters,
+                    s2cMaxCurvatureDegreesPerSecond,
+                    s2cMaxRotationDegreesPerSecond,
+                    s2cRotationGainMultiplier,
+                    s2cSteeringDampening,
+                    s2cSmoothingFactor,
+                    s2cCenterToleranceMeters,
+                    s2cNearOppositeAngleDegrees,
+                    s2cOppositeTemporaryBearingDegrees)
+                : (IRdwRedirector)new NullRedirector());
     }
 
     private void WireEvents()

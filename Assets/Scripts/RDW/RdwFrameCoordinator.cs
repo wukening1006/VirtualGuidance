@@ -20,6 +20,8 @@ public sealed class RdwFrameEventInfo
     public RdwGeometrySnapshot Geometry { get; }
     /// <summary>当前帧结束后的 Mapping Reset 累计进度。</summary>
     public RdwResetProgress ResetProgress { get; }
+    /// <summary>连续 Redirector 的 steering 诊断；无诊断来源时返回空值。</summary>
+    public RdwRedirectorDiagnostics RedirectorDiagnostics { get; }
 
     /// <summary>创建不可变 RDW 帧事件。</summary>
     public RdwFrameEventInfo(
@@ -30,7 +32,8 @@ public sealed class RdwFrameEventInfo
         in RdwGainApplyResult applyResult,
         in RdwNavigationIntent navigationIntent,
         in RdwGeometrySnapshot geometry,
-        in RdwResetProgress resetProgress = default)
+        in RdwResetProgress resetProgress = default,
+        in RdwRedirectorDiagnostics redirectorDiagnostics = default)
     {
         Pose = pose;
         ActiveOwner = activeOwner;
@@ -40,6 +43,7 @@ public sealed class RdwFrameEventInfo
         NavigationIntent = navigationIntent;
         Geometry = geometry;
         ResetProgress = resetProgress;
+        RedirectorDiagnostics = redirectorDiagnostics;
     }
 }
 
@@ -59,6 +63,8 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     private readonly RdwOwnerArbiter ownerArbiter;
     private readonly RdwGainLimiter gainLimiter;
     private readonly RdwGainApplier gainApplier;
+    private readonly ExperimentDashboard sessionDashboard;
+    private readonly bool continuousRdwEnabled;
     private readonly float poseJumpDistanceMeters;
     private readonly float poseJumpYawDegrees;
 
@@ -81,6 +87,8 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     public RdwFrameEventInfo LastFrame { get; private set; }
     /// <summary>当前单调 pose sequence。</summary>
     public long CurrentSequence => sequence;
+    /// <summary>当前帧使用的 Continuous Redirector。</summary>
+    public IRdwRedirector Redirector => redirector;
 
     /// <summary>创建 Step 2A 的帧协调器；Redirector 缺省为 NullRedirector。</summary>
     public RdwFrameCoordinator(
@@ -98,7 +106,9 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         RdwOwnerArbiter arbiter = null,
         RdwGainLimiter limiter = null,
         float maxPoseJumpMeters = 1f,
-        float maxPoseJumpYaw = 60f)
+        float maxPoseJumpYaw = 60f,
+        ExperimentDashboard dashboard = null,
+        bool continuousEnabled = true)
     {
         userPoseTracker = poseTracker;
         calibration = physicalCalibration;
@@ -110,6 +120,8 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         guidanceCoordinator = coordinator;
         navigationTargetManager = targetManager;
         gainApplier = applier;
+        sessionDashboard = dashboard;
+        continuousRdwEnabled = continuousEnabled;
         redirector = continuousRedirector ?? new NullRedirector();
         ownerArbiter = arbiter ?? new RdwOwnerArbiter();
         gainLimiter = limiter ?? new RdwGainLimiter();
@@ -135,12 +147,29 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         var resetActive = pauseResetController != null && pauseResetController.IsActive ||
                           guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive;
         var guidanceTurnActive = rotationGainController != null && rotationGainController.IsActive;
-        var owner = ownerArbiter.Resolve(hardStop, resetActive, guidanceTurnActive, true);
+        var continuousAvailable = RdwContinuousAvailability.IsAvailable(
+            continuousRdwEnabled,
+            IsRedirectorAvailable(),
+            sessionDashboard != null && sessionDashboard.RunState == ExperimentRunState.Running,
+            guidanceCoordinator != null &&
+            guidanceCoordinator.RuntimeState != null &&
+            guidanceCoordinator.RuntimeState.IsNavigating,
+            frame.IsValid,
+            riskEvaluator != null && riskEvaluator.IsTrackingValid,
+            calibration != null && calibration.IsCalibrationValid &&
+            riskEvaluator != null && riskEvaluator.IsCalibrationValid,
+            geometry.IsValid && riskEvaluator != null && riskEvaluator.PhysicalSpaceMatches,
+            intent.IsValid);
+        var owner = ownerArbiter.Resolve(hardStop, resetActive, guidanceTurnActive, continuousAvailable);
         var requested = RdwGainCommand.Zero(frame.Sequence, OwnerReason(owner));
         var limited = requested;
         var applied = default(RdwGainApplyResult);
 
         BeginFrameProcessing(frame, owner, hardStop);
+        if (owner != RdwGainOwner.ContinuousRedirector)
+        {
+            ResetRedirectorSmoothing();
+        }
 
         if (owner == RdwGainOwner.Resetter && pauseResetController != null)
         {
@@ -174,7 +203,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             ? pauseResetController.MappingProgress
             : default;
         LastFrame = new RdwFrameEventInfo(
-            frame, owner, requested, limited, applied, intent, geometry, resetProgress);
+            frame, owner, requested, limited, applied, intent, geometry, resetProgress, CaptureRedirectorDiagnostics());
         FrameProcessed?.Invoke(LastFrame);
         return LastFrame;
     }
@@ -221,6 +250,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         previousTimestamp = 0d;
         motionDetector?.ResetSamplingState();
         pauseResetController?.InvalidateMappingChain(reason);
+        ResetRedirectorSmoothing();
     }
 
     private void BeginFrameProcessing(in RdwPoseFrame pose, RdwGainOwner owner, bool hardStop)
@@ -340,8 +370,28 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             case RdwGainOwner.HardStop: return "hard_stop";
             case RdwGainOwner.Resetter: return "resetter_reserved";
             case RdwGainOwner.GuidanceTurnGain: return "guidance_turn_gain";
-            case RdwGainOwner.ContinuousRedirector: return "null_redirector";
+            case RdwGainOwner.ContinuousRedirector: return "continuous_redirector";
             default: return "none";
         }
+    }
+
+    private void ResetRedirectorSmoothing()
+    {
+        if (redirector is IRdwRedirectorLifecycle lifecycle)
+        {
+            lifecycle.ResetSmoothing();
+        }
+    }
+
+    private bool IsRedirectorAvailable()
+    {
+        return !(redirector is IRdwRedirectorAvailability availability) || availability.IsAvailable;
+    }
+
+    private RdwRedirectorDiagnostics CaptureRedirectorDiagnostics()
+    {
+        return redirector is IRdwRedirectorDiagnosticsSource diagnostics
+            ? diagnostics.LastDiagnostics
+            : RdwRedirectorDiagnostics.Empty;
     }
 }
