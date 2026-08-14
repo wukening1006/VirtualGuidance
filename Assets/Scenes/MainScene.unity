@@ -14451,8 +14451,8 @@ MonoBehaviour:
 
     Risk: placeholder
 
-    Current Heading Risk:
-    placeholder'
+    Current Heading
+    Risk: placeholder'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
   m_sharedMaterial: {fileID: 2180264, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
@@ -29255,6 +29255,7 @@ GameObject:
   - component: {fileID: 1462606605}
   - component: {fileID: 1462606604}
   - component: {fileID: 1462606603}
+  - component: {fileID: 1462606606}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -29446,6 +29447,21 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
+--- !u!114 &1462606606
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1462606601}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 270d3185d159bf54fb4cddbb42235437, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _outlineResources: {fileID: 11400000, guid: d28e70f030b1a634db9a6a6d5478ef19, type: 2}
+  _outlineLayers: {fileID: 0}
+  _cameraEvent: 15
 --- !u!1 &1472937072
 GameObject:
   m_ObjectHideFlags: 0
@@ -31548,7 +31564,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 9821a531577a452f83da9df73e47015e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  outlineEffect: {fileID: 1462606606}
   highlightColor: {r: 1, g: 0.86, b: 0.25, a: 1}
+  outlineWidth: 4
+  outlineIntensity: 1.5
   collectOnAwake: 1
 --- !u!114 &1780042338
 MonoBehaviour:
