@@ -13,6 +13,7 @@
     "com.unity.xr.management": "4.6.0",
     "com.unity.xr.openxr": "1.14.3",
     "com.unity.xr.picoxr": "file:D:/SoftwareFiles/Unity/PICO Unity Integration SDK-3.4.0-20260226",
+    "com.unityfx.outline": "file:D:/SoftwareFiles/Unity/UnityFx.Outline-develop/Outline.Core/Packages/UnityFx.Outline",
     "com.unity.modules.ai": "1.0.0",
     "com.unity.modules.androidjni": "1.0.0",
     "com.unity.modules.animation": "1.0.0",

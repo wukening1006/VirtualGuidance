@@ -1257,6 +1257,27 @@ public sealed class ExperimentLogger : MonoBehaviour
         return result;
     }
 
+    private static JArray SerializeHeadingEvaluationDiagnostics(
+        IReadOnlyList<RecoveryHeadingEvaluation> evaluations)
+    {
+        var result = new JArray();
+        if (evaluations == null) return result;
+        foreach (var evaluation in evaluations)
+        {
+            result.Add(new JObject
+            {
+                ["relative_yaw_deg"] = evaluation.RelativeYawDegrees,
+                ["evaluation_succeeded"] = evaluation.Succeeded,
+                ["clearance_m"] = evaluation.Succeeded ? evaluation.Sample.ClearanceMeters : 0f,
+                ["safety"] = evaluation.Succeeded
+                    ? evaluation.Sample.Safety.ToString().ToLowerInvariant()
+                    : string.Empty,
+                ["failure_reason"] = evaluation.FailureReason
+            });
+        }
+        return result;
+    }
+
     private static JArray SerializeCandidateAssessments(IReadOnlyList<CandidateAssessment> assessments)
     {
         var result = new JArray();
@@ -1323,6 +1344,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             ["minimum_resolution_deg"] = settings.minimumResolutionDegrees,
             ["refinement_factor"] = settings.refinementFactor,
             ["maximum_evaluations"] = settings.maximumEvaluations,
+            ["clearance_normalization_m"] = settings.clearanceNormalizationMeters,
             ["clearance_weight"] = settings.clearanceWeight,
             ["future_distance_weight"] = settings.futureDistanceWeight,
             ["turn_cost_weight"] = settings.turnCostWeight,
@@ -1333,6 +1355,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             ["attempted_evaluation_count"] = result.AttemptedEvaluationCount,
             ["successful_evaluation_count"] = result.SuccessfulEvaluationCount,
             ["evaluated_heading_count"] = result.Evaluations.Count,
+            ["evaluation_diagnostics"] = SerializeHeadingEvaluationDiagnostics(
+                result.EvaluationDiagnostics),
             ["budget_exhausted"] = result.BudgetExhausted,
             ["evaluations"] = SerializeHeadingEvaluations(result.Evaluations),
             ["best_heading"] = SerializeRecoveryPlan(result.Plan),

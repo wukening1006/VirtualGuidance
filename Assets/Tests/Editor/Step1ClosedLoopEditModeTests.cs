@@ -158,7 +158,7 @@ public sealed class Step1ClosedLoopEditModeTests
             var safeRecoveryRisk = harness.Risk.EvaluateNow();
             Assert.That(new RecoveryHeadingPlanner().Search(safeRecoveryRisk, harness.Risk).Plan.IsSuccess, Is.True);
             Assert.That(harness.Coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
-            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
 
             // Reset 转向期间继续推进生产的 0.2 秒风险刷新，冻结航向不得被 Safe/Unknown 抖动打断。
             var turningRiskEventCount = harness.RiskEventCount;

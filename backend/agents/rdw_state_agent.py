@@ -69,56 +69,27 @@ class RDWStateAgent:
 
         space = self.spaces[physical_space_id]
         forward = normalize(forward)
-        # left/right 基于用户当前朝向在物理 XZ 平面推导，三条 clearance 探测线共用同一原点。
-        left = (-forward[1], forward[0])
-        right = (forward[1], -forward[0])
-
         if not is_point_inside_polygon(position, space.boundary):
             # 用户已经在 tracking polygon 外时，局部导览不再可靠，因此强制进入 reset 路径。
             return PhysicalRiskState(
                 physical_space=space.id,
                 user_physical_position=position,
                 user_physical_forward=forward,
-                clearance_forward=0.0,
-                clearance_left=0.0,
-                clearance_right=0.0,
                 boundary_risk="critical",
                 reset_risk="critical",
-                unsafe_directions=["forward", "left", "right"],
-                safe_directions=[],
                 reset_required=True,
             )
 
-        clearances = {
-            "forward": self._compute_clearance(space, position, forward),
-            "left": self._compute_clearance(space, position, left),
-            "right": self._compute_clearance(space, position, right),
-        }
-        unsafe_directions = [
-            direction
-            for direction, clearance in clearances.items()
-            if clearance < self.unsafe_clearance_meters
-        ]
-        safe_directions = [
-            direction
-            for direction, clearance in clearances.items()
-            if clearance >= self.safe_clearance_meters
-        ]
-        min_clearance = min(clearances.values())
-        boundary_risk = self._clearance_to_risk(min_clearance)
-        reset_required = len(unsafe_directions) == 3
+        current_clearance = self._compute_clearance(space, position, forward)
+        boundary_risk = self._clearance_to_risk(current_clearance)
+        reset_required = current_clearance < self.critical_clearance_meters
 
         return PhysicalRiskState(
             physical_space=space.id,
             user_physical_position=position,
             user_physical_forward=forward,
-            clearance_forward=round(clearances["forward"], 4),
-            clearance_left=round(clearances["left"], 4),
-            clearance_right=round(clearances["right"], 4),
             boundary_risk=boundary_risk,
             reset_risk="critical" if reset_required else boundary_risk,
-            unsafe_directions=unsafe_directions,
-            safe_directions=safe_directions,
             reset_required=reset_required,
         )
 

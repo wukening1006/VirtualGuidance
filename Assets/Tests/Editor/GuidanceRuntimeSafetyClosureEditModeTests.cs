@@ -9,15 +9,13 @@ using UnityEngine;
 /// </summary>
 public sealed class GuidanceRuntimeSafetyClosureEditModeTests
 {
-    /// <summary>验证最新风险将目标方向标记为 Unsafe 时，提交前闸门拒绝该动作。</summary>
+    /// <summary>验证风险快照身份失效时，提交前精确朝向查询会 fail-closed。</summary>
     [Test]
-    public void PhysicalActionGate_RejectsLatestUnsafeTargetDirection()
+    public void PhysicalActionGate_RejectsStaleRiskIdentity()
     {
         using (var harness = new CoordinatorHarness())
         {
-            var risk = harness.CopyRisk(
-                new[] { "forward", "left" },
-                new[] { "right" });
+            var risk = harness.CopyRisk();
             var response = new GuidanceResponse
             {
                 selected_target = "E4",
@@ -27,20 +25,18 @@ public sealed class GuidanceRuntimeSafetyClosureEditModeTests
             var result = InvokePhysicalActionGate(harness.Coordinator, response, risk, out var reason);
 
             Assert.That(result, Is.False);
-            Assert.That(reason, Does.Contain("Unsafe"));
+            Assert.That(reason, Does.Contain("could not query"));
             Assert.That(harness.Task.RuntimeState.CurrentGuidanceTarget, Is.Null);
         }
     }
 
-    /// <summary>验证动作方向与目标物理方向冲突时，提交前闸门拒绝该动作。</summary>
+    /// <summary>验证提交前闸门使用目标的真实连续偏航，而不是动作标签或离散方向集合。</summary>
     [Test]
-    public void PhysicalActionGate_RejectsMovementTargetDirectionMismatch()
+    public void PhysicalActionGate_UsesExactTargetHeading()
     {
         using (var harness = new CoordinatorHarness())
         {
-            var risk = harness.CopyRisk(
-                new[] { "forward", "left", "right" },
-                Array.Empty<string>());
+            var risk = harness.Risk.CurrentRiskState;
             var response = new GuidanceResponse
             {
                 selected_target = "E4",
@@ -49,9 +45,8 @@ public sealed class GuidanceRuntimeSafetyClosureEditModeTests
 
             var result = InvokePhysicalActionGate(harness.Coordinator, response, risk, out var reason);
 
-            Assert.That(result, Is.False);
-            Assert.That(reason, Does.Contain("turn_left_slowly"));
-            Assert.That(reason, Does.Contain("right"));
+            Assert.That(result, Is.True, reason);
+            Assert.That(reason, Is.Empty);
         }
     }
 
@@ -98,7 +93,7 @@ public sealed class GuidanceRuntimeSafetyClosureEditModeTests
             Assert.That(decisions, Has.Some.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
             Assert.That(decisions, Has.None.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
             Assert.That(harness.Task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
-            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
         }
     }
 
@@ -234,7 +229,7 @@ public sealed class GuidanceRuntimeSafetyClosureEditModeTests
                 null);
         }
 
-        public PhysicalRiskState CopyRisk(string[] safeDirections, string[] unsafeDirections)
+        public PhysicalRiskState CopyRisk()
         {
             var source = Risk.CurrentRiskState;
             return new PhysicalRiskState(
@@ -249,13 +244,11 @@ public sealed class GuidanceRuntimeSafetyClosureEditModeTests
                 physicalForward: source.user_physical_forward,
                 boundaryContext: source.boundary_context,
                 obstacleContext: source.obstacle_context,
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                boundaryRisk: "low",
-                resetRisk: "none",
-                unsafeDirections: unsafeDirections,
-                safeDirections: safeDirections);
+                boundaryRisk: source.boundary_risk,
+                resetRisk: source.reset_risk,
+                isCritical: source.critical,
+                resetRequired: source.reset_required,
+                currentHeading: source.current_heading);
         }
 
         public RuntimeGuidanceSafetyInput CreateUnavailableDirectionInput(

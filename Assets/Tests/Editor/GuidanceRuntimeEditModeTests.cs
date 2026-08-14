@@ -194,7 +194,6 @@ public sealed class GuidanceRuntimeEditModeTests
                 physicalSpace: space.CurrentSpaceId,
                 boundaryRisk: "critical",
                 resetRisk: "critical",
-                safeDirections: new string[0],
                 resetRequired: true));
 
             Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
@@ -206,7 +205,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 physicalSpace: space.CurrentSpaceId,
                 boundaryRisk: "low",
                 resetRisk: "low",
-                safeDirections: new[] { "forward" }));
+                resetRequired: false));
 
             Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Completing));
             Assert.That(dashboard.CompletionSecondsRemaining, Is.EqualTo(6f));
@@ -424,7 +423,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
             Assert.That(gain.LastTerminationReason, Is.EqualTo("tracking_invalid"));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
             Assert.That(reset.IsActive, Is.True);
             Assert.That(reset.IsPaused, Is.True);
         }
@@ -547,8 +546,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var riskState = new PhysicalRiskState(
                 riskRevision: 2,
                 physicalSpace: "narrow_room",
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "left", "right" });
+                boundaryRisk: "high",
+                resetRisk: "high",
+                resetRequired: false);
             var request = new GuidanceRequest
             {
                 request_id = "request-validator",
@@ -571,8 +571,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var safeAtRequest = new PhysicalRiskState(
                 riskRevision: 1,
                 physicalSpace: "narrow_room",
-                unsafeDirections: new string[0],
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             var safeSnapshot = GuidanceRequestSnapshot.Capture(request, safeAtRequest, runtimeState);
             Assert.That(
                 validator.Validate(unsafeResponse, safeSnapshot, runtimeState, riskState, out var worsenedReason),
@@ -582,11 +583,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var safeLater = new PhysicalRiskState(
                 riskRevision: 3,
                 physicalSpace: "narrow_room",
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: System.Array.Empty<string>(),
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             Assert.That(
                 validator.Validate(unsafeResponse, safeSnapshot, runtimeState, safeLater, out var safeLaterReason),
                 Is.True,
@@ -614,12 +613,9 @@ public sealed class GuidanceRuntimeEditModeTests
     {
         var policy = new RuntimeGuidanceSafetyPolicy();
         var unsafeForward = new PhysicalRiskState(
-            unsafeDirections: new[] { "forward" },
-            safeDirections: new[] { "left" },
-            headingProfile: new[]
-            {
-                new HeadingSample(90f, Vector2.right, 2f, HeadingSafety.Safe)
-            });
+            boundaryRisk: "high",
+            resetRisk: "high",
+            resetRequired: false);
 
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unsafeForward, "forward", 0.6f, 1, true)),
@@ -632,21 +628,17 @@ public sealed class GuidanceRuntimeEditModeTests
             Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
 
         var relabeledRisk = new PhysicalRiskState(
-            unsafeDirections: new[] { "left", "right" },
-            safeDirections: new[] { "forward" },
-            headingProfile: unsafeForward.heading_profile);
+            boundaryRisk: "high",
+            resetRisk: "high",
+            resetRequired: false);
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(relabeledRisk, "forward", 0.6f, 2, true)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
 
         var unrelatedCritical = new PhysicalRiskState(
             boundaryRisk: "critical",
-            unsafeDirections: new[] { "left" },
-            safeDirections: new[] { "forward" },
-            headingProfile: new[]
-            {
-                new HeadingSample(0f, Vector2.up, 2f, HeadingSafety.Safe)
-            });
+            resetRisk: "critical",
+            resetRequired: false);
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 2f, 0, false)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.Continue));
@@ -655,13 +647,8 @@ public sealed class GuidanceRuntimeEditModeTests
             Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
         var resetRequired = new PhysicalRiskState(
             resetRisk: "critical",
-            unsafeDirections: new[] { "forward", "left", "right" },
             resetRequired: true,
-            headingProfile: new[]
-            {
-                new HeadingSample(0f, Vector2.up, 0.2f, HeadingSafety.Critical),
-                new HeadingSample(180f, Vector2.down, 0.2f, HeadingSafety.Critical)
-            });
+            boundaryRisk: "critical");
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(resetRequired, "forward", 0.6f, 0, false)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
@@ -672,7 +659,7 @@ public sealed class GuidanceRuntimeEditModeTests
                 0.6f,
                 0,
                 false,
-                resetState: ResetLifecycleState.TurningToSafeDirection)),
+                resetState: ResetLifecycleState.TurningToSafeHeading)),
             Is.EqualTo(RuntimeGuidanceSafetyDecision.Continue));
         Assert.That(
             policy.Evaluate(CreateRuntimeSafetyInput(unrelatedCritical, "forward", 2f, 0, false, false, false)),
@@ -702,11 +689,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var validator = root.AddComponent<LocalGuidanceValidator>();
             validator.Configure(targets, riskEvaluator);
             var risk = new PhysicalRiskState(
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: new string[0],
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
 
             Assert.That(
                 validator.Validate(
@@ -1003,20 +988,10 @@ public sealed class GuidanceRuntimeEditModeTests
                 physicalForward: currentRisk.user_physical_forward,
                 boundaryContext: currentRisk.boundary_context,
                 obstacleContext: currentRisk.obstacle_context,
-                clearanceForward: 0.6f,
-                clearanceLeft: 0.6f,
-                clearanceRight: 0.6f,
                 boundaryRisk: "unsafe",
                 resetRisk: "critical",
-                unsafeDirections: new[] { "forward", "left", "right" },
-                safeDirections: System.Array.Empty<string>(),
                 isCritical: true,
-                resetRequired: true,
-                headingProfile: new[]
-                {
-                    new HeadingSample(0f, Vector2.up, 0.2f, HeadingSafety.Critical),
-                    new HeadingSample(60f, new Vector2(0.866f, 0.5f), 1.4f, HeadingSafety.Safe)
-                });
+                resetRequired: true);
 
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", resetRequiredRisk);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", resetRequiredRisk);
@@ -1025,7 +1000,7 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(coordinator.AutomaticResetAttempts, Is.EqualTo(1));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Cancelled));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
-            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
 
             SetPrivateField(coordinator, "semanticTargetSelector", selector);
             pauseReset.ProcessPhysicalForward(pauseReset.SafePhysicalForward);
@@ -1633,7 +1608,6 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "HandleRiskStateChanged", new PhysicalRiskState(
                 boundaryRisk: "critical",
                 resetRisk: "critical",
-                unsafeDirections: new[] { "forward", "left", "right" },
                 resetRequired: true));
 
             Assert.That(pauseReset.IsPaused, Is.False);
@@ -1846,7 +1820,7 @@ public sealed class GuidanceRuntimeEditModeTests
     [Test]
     public void PauseResetController_ExecutesFrozenSafeHeadingAndCompletes()
     {
-        var root = new GameObject("TurnToSafeDirectionResetTest");
+        var root = new GameObject("TurnToSafeHeadingResetTest");
         try
         {
             var pose = root.AddComponent<UserPoseTracker>();
@@ -1863,19 +1837,19 @@ public sealed class GuidanceRuntimeEditModeTests
                 1.4f);
             Assert.That(pauseReset.PauseForReset("critical risk", plan), Is.True);
 
-            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
-            Assert.That(pauseReset.SafeDirection, Is.EqualTo("left"));
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
             Assert.That(pauseReset.SafePhysicalForward, Is.EqualTo(Vector2.left));
             Assert.That(started, Is.Not.Null);
             pauseReset.ProcessPhysicalForward(Vector2.up);
-            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
 
             pauseReset.ProcessPhysicalForward(Vector2.left);
 
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Completed));
             Assert.That(pauseReset.IsPaused, Is.True);
             Assert.That(completed, Is.Not.Null);
-            Assert.That(completed.SafeDirection, Is.EqualTo("left"));
+            Assert.That(completed.RelativeYawDegrees, Is.EqualTo(-90f));
+            Assert.That(completed.SafePhysicalForward, Is.EqualTo(Vector2.left));
             Assert.That(pauseReset.ResumeAfterReset(), Is.True);
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(pauseReset.IsPaused, Is.False);
@@ -2983,8 +2957,6 @@ public sealed class GuidanceRuntimeEditModeTests
 
             Assert.That(jittered.risk_snapshot_id, Is.Not.EqualTo(first.risk_snapshot_id));
             Assert.That(jittered.risk_revision, Is.EqualTo(first.risk_revision));
-            Assert.That(jittered.safe_directions, Is.EqualTo(first.safe_directions));
-            Assert.That(jittered.unsafe_directions, Is.EqualTo(first.unsafe_directions));
 
             calibration.UpdateRawTrackingPose(new Vector2(0f, 2.2f), 0f);
             var changed = evaluator.EvaluateNow();
@@ -3236,8 +3208,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", "E1", "E5", "E5");
             var risk = new PhysicalRiskState(
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { detourDirection });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
 
             var baselineTarget = selector.SelectNextTarget(
                 runtime,
@@ -3313,8 +3286,9 @@ public sealed class GuidanceRuntimeEditModeTests
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", current.Id, "E5", "E5");
             var unsafeForward = new PhysicalRiskState(
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { detourDirection });
+                boundaryRisk: "high",
+                resetRisk: "high",
+                resetRequired: false);
 
             var detour = selector.SelectNextGuidanceTarget(
                 runtime,
@@ -3326,7 +3300,7 @@ public sealed class GuidanceRuntimeEditModeTests
 
             var finalTarget = selector.SelectNextGuidanceTarget(
                 runtime,
-                new PhysicalRiskState(safeDirections: new[] { "forward" }),
+                new PhysicalRiskState(),
                 ExperimentConditionMatrix.GetPolicy("ours_full"));
             Assert.That(finalTarget.TargetRole, Is.EqualTo(NavigationTargetRole.FinalTarget));
         }
@@ -3477,13 +3451,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 physicalSpace: "narrow_room",
                 physicalPosition: new Vector2(1.2f, 2.4f),
                 physicalForward: Vector2.up,
-                clearanceForward: 0.7f,
-                clearanceLeft: 1f,
-                clearanceRight: 1.3f,
                 boundaryRisk: "high",
                 resetRisk: "high",
-                unsafeDirections: new[] { "forward" },
-                safeDirections: new[] { "right" }), null, true, true, new Vector3(1f, 1.65f, 2f), Vector3.forward);
+                resetRequired: false), null, true, true, new Vector3(1f, 1.65f, 2f), Vector3.forward);
             logger.Flush();
 
             var eventJson = ReadAllLinesShared(logger.LogPath)[0];
@@ -3840,7 +3810,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskSnapshotId: "risk-console",
                 calibrationId: "calibration-console",
                 boundaryRisk: "safe",
-                safeDirections: new[] { "forward" });
+                resetRisk: "safe",
+                resetRequired: false);
             var request = new GuidanceRequest
             {
                 calibration_id = risk.calibration_id,
@@ -3927,15 +3898,16 @@ public sealed class GuidanceRuntimeEditModeTests
             logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState(
                 riskSnapshotId: "risk-1",
                 boundaryRisk: "safe",
-                safeDirections: new[] { "forward" }), runtime, true, false, Vector3.zero, Vector3.forward);
+                resetRisk: "safe",
+                resetRequired: false), runtime, true, false, Vector3.zero, Vector3.forward);
             logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState(
                 riskSnapshotId: "risk-2",
                 boundaryRisk: "safe",
-                safeDirections: new[] { "forward" }), runtime, true, false, Vector3.zero, Vector3.forward);
+                resetRisk: "safe",
+                resetRequired: false), runtime, true, false, Vector3.zero, Vector3.forward);
             logger.LogRiskSnapshot(LogTraceContext.Empty, new PhysicalRiskState(
                 riskSnapshotId: "risk-3",
                 boundaryRisk: "critical",
-                unsafeDirections: new[] { "forward" },
                 resetRequired: true), runtime, true, false, Vector3.zero, Vector3.forward);
 
             Assert.That(riskConsoleCount, Is.EqualTo(2));
@@ -3983,7 +3955,8 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskSnapshotId: request.risk_snapshot_id,
                 calibrationId: request.calibration_id,
                 boundaryRisk: "safe",
-                safeDirections: new[] { "forward" });
+                resetRisk: "safe",
+                resetRequired: false);
             logger.LogCalibrationStarted();
             logger.LogCalibrationCompleted(request.calibration_id);
             logger.LogRequest(request, risk);
@@ -4028,8 +4001,8 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "HandleGuidanceTargetSelected", detour);
             InvokePrivate(dashboard, "HandleTargetReached", detour);
             InvokePrivate(dashboard, "HandleDetourCompleted", detour);
-            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("left", Vector2.left, "critical risk"));
-            InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetStarted", CreateResetEventInfo(-90f, Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetCompleted", CreateResetEventInfo(-90f, Vector2.left, "critical risk"));
             InvokePrivate(dashboard, "HandleResetStateChanged", ResetLifecycleState.Cancelled);
             InvokePrivate(dashboard, "HandleTaskCompleted", new GuidanceRuntimeState());
             logger.LogCalibrationInvalidated(request.calibration_id, "space changed");
@@ -4119,12 +4092,12 @@ public sealed class GuidanceRuntimeEditModeTests
 
             controller.ShowAutomaticReset();
             var resetMessage = safetyText.text;
-            controller.ShowRecoveryStarted(new ResetEventInfo("left", Vector2.left, "test_left"));
+            controller.ShowRecoveryStarted(CreateResetEventInfo(-90f, Vector2.left, "test_left"));
             Assert.That(controller.ResetHudVisible, Is.True);
             Assert.That(safetyText.text, Does.Contain("请停止前进"));
             Assert.That(safetyText.text, Does.Contain("请原地向左转身 ←"));
 
-            controller.ShowRecoveryStarted(new ResetEventInfo("right", Vector2.right, "test_right"));
+            controller.ShowRecoveryStarted(CreateResetEventInfo(90f, Vector2.right, "test_right"));
             Assert.That(controller.ResetHudVisible, Is.True);
             Assert.That(safetyText.text, Does.Contain("请原地向右转身 →"));
 
@@ -4243,12 +4216,12 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(dashboard, "participantUiController", participantUi);
             SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
 
-            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetStarted", CreateResetEventInfo(-90f, Vector2.left, "critical risk"));
             Assert.That(participantUi.ResetHudVisible, Is.True);
             Assert.That(safetyText.text, Does.Contain("请停止前进"));
             Assert.That(safetyText.text, Does.Contain("请原地向左转身 ←"));
 
-            InvokePrivate(dashboard, "HandleResetCompleted", new ResetEventInfo("left", Vector2.left, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetCompleted", CreateResetEventInfo(-90f, Vector2.left, "critical risk"));
 
             Assert.That(participantUi.ResetHudVisible, Is.False);
             Assert.That(safetyGroup.alpha, Is.EqualTo(1f));
@@ -4280,7 +4253,7 @@ public sealed class GuidanceRuntimeEditModeTests
             SetPrivateField(dashboard, "participantUiController", participantUi);
             SetPrivateField(dashboard, "runState", ExperimentRunState.Running);
 
-            InvokePrivate(dashboard, "HandleResetStarted", new ResetEventInfo("right", Vector2.right, "critical risk"));
+            InvokePrivate(dashboard, "HandleResetStarted", CreateResetEventInfo(90f, Vector2.right, "critical risk"));
             Assert.That(participantUi.ResetHudVisible, Is.True);
             Assert.That(safetyText.text, Does.Contain("请原地向右转身 →"));
 
@@ -4457,10 +4430,9 @@ public sealed class GuidanceRuntimeEditModeTests
             runtime.Begin("T2_main_target", "E1", "E5", "E5");
             runtime.PauseForReset();
             var risk = new PhysicalRiskState(
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             var policy = ExperimentConditionMatrix.GetPolicy("ours_full");
 
             var defaultResult = selector.BuildCandidateSet(runtime, risk, policy);
@@ -4706,17 +4678,10 @@ public sealed class GuidanceRuntimeEditModeTests
                 physicalForward: Vector2.up,
                 boundaryContext: source.boundary_context,
                 obstacleContext: source.obstacle_context,
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
                 boundaryRisk: "low",
                 resetRisk: "none",
-                safeDirections: new[] { "forward", "left", "right" },
-                unsafeDirections: System.Array.Empty<string>(),
-                headingProfile: new[]
-                {
-                    new HeadingSample(relativeYaw, absoluteForward, 2f, HeadingSafety.Safe)
-                });
+                resetRequired: false,
+                currentHeading: new HeadingSample(relativeYaw, absoluteForward, 2f, HeadingSafety.Safe));
             SetPrivateField(riskEvaluator, "currentRiskState", deceptiveSafeRisk);
 
             Assert.That(riskEvaluator.TryEvaluateAbsoluteHeading(
@@ -4962,7 +4927,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskSnapshotId: "risk-sample-1",
                 riskRevision: 4,
                 calibrationId: "calibration-current",
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             var candidateSet = selector.BuildCandidateSet(runtime, initialRisk, policy);
 
             Assert.That(runtime.TryReserveCandidateSet(
@@ -4978,7 +4945,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskSnapshotId: "risk-sample-2",
                 riskRevision: 4,
                 calibrationId: "calibration-current",
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             Assert.That(
                 selector.IsReservationCurrent(reservation, runtime, sameRevisionNewSample, policy),
                 Is.True);
@@ -4987,7 +4956,9 @@ public sealed class GuidanceRuntimeEditModeTests
                 riskSnapshotId: "risk-sample-3",
                 riskRevision: 5,
                 calibrationId: "calibration-current",
-                safeDirections: new[] { "forward", "left", "right" });
+                boundaryRisk: "low",
+                resetRisk: "low",
+                resetRequired: false);
             Assert.That(
                 selector.IsReservationCurrent(reservation, runtime, changedRevision, policy),
                 Is.False);
@@ -5583,6 +5554,21 @@ public sealed class GuidanceRuntimeEditModeTests
         });
         task.StartTask();
         return task;
+    }
+
+    private static ResetEventInfo CreateResetEventInfo(
+        float relativeYawDegrees,
+        Vector2 safePhysicalForward,
+        string reason)
+    {
+        var plan = new RecoveryHeadingPlan(
+            new HeadingSample(
+                relativeYawDegrees,
+                safePhysicalForward,
+                1f,
+                HeadingSafety.Safe),
+            1f);
+        return new ResetEventInfo(plan, reason);
     }
 
     private static void SetPrivateField<T>(object target, string fieldName, T value)

@@ -257,6 +257,12 @@
         "com.unity.xr.core-utils": "2.3.0"
       }
     },
+    "com.unityfx.outline": {
+      "version": "file:D:/SoftwareFiles/Unity/UnityFx.Outline-develop/Outline.Core/Packages/UnityFx.Outline",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {}
+    },
     "com.unity.modules.ai": {
       "version": "1.0.0",
       "depth": 0,

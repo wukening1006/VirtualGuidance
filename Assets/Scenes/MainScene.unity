@@ -12479,7 +12479,7 @@ Transform:
   m_GameObject: {fileID: 549286873}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 30.8, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -14451,7 +14451,7 @@ MonoBehaviour:
 
     Risk: placeholder
 
-    Safe Directions:
+    Current Heading Risk:
     placeholder'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
@@ -31215,6 +31215,15 @@ MonoBehaviour:
   recoveryHoldBudgetSeconds: 8
   recoveryHoldRetryIntervalSeconds: 0.5
   recoveryHoldMaxAttempts: 16
+  recoveryHeadingSearchSettings:
+    coarseStepDegrees: 15
+    minimumResolutionDegrees: 1
+    refinementFactor: 3
+    maximumEvaluations: 720
+    clearanceNormalizationMeters: 3
+    clearanceWeight: 1
+    futureDistanceWeight: 0.5
+    turnCostWeight: 0.35
   replanInitialRetryDelaySeconds: 0.5
   replanMaxRetryDelaySeconds: 2
   replanWakePositionMeters: 0.25

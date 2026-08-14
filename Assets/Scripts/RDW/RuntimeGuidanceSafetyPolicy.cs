@@ -220,7 +220,7 @@ public sealed class RuntimeGuidanceSafetyPolicy
     private static bool IsResetActive(ResetLifecycleState state)
     {
         return state == ResetLifecycleState.Required ||
-               state == ResetLifecycleState.TurningToSafeDirection ||
+               state == ResetLifecycleState.TurningToSafeHeading ||
                state == ResetLifecycleState.Completed;
     }
 }

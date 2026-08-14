@@ -154,11 +154,7 @@ public sealed class GuidancePlanningStageThreeEditModeTests
                 boundaryContext: SquareBoundary(),
                 boundaryRisk: "critical",
                 resetRisk: "critical",
-                headingProfile: new[]
-                {
-                    new HeadingSample(90f, Vector2.left, 2f, HeadingSafety.Safe),
-                    new HeadingSample(-90f, Vector2.right, 0.2f, HeadingSafety.Critical)
-                });
+                currentHeading: new HeadingSample(90f, Vector2.left, 2f, HeadingSafety.Safe));
 
             InvokeRiskChanged(gain, unrelatedCritical);
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.WaitingForUserTurn));
@@ -166,11 +162,7 @@ public sealed class GuidancePlanningStageThreeEditModeTests
             var plannedCritical = new PhysicalRiskState(
                 physicalPosition: Vector2.zero,
                 boundaryContext: SquareBoundary(),
-                headingProfile: new[]
-                {
-                    new HeadingSample(90f, Vector2.left, 0.2f, HeadingSafety.Critical),
-                    new HeadingSample(-90f, Vector2.right, 2f, HeadingSafety.Safe)
-                });
+                currentHeading: new HeadingSample(90f, Vector2.left, 0.2f, HeadingSafety.Critical));
             InvokeRiskChanged(gain, plannedCritical);
 
             Assert.That(gain.State, Is.EqualTo(RotationGainController.GainState.Aborted));
@@ -256,12 +248,7 @@ public sealed class GuidancePlanningStageThreeEditModeTests
             riskRevision: 1,
             calibrationId: "calibration-bearing",
             physicalSpace: "room-bearing",
-            headingProfile: new[]
-            {
-                new HeadingSample(0f, Vector2.up, 2f, HeadingSafety.Safe),
-                new HeadingSample(-90f, Vector2.right, 2f, HeadingSafety.Safe),
-                new HeadingSample(90f, Vector2.left, 2f, HeadingSafety.Safe)
-            });
+            currentHeading: new HeadingSample(0f, Vector2.up, 2f, HeadingSafety.Safe));
     }
 
     private static Vector2[] SquareBoundary()

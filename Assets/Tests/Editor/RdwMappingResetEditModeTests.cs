@@ -182,7 +182,7 @@ public sealed class RdwMappingResetEditModeTests
 
             Assert.That(controller.PhysicalHeadingReached, Is.True);
             Assert.That(controller.IsMappingComplete, Is.False);
-            Assert.That(controller.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(controller.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
 
             var command = controller.EvaluateMapping(Pose(2, 1.02d, 5f, 5f), default);
             var result = new RdwGainApplier(host.transform, host.transform).Apply(command);
@@ -382,7 +382,7 @@ public sealed class RdwMappingResetEditModeTests
             Assert.That(safeRisk, Is.Not.Null);
             Assert.That(harness.Coordinator.RecoveryState,
                 Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
-            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
 
             harness.ProcessCurrentPose(1.04d);
             Assert.That(harness.Reset.ActiveMappingPlan, Is.Not.Null);

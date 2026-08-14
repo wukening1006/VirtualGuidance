@@ -121,6 +121,32 @@ public sealed class RecoveryHeadingPlan
     }
 }
 
+/// <summary>保存一次恢复航向精确评估的成功或失败事实。</summary>
+public readonly struct RecoveryHeadingEvaluation
+{
+    /// <summary>本次查询的相对当前 Physical Forward 偏航角，单位：度。</summary>
+    public float RelativeYawDegrees { get; }
+    /// <summary>评估器是否返回了可信 HeadingSample。</summary>
+    public bool Succeeded { get; }
+    /// <summary>评估成功时的 HeadingSample。</summary>
+    public HeadingSample Sample { get; }
+    /// <summary>评估失败或样本不满足 Safe 时的稳定原因。</summary>
+    public string FailureReason { get; }
+
+    /// <summary>创建一条恢复搜索评估诊断。</summary>
+    public RecoveryHeadingEvaluation(
+        float relativeYawDegrees,
+        bool succeeded,
+        HeadingSample sample,
+        string failureReason)
+    {
+        RelativeYawDegrees = Mathf.DeltaAngle(0f, relativeYawDegrees);
+        Succeeded = succeeded;
+        Sample = sample;
+        FailureReason = failureReason ?? string.Empty;
+    }
+}
+
 /// <summary>保存一次连续恢复搜索的完整只读诊断结果。</summary>
 public sealed class RecoveryHeadingSearchResult
 {
@@ -128,6 +154,8 @@ public sealed class RecoveryHeadingSearchResult
     public RecoveryHeadingPlan Plan { get; }
     /// <summary>本次搜索实际查询的唯一角度样本。</summary>
     public IReadOnlyList<HeadingSample> Evaluations { get; }
+    /// <summary>本次搜索每个角度的成功、净空和失败原因诊断。</summary>
+    public IReadOnlyList<RecoveryHeadingEvaluation> EvaluationDiagnostics { get; }
     /// <summary>本次搜索调用精确评估器的总次数，包含失败查询和独立终验。</summary>
     public int AttemptedEvaluationCount { get; }
     /// <summary>本次搜索成功取得可信样本的评估次数，包含独立终验。</summary>
@@ -156,11 +184,14 @@ public sealed class RecoveryHeadingSearchResult
         bool finalValidationAttempted,
         bool finalValidationPassed,
         string failureReason,
-        RecoveryHeadingSearchSettings settings)
+        RecoveryHeadingSearchSettings settings,
+        IList<RecoveryHeadingEvaluation> evaluationDiagnostics = null)
     {
         Plan = plan ?? RecoveryHeadingPlan.Failed(RecoveryHeadingFailure.InvalidSearchContext);
         Evaluations = Array.AsReadOnly(new List<HeadingSample>(
             evaluations ?? Array.Empty<HeadingSample>()).ToArray());
+        EvaluationDiagnostics = Array.AsReadOnly(new List<RecoveryHeadingEvaluation>(
+            evaluationDiagnostics ?? Array.Empty<RecoveryHeadingEvaluation>()).ToArray());
         AttemptedEvaluationCount = Mathf.Max(0, attemptedEvaluationCount);
         SuccessfulEvaluationCount = Mathf.Clamp(
             successfulEvaluationCount, 0, AttemptedEvaluationCount);
@@ -186,6 +217,7 @@ public sealed class RecoveryHeadingPlanner
     {
         var config = (settings ?? new RecoveryHeadingSearchSettings()).SanitizedCopy();
         var evaluations = new List<HeadingSample>();
+        var evaluationDiagnostics = new List<RecoveryHeadingEvaluation>();
         var attemptedEvaluationCount = 0;
         var successfulEvaluationCount = 0;
         if (riskState == null || evaluator == null ||
@@ -193,7 +225,7 @@ public sealed class RecoveryHeadingPlanner
         {
             return Failed(RecoveryHeadingFailure.InvalidSearchContext, evaluations,
                 attemptedEvaluationCount, successfulEvaluationCount, float.PositiveInfinity,
-                false, false, false, "invalid_search_context", config);
+                false, false, false, "invalid_search_context", config, evaluationDiagnostics);
         }
 
         var evaluatedAngles = new HashSet<int>();
@@ -209,7 +241,7 @@ public sealed class RecoveryHeadingPlanner
             var completedLayer = EvaluateFullCoverageLayer(
                 riskState, evaluator, currentForward, step, searchEvaluationBudget,
                 evaluatedAngles, evaluations, ref attemptedEvaluationCount,
-                ref successfulEvaluationCount, out var actualLayerStep);
+                ref successfulEvaluationCount, evaluationDiagnostics, out var actualLayerStep);
             if (!completedLayer)
             {
                 budgetExhausted = true;
@@ -258,7 +290,7 @@ public sealed class RecoveryHeadingPlanner
                     : "heading_evaluation_unavailable";
                 return Failed(RecoveryHeadingFailure.EvaluationUnavailable, evaluations,
                     attemptedEvaluationCount, successfulEvaluationCount, completedResolution,
-                    budgetExhausted, false, false, unavailableReason, config);
+                    budgetExhausted, false, false, unavailableReason, config, evaluationDiagnostics);
             }
 
             var failureReason = budgetExhausted
@@ -266,7 +298,7 @@ public sealed class RecoveryHeadingPlanner
                 : "no_safe_heading_at_configured_resolution";
             return Failed(RecoveryHeadingFailure.NoAcceptableHeading, evaluations,
                 attemptedEvaluationCount, successfulEvaluationCount, completedResolution,
-                budgetExhausted, false, false, failureReason, config);
+                budgetExhausted, false, false, failureReason, config, evaluationDiagnostics);
         }
 
         // 终验必须重新调用 Unity 精确评估器，不复用搜索缓存中的候选事实。
@@ -274,17 +306,24 @@ public sealed class RecoveryHeadingPlanner
         var finalEvaluationSucceeded = evaluator.TryEvaluateAbsoluteHeading(
             riskState, best.PhysicalForward, out var validated);
         if (finalEvaluationSucceeded) successfulEvaluationCount++;
+        evaluationDiagnostics.Add(new RecoveryHeadingEvaluation(
+            best.RelativeYawDegrees,
+            finalEvaluationSucceeded,
+            finalEvaluationSucceeded ? validated : best,
+            !finalEvaluationSucceeded
+                ? "exact_heading_evaluation_failed"
+                : validated.Safety == HeadingSafety.Safe ? string.Empty : "heading_not_safe_at_final_validation"));
         if (!finalEvaluationSucceeded || validated.Safety != HeadingSafety.Safe)
         {
             return Failed(RecoveryHeadingFailure.FinalValidationFailed, evaluations,
                 attemptedEvaluationCount, successfulEvaluationCount, completedResolution,
-                budgetExhausted, true, false, "best_heading_failed_exact_final_validation", config);
+                budgetExhausted, true, false, "best_heading_failed_exact_final_validation", config, evaluationDiagnostics);
         }
 
         var plan = new RecoveryHeadingPlan(validated, Score(validated, config));
         return new RecoveryHeadingSearchResult(
             plan, evaluations, attemptedEvaluationCount, successfulEvaluationCount,
-            completedResolution, budgetExhausted, true, true, string.Empty, config);
+            completedResolution, budgetExhausted, true, true, string.Empty, config, evaluationDiagnostics);
     }
 
     private static bool EvaluateFullCoverageLayer(
@@ -297,6 +336,7 @@ public sealed class RecoveryHeadingPlanner
         ICollection<HeadingSample> evaluations,
         ref int attemptedEvaluationCount,
         ref int successfulEvaluationCount,
+        ICollection<RecoveryHeadingEvaluation> evaluationDiagnostics,
         out float actualStep)
     {
         var sampleCount = Mathf.Max(2, Mathf.CeilToInt(360f / requestedStepDegrees));
@@ -311,7 +351,15 @@ public sealed class RecoveryHeadingPlanner
 
             var direction = Rotate(currentForward, yaw);
             attemptedEvaluationCount++;
-            if (evaluator.TryEvaluateAbsoluteHeading(riskState, direction, out var sample))
+            var succeeded = evaluator.TryEvaluateAbsoluteHeading(riskState, direction, out var sample);
+            evaluationDiagnostics.Add(new RecoveryHeadingEvaluation(
+                yaw,
+                succeeded,
+                succeeded ? sample : new HeadingSample(yaw, direction, 0f, HeadingSafety.Unknown),
+                !succeeded
+                    ? "exact_heading_evaluation_failed"
+                    : sample.Safety == HeadingSafety.Safe ? string.Empty : "heading_not_safe"));
+            if (succeeded)
             {
                 successfulEvaluationCount++;
                 evaluations.Add(sample);
@@ -341,12 +389,13 @@ public sealed class RecoveryHeadingPlanner
         bool finalValidationAttempted,
         bool finalValidationPassed,
         string failureReason,
-        RecoveryHeadingSearchSettings settings)
+        RecoveryHeadingSearchSettings settings,
+        IList<RecoveryHeadingEvaluation> evaluationDiagnostics)
     {
         return new RecoveryHeadingSearchResult(
             RecoveryHeadingPlan.Failed(failure), evaluations, attemptedEvaluationCount,
             successfulEvaluationCount, resolution, budgetExhausted, finalValidationAttempted,
-            finalValidationPassed, failureReason, settings);
+            finalValidationPassed, failureReason, settings, evaluationDiagnostics);
     }
 
     private static Vector2 Rotate(Vector2 forward, float yawDegrees)

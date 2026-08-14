@@ -71,7 +71,7 @@ public enum GuidanceRecoveryState
     Inactive,
     /// <summary>正在停止 Guidance、Gain 与在途请求。</summary>
     StoppingGuidance,
-    /// <summary>正在从 Heading Profile 选择安全朝向。</summary>
+    /// <summary>正在全角域连续搜索安全航向。</summary>
     SelectingHeading,
     /// <summary>当前没有明确 Safe 航向，任务保持暂停并等待最新可信物理事实。</summary>
     HoldingForSafeHeading,
@@ -190,6 +190,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [Tooltip("单次 Recovery Hold 允许执行的最大选向次数。")]
     [SerializeField, Min(1)] private int recoveryHoldMaxAttempts = 16;
 
+    [Header("Recovery Search")]
+    [Tooltip("连续恢复航向搜索的全角域分层参数与 Safe 候选评分。")]
+    [SerializeField] private RecoveryHeadingSearchSettings recoveryHeadingSearchSettings =
+        new RecoveryHeadingSearchSettings();
+
     [Header("重规划等待")]
     [Tooltip("暂无可执行候选后首次重试的最短间隔，单位：秒。")]
     [SerializeField, Min(0.1f)] private float replanInitialRetryDelaySeconds = 0.5f;
@@ -206,7 +211,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private GuidanceRequestPhase requestPhase;
     private readonly RuntimeGuidanceSafetyPolicy runtimeSafetyPolicy = new RuntimeGuidanceSafetyPolicy();
     private int consecutiveUnsafeSamples;
-    private string sampledUnsafeDirection = string.Empty;
+    private string sampledUnsafeTargetId = string.Empty;
     private string lastRuntimeRiskSnapshotId = string.Empty;
     private bool runtimeReplanPending;
     private readonly TurnCueCompletionTracker turnCueCompletionTracker = new TurnCueCompletionTracker();
@@ -1880,7 +1885,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return latestRecoverySearchResult;
         }
 
-        latestRecoverySearchResult = recoveryHeadingPlanner.Search(riskState, riskEvaluator);
+        latestRecoverySearchResult = recoveryHeadingPlanner.Search(
+            riskState,
+            riskEvaluator,
+            recoveryHeadingSearchSettings);
         latestRecoverySearchFingerprint = fingerprint;
         RecoverySearchCompleted?.Invoke(latestRecoverySearchResult);
         return latestRecoverySearchResult;
@@ -2121,9 +2129,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         lastRuntimeRiskSnapshotId = riskState != null ? riskState.risk_snapshot_id : string.Empty;
 
-        if (!string.Equals(sampledUnsafeDirection, directionIdentity, StringComparison.Ordinal))
+        if (!string.Equals(sampledUnsafeTargetId, directionIdentity, StringComparison.Ordinal))
         {
-            sampledUnsafeDirection = directionIdentity;
+            sampledUnsafeTargetId = directionIdentity;
             consecutiveUnsafeSamples = 1;
             return;
         }
@@ -2134,7 +2142,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private void ResetRuntimeSafetySampling()
     {
         consecutiveUnsafeSamples = 0;
-        sampledUnsafeDirection = string.Empty;
+        sampledUnsafeTargetId = string.Empty;
         lastRuntimeRiskSnapshotId = string.Empty;
     }
 
@@ -2183,7 +2191,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (!input.PhysicalSpaceMatches) return "Physical space or risk identity does not match.";
         if (!input.PlannedDirectionAvailable) return "Planned physical direction clearance is unavailable.";
         if (input.ResetState == ResetLifecycleState.Required ||
-            input.ResetState == ResetLifecycleState.TurningToSafeDirection ||
+            input.ResetState == ResetLifecycleState.TurningToSafeHeading ||
             input.ResetState == ResetLifecycleState.Completed) return "Physical reset is active.";
         if (!input.HasRecoveryHeading) return "No acceptable physical recovery heading is available.";
         if (input.LatestRisk.reset_required) return "The risk protocol reports no acceptable automatic recovery state.";

@@ -74,8 +74,7 @@ class GuideMockAgent:
             direction=direction,
             route_decision=route_decision_for_target(target),
             narration=(
-                f"主路线在前方，当前前方可用距离为 {risk_state.clearance_forward:.2f} 米，"
-                "请缓慢前进。"
+                "当前物理空间信息已提供，请按照目标方向缓慢前进。"
             ),
             physical_intent="raw_clearance_exposed_without_semantic_intervention",
             intervention_type="raw_physical_data",

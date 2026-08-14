@@ -50,7 +50,6 @@ public sealed class ParticipantUiController : MonoBehaviour
     public void ShowStarting() => ShowSafetyMessage("实验即将开始，请保持原地");
     public void ShowResearcherPaused() => ShowSafetyMessage("实验已暂停，请保持原地");
     public void ShowCriticalSafety() => ShowSafetyMessage("请立即停止移动，等待研究员指引");
-    public void ShowUnsafeDirection() => ShowSafetyMessage("请停止前进");
     /// <summary>显示不暴露实验条件或内部风险原因的统一 Runtime Intervention 提示。</summary>
     public void ShowRuntimeIntervention() => ShowSafetyMessage("请停止移动，等待安全引导");
     /// <summary>显示自动安全转向正在执行，不要求研究员介入。</summary>
@@ -67,11 +66,11 @@ public sealed class ParticipantUiController : MonoBehaviour
         }
 
         var approximateDegrees = Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5);
-        if (string.Equals(info.SafeDirection, "left", System.StringComparison.Ordinal))
+        if (info.RelativeYawDegrees < -0.1f)
         {
             ShowSafetyMessage($"请停止前进\n请原地向左转身 ←\n约 {approximateDegrees}°", true);
         }
-        else if (string.Equals(info.SafeDirection, "right", System.StringComparison.Ordinal))
+        else if (info.RelativeYawDegrees > 0.1f)
         {
             ShowSafetyMessage($"请停止前进\n请原地向右转身 →\n约 {approximateDegrees}°", true);
         }

@@ -148,17 +148,12 @@ class ConditionContextBuilder:
                     obstacle.model_dump(mode="json")
                     for obstacle in snapshot.obstacle_context
                 ],
-                "clearance": {
-                    "forward": snapshot.clearance_forward,
-                    "left": snapshot.clearance_left,
-                    "right": snapshot.clearance_right,
-                },
             }
         elif condition == Condition.B3_RISK_LABELS:
             context["risk_labels"] = {
                 "risk_level": snapshot.risk_level,
-                "safe_directions": list(snapshot.safe_directions),
-                "unsafe_directions": list(snapshot.unsafe_directions),
+                "critical": snapshot.critical,
+                "reset_required": snapshot.reset_required,
             }
         elif condition in {
             Condition.B5_OURS_WITHOUT_VERIFIER,

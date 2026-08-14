@@ -11,9 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 TASK_DEFINITION_VERSION = "t2-main-target-v2"
-GUIDANCE_SCHEMA_VERSION = "guidance-schema-v2"
+GUIDANCE_SCHEMA_VERSION = "guidance-schema-v3"
 CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
-RISK_POLICY_VERSION = "unity-risk-policy-v1"
+RISK_POLICY_VERSION = "unity-risk-policy-v2"
 
 
 class Condition(str, Enum):
@@ -240,18 +240,13 @@ class RiskSnapshot(BaseModel):
     risk_revision: int = Field(ge=1)
     calibration_id: str = Field(min_length=1)
     sampled_at_utc: str = Field(min_length=1)
-    risk_policy_version: Literal["unity-risk-policy-v1"]
+    risk_policy_version: Literal["unity-risk-policy-v2"]
     physical_space: str = Field(min_length=1)
     physical_position: list[float]
     physical_forward: list[float]
     boundary_context: RiskBoundaryContext
     obstacle_context: list[RiskObstacleContext]
-    clearance_forward: float = Field(ge=0)
-    clearance_left: float = Field(ge=0)
-    clearance_right: float = Field(ge=0)
     risk_level: Literal["low", "medium", "high", "critical"]
-    safe_directions: list[str]
-    unsafe_directions: list[str]
     critical: bool
     reset_required: bool
 
@@ -273,29 +268,14 @@ class RiskSnapshot(BaseModel):
             raise ValueError("sampled_at_utc must use UTC.")
         return value
 
-    @field_validator("safe_directions", "unsafe_directions")
-    @classmethod
-    def validate_directions(cls, value: list[str]) -> list[str]:
-        allowed = {"forward", "left", "right", "behind"}
-        if len(value) != len(set(value)) or any(item not in allowed for item in value):
-            raise ValueError("RiskSnapshot directions must be unique known values.")
-        return value
-
-    @model_validator(mode="after")
-    def validate_direction_partition(self) -> "RiskSnapshot":
-        if set(self.safe_directions).intersection(self.unsafe_directions):
-            raise ValueError("RiskSnapshot safe and unsafe directions must be disjoint.")
-        return self
-
-
 class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
     # 字段名对应 Unity/backend 接口契约；旧版本请求必须显式失败，不能与新客户端混用。
     task_definition_version: Literal["t2-main-target-v2"]
-    guidance_schema_version: Literal["guidance-schema-v2"]
+    guidance_schema_version: Literal["guidance-schema-v3"]
     candidate_policy_version: Literal["t2-candidate-policy-v1"]
-    risk_policy_version: Literal["unity-risk-policy-v1"]
+    risk_policy_version: Literal["unity-risk-policy-v2"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -408,9 +388,9 @@ class GuidanceResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
     task_definition_version: Literal["t2-main-target-v2"]
-    guidance_schema_version: Literal["guidance-schema-v2"]
+    guidance_schema_version: Literal["guidance-schema-v3"]
     candidate_policy_version: Literal["t2-candidate-policy-v1"]
-    risk_policy_version: Literal["unity-risk-policy-v1"]
+    risk_policy_version: Literal["unity-risk-policy-v2"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
@@ -436,13 +416,8 @@ class PhysicalRiskState(BaseModel):
     physical_space: str
     user_physical_position: tuple[float, float]
     user_physical_forward: tuple[float, float]
-    clearance_forward: float
-    clearance_left: float
-    clearance_right: float
     boundary_risk: str
     reset_risk: str
-    unsafe_directions: list[str]
-    safe_directions: list[str]
     reset_required: bool = False
     risk_snapshot_id: str = "offline-risk"
     risk_revision: int = 1
@@ -505,13 +480,8 @@ class GuidanceLogRecord(BaseModel):
     allowed_candidate_ids: list[str]
     semantic_candidates: list[dict[str, Any]]
     selected_target: str
-    clearance_forward: float
-    clearance_left: float
-    clearance_right: float
     boundary_risk: str
     reset_risk: str
-    unsafe_directions: list[str]
-    safe_directions: list[str]
     intervention_type: str
     narration: str
     movement_instruction: str

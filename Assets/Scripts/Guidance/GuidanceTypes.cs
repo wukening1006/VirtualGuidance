@@ -9,11 +9,11 @@ public static class GuidanceProtocolVersions
     /// <summary>T2 固定任务定义版本。</summary>
     public const string TaskDefinition = "t2-main-target-v2";
     /// <summary>Unity 与 Backend 精确 JSON 契约版本。</summary>
-    public const string GuidanceSchema = "guidance-schema-v2";
+    public const string GuidanceSchema = "guidance-schema-v3";
     /// <summary>T2 Candidate Set 生成策略版本。</summary>
     public const string CandidatePolicy = "t2-candidate-policy-v1";
     /// <summary>Unity 权威运行时风险策略版本。</summary>
-    public const string RiskPolicy = "unity-risk-policy-v1";
+    public const string RiskPolicy = "unity-risk-policy-v2";
 }
 
 /// <summary>序列化 Physical Boundary 顶点的协议对象。</summary>
@@ -64,18 +64,8 @@ public sealed class GuidanceRiskSnapshot
     public GuidanceRiskBoundaryContext boundary_context = new GuidanceRiskBoundaryContext();
     /// <summary>障碍物原始上下文。</summary>
     public GuidanceRiskObstacleContext[] obstacle_context = Array.Empty<GuidanceRiskObstacleContext>();
-    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
-    public float clearance_forward;
-    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
-    public float clearance_left;
-    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
-    public float clearance_right;
     /// <summary>统一风险等级。</summary>
     public string risk_level;
-    /// <summary>冻结协议占位字段；Unity 不再发布离散安全方向。</summary>
-    public string[] safe_directions = Array.Empty<string>();
-    /// <summary>冻结协议占位字段；Unity 不再发布离散不安全方向。</summary>
-    public string[] unsafe_directions = Array.Empty<string>();
     /// <summary>是否达到 Critical 风险。</summary>
     public bool critical;
     /// <summary>是否需要确定性 Reset。</summary>
@@ -120,12 +110,7 @@ public sealed class GuidanceRiskSnapshot
             physical_forward = GuidanceTypeUtility.Vector2ToArray(state.user_physical_forward),
             boundary_context = new GuidanceRiskBoundaryContext { points = boundary },
             obstacle_context = obstacles,
-            clearance_forward = 0f,
-            clearance_left = 0f,
-            clearance_right = 0f,
             risk_level = state.boundary_risk,
-            safe_directions = Array.Empty<string>(),
-            unsafe_directions = Array.Empty<string>(),
             critical = state.critical,
             reset_required = state.reset_required
         };

@@ -2,7 +2,7 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// 表示 Turn-to-Safe-Direction Reset 的软件生命周期。
+/// 表示 SafeHeadingMapping Reset 的软件生命周期。
 /// </summary>
 public enum ResetLifecycleState
 {
@@ -11,7 +11,7 @@ public enum ResetLifecycleState
     /// <summary>已收到 Reset 要求，正在计算安全朝向。</summary>
     Required,
     /// <summary>等待用户原地转向固定的安全 Physical Forward。</summary>
-    TurningToSafeDirection,
+    TurningToSafeHeading,
     /// <summary>用户已到达安全朝向，等待风险重算与任务恢复。</summary>
     Completed,
     /// <summary>Reset 被会话终止或研究员操作取消。</summary>
@@ -25,8 +25,6 @@ public sealed class ResetEventInfo
 {
     /// <summary>协调层选择并冻结的恢复航向计划。</summary>
     public RecoveryHeadingPlan RecoveryPlan { get; }
-    /// <summary>本次 Reset 选择的相对方向。</summary>
-    public string SafeDirection { get; }
     /// <summary>相对恢复开始朝向的有符号偏航角，单位：度；负值为左转。</summary>
     public float RelativeYawDegrees { get; }
     /// <summary>参与者需要完成的大致转角，单位：度。</summary>
@@ -43,36 +41,15 @@ public sealed class ResetEventInfo
         RelativeYawDegrees = recoveryPlan != null && recoveryPlan.IsSuccess
             ? recoveryPlan.RelativeYawDegrees
             : 0f;
-        SafeDirection = DirectionForYaw(RelativeYawDegrees);
         SafePhysicalForward = recoveryPlan != null && recoveryPlan.IsSuccess
             ? recoveryPlan.SafePhysicalForward
             : Vector2.up;
         Reason = reason ?? string.Empty;
     }
-
-    /// <summary>兼容旧日志与测试边界；生产恢复事件应直接传入 RecoveryHeadingPlan。</summary>
-    public ResetEventInfo(string safeDirection, Vector2 safePhysicalForward, string reason)
-    {
-        RecoveryPlan = null;
-        SafeDirection = safeDirection ?? string.Empty;
-        RelativeYawDegrees = string.Equals(SafeDirection, "left", StringComparison.Ordinal)
-            ? -90f
-            : string.Equals(SafeDirection, "right", StringComparison.Ordinal) ? 90f : 0f;
-        SafePhysicalForward = safePhysicalForward;
-        Reason = reason ?? string.Empty;
-    }
-
-    /// <summary>把连续恢复偏航映射为仅供 UI 与兼容日志使用的方向标签。</summary>
-    public static string DirectionForYaw(float relativeYawDegrees)
-    {
-        if (relativeYawDegrees < -5f) return "left";
-        if (relativeYawDegrees > 5f) return "right";
-        return "forward";
-    }
 }
 
 /// <summary>
-/// 执行 Turn-to-Safe-Direction Mapping Reset：停止 Guidance/Gain 表现并执行协调层冻结的 Physical Forward，
+/// 执行 SafeHeadingMapping Reset：停止 Guidance/Gain 表现并执行协调层冻结的 Physical Forward，
 /// 在 Physical heading 与 mapping target 均完成后发布 ResetCompleted。航向选择、复验与重规划由协调层处理。
 /// </summary>
 public sealed class PauseResetController : MonoBehaviour
@@ -84,7 +61,7 @@ public sealed class PauseResetController : MonoBehaviour
     [SerializeField] private RotationGainController rotationGainController;
     [Tooltip("提供校准后的 Physical Room Forward，用于检测用户安全转向。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
-    [Header("安全转向")]
+    [Header("安全航向")]
     [Tooltip("用户朝向与安全目标的最大完成误差，单位：度。")]
     [SerializeField] private float completionToleranceDegrees = 12f;
 
@@ -102,7 +79,6 @@ public sealed class PauseResetController : MonoBehaviour
 
     private ResetLifecycleState state = ResetLifecycleState.Inactive;
     private string resetReason = string.Empty;
-    private string safeDirection = string.Empty;
     private Vector2 safePhysicalForward = Vector2.up;
     private RecoveryHeadingPlan activePlan;
     private bool mappingResetEnabled;
@@ -124,12 +100,10 @@ public sealed class PauseResetController : MonoBehaviour
     public bool IsPaused { get; private set; }
     /// <summary>当前是否仍有待完成或待风险复验的 Reset。</summary>
     public bool IsActive => state == ResetLifecycleState.Required ||
-                            state == ResetLifecycleState.TurningToSafeDirection ||
+                            state == ResetLifecycleState.TurningToSafeHeading ||
                             state == ResetLifecycleState.Completed;
     /// <summary>当前 Reset 生命周期状态。</summary>
     public ResetLifecycleState State => state;
-    /// <summary>本次 Reset 选择的显示方向。</summary>
-    public string SafeDirection => safeDirection;
     /// <summary>本次 Reset 固定的 Physical Room 目标朝向。</summary>
     public Vector2 SafePhysicalForward => safePhysicalForward;
     /// <summary>本次 Reset 正在执行的冻结恢复计划。</summary>
@@ -172,7 +146,7 @@ public sealed class PauseResetController : MonoBehaviour
 
     private void Update()
     {
-        if (state == ResetLifecycleState.TurningToSafeDirection && userPoseTracker != null)
+        if (state == ResetLifecycleState.TurningToSafeHeading && userPoseTracker != null)
         {
             ProcessPhysicalForward(userPoseTracker.PhysicalForwardXZ);
         }
@@ -228,11 +202,10 @@ public sealed class PauseResetController : MonoBehaviour
         physicalHeadingReached = false;
         mappingFailureRaised = false;
 
-        if (state == ResetLifecycleState.TurningToSafeDirection || state == ResetLifecycleState.Required)
+        if (state == ResetLifecycleState.TurningToSafeHeading || state == ResetLifecycleState.Required)
         {
             activePlan = plan;
             safePhysicalForward = plan.SafePhysicalForward;
-            safeDirection = ResetEventInfo.DirectionForYaw(plan.RelativeYawDegrees);
             ResetStarted?.Invoke(CreateEventInfo());
             return true;
         }
@@ -241,8 +214,7 @@ public sealed class PauseResetController : MonoBehaviour
         TransitionTo(ResetLifecycleState.Required);
         activePlan = plan;
         safePhysicalForward = plan.SafePhysicalForward;
-        safeDirection = ResetEventInfo.DirectionForYaw(plan.RelativeYawDegrees);
-        TransitionTo(ResetLifecycleState.TurningToSafeDirection);
+        TransitionTo(ResetLifecycleState.TurningToSafeHeading);
         ResetStarted?.Invoke(CreateEventInfo());
         return true;
     }
@@ -253,7 +225,7 @@ public sealed class PauseResetController : MonoBehaviour
     /// <param name="currentForward">当前 Physical Room 二维朝向。</param>
     public void ProcessPhysicalForward(Vector2 currentForward)
     {
-        if (state != ResetLifecycleState.TurningToSafeDirection)
+        if (state != ResetLifecycleState.TurningToSafeHeading)
         {
             return;
         }
@@ -269,7 +241,7 @@ public sealed class PauseResetController : MonoBehaviour
     /// </summary>
     public bool TryInitializeMapping(in RdwPoseFrame pose)
     {
-        if (!mappingResetEnabled || state != ResetLifecycleState.TurningToSafeDirection ||
+        if (!mappingResetEnabled || state != ResetLifecycleState.TurningToSafeHeading ||
             activePlan == null || !activePlan.IsSuccess || !pose.IsValid)
         {
             return false;
@@ -326,7 +298,7 @@ public sealed class PauseResetController : MonoBehaviour
     public void CommitMapping(in RdwGainApplyResult applyResult, Vector2 currentPhysicalForward)
     {
         if (!mappingResetEnabled || activeResetter == null ||
-            state != ResetLifecycleState.TurningToSafeDirection)
+            state != ResetLifecycleState.TurningToSafeHeading)
         {
             return;
         }
@@ -393,7 +365,7 @@ public sealed class PauseResetController : MonoBehaviour
 
     private void TryCompleteReset()
     {
-        if (state != ResetLifecycleState.TurningToSafeDirection ||
+        if (state != ResetLifecycleState.TurningToSafeHeading ||
             !physicalHeadingReached || !IsMappingComplete)
         {
             return;

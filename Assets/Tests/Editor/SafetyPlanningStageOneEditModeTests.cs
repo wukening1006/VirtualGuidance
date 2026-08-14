@@ -4,7 +4,7 @@ using NUnit.Framework;
 using UnityEngine;
 
 /// <summary>
-/// 验证连续目标方位与多角度 Physical Heading Profile 的第一阶段契约。
+/// 验证连续目标方位与任意角度 Physical Heading 评估的第一阶段契约。
 /// </summary>
 public sealed class SafetyPlanningStageOneEditModeTests
 {
@@ -84,7 +84,7 @@ public sealed class SafetyPlanningStageOneEditModeTests
     [Test]
     public void PhysicalRiskEvaluator_PublishesCurrentExactHeadingWithoutFixedProfile()
     {
-        var root = new GameObject("PhysicalHeadingProfileTest");
+        var root = new GameObject("PhysicalContinuousHeadingTest");
         try
         {
             CreateCalibrationRig(root, out var pose, out var space, out var calibration);
@@ -100,9 +100,6 @@ public sealed class SafetyPlanningStageOneEditModeTests
             Assert.That(risk.current_heading.RelativeYawDegrees, Is.EqualTo(0f).Within(0.001f));
             Assert.That(risk.current_heading.PhysicalForward.magnitude, Is.EqualTo(1f).Within(0.001f));
             Assert.That(risk.current_heading.ClearanceMeters, Is.GreaterThan(0f));
-            Assert.That(risk.heading_profile, Is.Empty);
-            Assert.That(risk.safe_directions, Is.Empty);
-            Assert.That(risk.unsafe_directions, Is.Empty);
         }
         finally
         {

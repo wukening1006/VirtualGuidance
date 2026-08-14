@@ -47,10 +47,7 @@ public sealed class SemanticActionPlanningEditModeTests
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", "Start", final.Id, final.Id);
             var behindRisk = new PhysicalRiskState(
-                headingProfile: new[]
-                {
-                    new HeadingSample(180f, Vector2.down, 1.5f, HeadingSafety.Safe)
-                });
+                currentHeading: new HeadingSample(180f, Vector2.down, 1.5f, HeadingSafety.Safe));
 
             var behindSet = selector.BuildCandidateSet(
                 runtime,
@@ -67,10 +64,7 @@ public sealed class SemanticActionPlanningEditModeTests
 
             final.transform.position = new Vector3(0f, 0f, 2f);
             var mediumRisk = new PhysicalRiskState(
-                headingProfile: new[]
-                {
-                    new HeadingSample(0f, Vector2.up, 0.9f, HeadingSafety.Unknown)
-                });
+                currentHeading: new HeadingSample(0f, Vector2.up, 0.9f, HeadingSafety.Unknown));
             var mediumSet = selector.BuildCandidateSet(
                 runtime,
                 mediumRisk,

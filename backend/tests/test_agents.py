@@ -12,6 +12,7 @@ from backend.schemas import (
     GuidanceRequest,
     GuideDraft,
     MovementInstruction,
+    NavigationTargetRole,
     condition_policy_for,
 )
 
@@ -26,18 +27,13 @@ def risk_snapshot(risk_id: str, calibration_id: str, position: list[float]) -> d
         "risk_revision": 1,
         "calibration_id": calibration_id,
         "sampled_at_utc": "2026-07-23T08:00:00Z",
-        "risk_policy_version": "unity-risk-policy-v1",
+        "risk_policy_version": "unity-risk-policy-v2",
         "physical_space": "narrow_room",
         "physical_position": position,
         "physical_forward": [0.0, 1.0],
         "boundary_context": {"points": []},
         "obstacle_context": [],
-        "clearance_forward": 0.7,
-        "clearance_left": 1.8,
-        "clearance_right": 0.8,
         "risk_level": "high",
-        "safe_directions": ["left"],
-        "unsafe_directions": ["forward", "right"],
         "critical": False,
         "reset_required": False,
     }
@@ -51,9 +47,9 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
     model_candidates = ["E3", "E4"] if safe_filter else ["E5", "E3", "E4"]
     return GuidanceRequest(
         task_definition_version="t2-main-target-v2",
-        guidance_schema_version="guidance-schema-v2",
+        guidance_schema_version="guidance-schema-v3",
         candidate_policy_version="t2-candidate-policy-v1",
-        risk_policy_version="unity-risk-policy-v1",
+        risk_policy_version="unity-risk-policy-v2",
         session_id="session-agent-test",
         calibration_id="calibration-agent-test",
         request_id="request-agent-test",
@@ -90,7 +86,7 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
     )
 
 
-def test_affordance_selects_semantic_redirection_when_forward_unsafe() -> None:
+def test_affordance_consumes_unity_allowed_semantic_candidate() -> None:
     request = request_for()
     state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
         request.physical_space_id,
@@ -102,6 +98,23 @@ def test_affordance_selects_semantic_redirection_when_forward_unsafe() -> None:
 
     assert affordance.intervention_type == "semantic_redirection"
     assert affordance.preferred_direction == "left"
+    assert affordance.semantic_anchor == "E3"
+
+
+def test_affordance_does_not_relabel_route_subgoal_as_semantic_redirection() -> None:
+    request = request_for()
+    candidate = request.candidate_for("E3")
+    assert candidate is not None
+    candidate.target_role = NavigationTargetRole.ROUTE_SUBGOAL
+    state = RDWStateAgent.from_config_dir(CONFIG_DIR).evaluate(
+        request.physical_space_id,
+        request.physical_position_xz,
+        request.physical_forward_xz,
+    )
+
+    affordance = RDWAffordanceAgent().build(request, state)
+
+    assert affordance.intervention_type == "direct_visit"
     assert affordance.semantic_anchor == "E3"
 
 
@@ -124,7 +137,6 @@ def verify_candidate_movement(
     relative_yaw_deg: float,
     suggested_movement: MovementInstruction,
     movement: MovementInstruction,
-    unsafe_directions: list[str] | None = None,
 ):
     request = request_for()
     candidate = request.candidate_for("E3")
@@ -137,12 +149,6 @@ def verify_candidate_movement(
         request.physical_position_xz,
         request.physical_forward_xz,
     )
-    state.unsafe_directions = list(unsafe_directions or [])
-    state.safe_directions = [
-        direction
-        for direction in ("forward", "left", "right")
-        if direction not in state.unsafe_directions
-    ]
     state.reset_required = False
     draft = GuideDraft(
         selected_target="E3",
@@ -163,7 +169,6 @@ def test_verifier_allows_negative_behind_turn_when_coarse_left_is_unsafe() -> No
         -150.0,
         MovementInstruction.TURN_LEFT_SLOWLY,
         MovementInstruction.TURN_LEFT_SLOWLY,
-        unsafe_directions=["left"],
     )
 
     assert result.approved is True
@@ -176,7 +181,6 @@ def test_verifier_allows_positive_behind_turn_when_coarse_right_is_unsafe() -> N
         150.0,
         MovementInstruction.TURN_RIGHT_SLOWLY,
         MovementInstruction.TURN_RIGHT_SLOWLY,
-        unsafe_directions=["right"],
     )
 
     assert result.approved is True
@@ -212,7 +216,6 @@ def test_verifier_allows_forward_movement_in_existing_forward_deadzone() -> None
         10.0,
         MovementInstruction.MOVE_FORWARD_SLOWLY,
         MovementInstruction.MOVE_FORWARD_SLOWLY,
-        unsafe_directions=["forward"],
     )
 
     assert result.approved is True

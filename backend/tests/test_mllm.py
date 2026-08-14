@@ -70,9 +70,9 @@ def request_for(
     return GuidanceRequest.model_validate(
         {
             "task_definition_version": "t2-main-target-v2",
-            "guidance_schema_version": "guidance-schema-v2",
+            "guidance_schema_version": "guidance-schema-v3",
             "candidate_policy_version": "t2-candidate-policy-v1",
-            "risk_policy_version": "unity-risk-policy-v1",
+            "risk_policy_version": "unity-risk-policy-v2",
             "session_id": "session-mllm-test",
             "calibration_id": "calibration-mllm-test",
             "request_id": f"request-{condition}",
@@ -90,7 +90,7 @@ def request_for(
                 "risk_revision": 9,
                 "calibration_id": "calibration-mllm-test",
                 "sampled_at_utc": "2026-07-23T08:00:00Z",
-                "risk_policy_version": "unity-risk-policy-v1",
+                "risk_policy_version": "unity-risk-policy-v2",
                 "physical_space": "narrow_room",
                 "physical_position": [1.8, 4.3],
                 "physical_forward": [0.0, 1.0],
@@ -100,12 +100,7 @@ def request_for(
                 "obstacle_context": [
                     {"id": "pillar", "center": [1.0, 2.0], "radius": 0.3}
                 ],
-                "clearance_forward": 0.7,
-                "clearance_left": 1.8,
-                "clearance_right": 0.8,
                 "risk_level": risk_level,
-                "safe_directions": ["left"],
-                "unsafe_directions": ["forward", "right"],
                 "critical": critical,
                 "reset_required": critical,
             },
@@ -250,15 +245,12 @@ def test_condition_context_snapshots_freeze_six_information_boundaries() -> None
 
     raw = contexts[Condition.B2_RAW_PHYSICAL_DATA.value]["raw_physical_data"]
     assert raw["position"] == [1.8, 4.3]
-    assert raw["clearance"] == {"forward": 0.7, "left": 1.8, "right": 0.8}
+    assert raw["forward"] == [0.0, 1.0]
+    assert "clearance" not in json.dumps(raw)
     assert "risk_level" not in raw
 
     labels = contexts[Condition.B3_RISK_LABELS.value]["risk_labels"]
-    assert labels == {
-        "risk_level": "high",
-        "safe_directions": ["left"],
-        "unsafe_directions": ["forward", "right"],
-    }
+    assert labels == {"risk_level": "high", "critical": False, "reset_required": False}
     assert "allowed_candidate_ids" not in contexts[Condition.B3_RISK_LABELS.value]
 
 

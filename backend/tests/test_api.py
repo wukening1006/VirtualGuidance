@@ -28,9 +28,9 @@ def base_payload(condition: str) -> dict:
     model_candidate_ids = ["E3", "E4"] if safe_filter else candidate_ids
     payload = {
         "task_definition_version": "t2-main-target-v2",
-        "guidance_schema_version": "guidance-schema-v2",
+        "guidance_schema_version": "guidance-schema-v3",
         "candidate_policy_version": "t2-candidate-policy-v1",
-        "risk_policy_version": "unity-risk-policy-v1",
+        "risk_policy_version": "unity-risk-policy-v2",
         "session_id": "session-test-001",
         "calibration_id": "calibration-test-001",
         "request_id": "request-test-001",
@@ -76,12 +76,7 @@ def base_payload(condition: str) -> dict:
         "physical_forward": payload["user_physical_forward"],
         "boundary_context": {"points": [[0.0, 0.0], [3.6, 0.0], [3.6, 5.0], [0.0, 5.0]]},
         "obstacle_context": [],
-        "clearance_forward": 0.7,
-        "clearance_left": 1.0,
-        "clearance_right": 1.0,
         "risk_level": "high",
-        "safe_directions": [],
-        "unsafe_directions": ["forward"],
         "critical": False,
         "reset_required": False,
     }
@@ -141,8 +136,8 @@ def test_b1_narrow_room_returns_forward_and_logs_risk(tmp_path: Path) -> None:
 
     record = read_log_records(tmp_path)[0]
     assert record["selected_target"] == "E5"
-    assert record["clearance_forward"] == 0.7
-    assert "forward" in record["unsafe_directions"]
+    assert record["boundary_risk"] == "high"
+    assert record["reset_risk"] == "high"
 
 
 def test_guidance_response_contract_keys_are_stable(tmp_path: Path) -> None:
@@ -210,7 +205,6 @@ def test_ours_full_narrow_room_redirects_away_from_forward(tmp_path: Path) -> No
     payload = base_payload("ours_full")
     payload["user_physical_position"] = [1.8, 4.3]
     payload["risk_snapshot"]["physical_position"] = [1.8, 4.3]
-    payload["risk_snapshot"]["safe_directions"] = ["left"]
 
     response = client.post("/api/guidance", json=payload)
 
@@ -270,12 +264,9 @@ def test_all_conditions_select_only_from_frozen_model_candidates(condition: str,
     payload["user_physical_position"] = [2.5, 2.5]
     payload["risk_snapshot"]["physical_space"] = "wide_room"
     payload["risk_snapshot"]["physical_position"] = [2.5, 2.5]
-    payload["risk_snapshot"]["clearance_forward"] = 2.5
-    payload["risk_snapshot"]["clearance_left"] = 2.5
-    payload["risk_snapshot"]["clearance_right"] = 2.5
     payload["risk_snapshot"]["risk_level"] = "low"
-    payload["risk_snapshot"]["safe_directions"] = ["forward", "left", "right"]
-    payload["risk_snapshot"]["unsafe_directions"] = []
+    payload["risk_snapshot"]["critical"] = False
+    payload["risk_snapshot"]["reset_required"] = False
     response = client.post("/api/guidance", json=payload)
 
     assert response.status_code == 200
@@ -319,11 +310,35 @@ def test_formal_api_rejects_frozen_tasks(task_id: str, tmp_path: Path) -> None:
 def test_api_rejects_legacy_guidance_schema_version(tmp_path: Path) -> None:
     response = make_client(tmp_path).post(
         "/api/guidance",
-        json={**base_payload("ours_full"), "guidance_schema_version": "guidance-schema-v1"},
+        json={**base_payload("ours_full"), "guidance_schema_version": "guidance-schema-v2"},
     )
 
     assert response.status_code == 422
     assert any(item["loc"][-1] == "guidance_schema_version" for item in response.json()["detail"])
+
+
+@pytest.mark.parametrize(
+    "legacy_field",
+    [
+        "clearance_forward",
+        "clearance_left",
+        "clearance_right",
+        "safe_directions",
+        "unsafe_directions",
+        "heading_profile",
+    ],
+)
+def test_api_rejects_legacy_discrete_risk_fields(
+    legacy_field: str,
+    tmp_path: Path,
+) -> None:
+    payload = base_payload("ours_full")
+    payload["risk_snapshot"][legacy_field] = [] if legacy_field.endswith("directions") else 1.0
+
+    response = make_client(tmp_path).post("/api/guidance", json=payload)
+
+    assert response.status_code == 422
+    assert any(legacy_field in item["loc"] for item in response.json()["detail"])
 
 
 def test_api_rejects_missing_or_inconsistent_unity_risk_snapshot(tmp_path: Path) -> None:
@@ -372,17 +387,16 @@ def test_pipeline_consumes_unity_risk_without_online_recomputation(tmp_path: Pat
     payload = base_payload("ours_full")
     payload["user_physical_position"] = [2.5, 2.5]
     payload["risk_snapshot"]["physical_position"] = [2.5, 2.5]
-    payload["risk_snapshot"]["clearance_forward"] = 0.2
     payload["risk_snapshot"]["risk_level"] = "critical"
-    payload["risk_snapshot"]["unsafe_directions"] = ["forward"]
     payload["risk_snapshot"]["critical"] = True
+    payload["risk_snapshot"]["reset_required"] = True
 
     response = client.post("/api/guidance", json=payload)
 
     assert response.status_code == 200
     record = read_log_records(tmp_path)[0]
-    assert record["clearance_forward"] == 0.2
     assert record["boundary_risk"] == "critical"
+    assert record["reset_risk"] == "critical"
 
 
 def test_pydantic_contract_matches_unity_dto_fields() -> None:
@@ -428,9 +442,9 @@ def test_pydantic_contract_matches_unity_dto_fields() -> None:
 def test_guidance_response_schema_rejects_legacy_avatar_action() -> None:
     payload = {
         "task_definition_version": "t2-main-target-v2",
-        "guidance_schema_version": "guidance-schema-v2",
+        "guidance_schema_version": "guidance-schema-v3",
         "candidate_policy_version": "t2-candidate-policy-v1",
-        "risk_policy_version": "unity-risk-policy-v1",
+        "risk_policy_version": "unity-risk-policy-v2",
         "session_id": "session-test-001",
         "calibration_id": "calibration-test-001",
         "request_id": "request-test-001",

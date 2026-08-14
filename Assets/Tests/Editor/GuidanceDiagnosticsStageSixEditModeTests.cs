@@ -16,7 +16,7 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
 {
     /// <summary>验证请求事件包含完整方位与候选诊断，且不改变后端请求结构。</summary>
     [Test]
-    public void ExperimentLogger_WritesHeadingProfileAndCandidateAssessmentsWithoutChangingRequest()
+    public void ExperimentLogger_WritesContinuousHeadingAndCandidateAssessmentsWithoutChangingRequest()
     {
         var root = new GameObject("StageSixRequestDiagnosticsTest");
         ExperimentLogger logger = null;
@@ -62,7 +62,6 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
             logger.Flush();
 
             var record = FindEvent(logger.LogPath, "guidance.requested");
-            Assert.That(record["data"]["heading_profile"], Is.Null);
             Assert.That((float)record["data"]["current_heading"]["clearance_m"], Is.EqualTo(1.8f));
             var assessments = (JArray)record["data"]["candidate_assessments"];
             Assert.That(assessments, Has.Count.EqualTo(2));
@@ -118,7 +117,7 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
         }
     }
 
-    /// <summary>验证遥测只记录当前真实 Heading，不再发布固定 Heading Profile。</summary>
+    /// <summary>验证遥测只记录当前真实 Heading，不发布离散角度档位。</summary>
     [Test]
     public void ExperimentLogger_TelemetryCarriesCurrentExactHeading()
     {
@@ -145,7 +144,6 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
             Assert.That((string)heading["safety"], Is.EqualTo("safe"));
             Assert.That(heading["physical_forward"]["x"], Is.Not.Null);
             Assert.That((float)heading["clearance_m"], Is.EqualTo(1.8f));
-            Assert.That(record["data"]["heading_profile"], Is.Null);
         }
         finally
         {

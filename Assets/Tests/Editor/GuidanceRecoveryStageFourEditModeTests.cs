@@ -35,7 +35,11 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
                       sample.Safety == HeadingSafety.Unsafe));
         Assert.That(result.Evaluations, Has.Some.Matches<HeadingSample>(
             sample => Mathf.Abs(Mathf.DeltaAngle(sample.RelativeYawDegrees, 60f)) < 0.001f &&
-                      sample.Safety == HeadingSafety.Unsafe));
+                       sample.Safety == HeadingSafety.Unsafe));
+        Assert.That(result.EvaluationDiagnostics, Has.Some.Matches<RecoveryHeadingEvaluation>(
+            evaluation => evaluation.Succeeded &&
+                          evaluation.Sample.Safety == HeadingSafety.Unsafe &&
+                          evaluation.FailureReason == "heading_not_safe"));
     }
 
     /// <summary>验证预算耗尽时 NoAcceptableHeading 只表达当前分辨率和预算下未发现 Safe。</summary>
@@ -103,6 +107,8 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         Assert.That(result.FinalValidationAttempted, Is.True);
         Assert.That(result.AttemptedEvaluationCount, Is.EqualTo(5));
         Assert.That(result.SuccessfulEvaluationCount, Is.EqualTo(5));
+        Assert.That(result.EvaluationDiagnostics[result.EvaluationDiagnostics.Count - 1].Succeeded, Is.True);
+        Assert.That(result.EvaluationDiagnostics[result.EvaluationDiagnostics.Count - 1].FailureReason, Is.Empty);
     }
 
     /// <summary>验证最佳候选在独立终验时失效后不得生成 Recovery Plan。</summary>
@@ -127,6 +133,10 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         Assert.That(result.Plan.Failure, Is.EqualTo(RecoveryHeadingFailure.FinalValidationFailed));
         Assert.That(result.FinalValidationAttempted, Is.True);
         Assert.That(result.FinalValidationPassed, Is.False);
+        var finalEvaluation = result.EvaluationDiagnostics[result.EvaluationDiagnostics.Count - 1];
+        Assert.That(finalEvaluation.Succeeded, Is.True);
+        Assert.That(finalEvaluation.Sample.Safety, Is.EqualTo(HeadingSafety.Unsafe));
+        Assert.That(finalEvaluation.FailureReason, Is.EqualTo("heading_not_safe_at_final_validation"));
     }
 
     /// <summary>验证任意非正交动作方向直接交给精确评估器，不做最近样本量化。</summary>
@@ -248,6 +258,44 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         Assert.That(plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
     }
 
+    /// <summary>验证 Coordinator 使用 Inspector 注入的 Recovery Search 参数，而不是恢复默认值。</summary>
+    [Test]
+    public void GuidanceCoordinator_RecoverySearchUsesInspectorSettings()
+    {
+        var root = new GameObject("StageFourRecoverySearchSettingsTest");
+        root.SetActive(false);
+        try
+        {
+            CreateCoordinatorHarness(root, "E5", out var coordinator, out _, out var risk, out _);
+            SetPrivateField(coordinator, "recoveryHeadingSearchSettings", new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 90f,
+                minimumResolutionDegrees = 45f,
+                refinementFactor = 2f,
+                maximumEvaluations = 12,
+                clearanceNormalizationMeters = 4f,
+                clearanceWeight = 2f,
+                futureDistanceWeight = 0.25f,
+                turnCostWeight = 0.75f
+            });
+
+            var searchMethod = coordinator.GetType().GetMethod(
+                "SearchRecoveryHeading", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(searchMethod, Is.Not.Null);
+            var result = (RecoveryHeadingSearchResult)searchMethod.Invoke(
+                coordinator, new object[] { risk.CurrentRiskState, true });
+
+            Assert.That(result.Settings.maximumEvaluations, Is.EqualTo(12));
+            Assert.That(result.Settings.minimumResolutionDegrees, Is.EqualTo(45f));
+            Assert.That(result.Settings.clearanceNormalizationMeters, Is.EqualTo(4f));
+            Assert.That(result.Settings.clearanceWeight, Is.EqualTo(2f));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
     /// <summary>验证绝对航向接口使用精确几何，而不是风险快照中最近的离散采样。</summary>
     [Test]
     public void PhysicalRiskEvaluator_AbsoluteHeadingIgnoresNearestDiscreteSample()
@@ -272,34 +320,19 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         }
     }
 
-    /// <summary>验证旧离散字段不能回填当前朝向或重新进入运行时风险事实。</summary>
+    /// <summary>验证缺少精确朝向评估时，当前朝向默认保持 Unknown。</summary>
     [Test]
-    public void PhysicalRiskState_LegacyDirectionInputsRemainFrozenAndDoNotFallback()
+    public void PhysicalRiskState_DefaultCurrentHeadingIsUnknownWithoutExactEvaluation()
     {
         var state = new PhysicalRiskState(
             riskSnapshotId: "legacy-input-risk",
             riskRevision: 1,
             calibrationId: "legacy-input-calibration",
             physicalSpace: "legacy-input-space",
-            physicalForward: Vector2.up,
-            clearanceForward: 9f,
-            clearanceLeft: 8f,
-            clearanceRight: 7f,
-            unsafeDirections: new[] { "forward" },
-            safeDirections: new[] { "left", "right" },
-            headingProfile: new[]
-            {
-                new HeadingSample(0f, Vector2.up, 9f, HeadingSafety.Safe)
-            });
+            physicalForward: Vector2.up);
 
         Assert.That(state.current_heading.Safety, Is.EqualTo(HeadingSafety.Unknown));
         Assert.That(state.current_heading.ClearanceMeters, Is.Zero);
-        Assert.That(state.clearance_forward, Is.Zero);
-        Assert.That(state.clearance_left, Is.Zero);
-        Assert.That(state.clearance_right, Is.Zero);
-        Assert.That(state.safe_directions, Is.Empty);
-        Assert.That(state.unsafe_directions, Is.Empty);
-        Assert.That(state.heading_profile, Is.Empty);
     }
 
     /// <summary>验证完成转向后先稳定等待，再按 Revalidating、Replanning 顺序恢复。</summary>
@@ -369,7 +402,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             Assert.That(states[1], Is.EqualTo(GuidanceRecoveryState.Revalidating));
             Assert.That(states, Has.None.EqualTo(GuidanceRecoveryState.Replanning));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
             Assert.That(coordinator.FrozenRecoveryPlan.Safety, Is.EqualTo(HeadingSafety.Safe));
             Assert.That(Vector2.Angle(coordinator.FrozenRecoveryPlan.SafePhysicalForward, originalForward),
@@ -538,7 +571,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", safeRisk);
 
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
             Assert.That(coordinator.FrozenRecoveryPlan, Is.Not.Null);
             Assert.That(coordinator.FrozenRecoveryPlan.Safety, Is.EqualTo(HeadingSafety.Safe));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
@@ -751,16 +784,10 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             physicalForward: source.user_physical_forward,
             boundaryContext: source.boundary_context,
             obstacleContext: source.obstacle_context,
-            clearanceForward: source.clearance_forward,
-            clearanceLeft: source.clearance_left,
-            clearanceRight: source.clearance_right,
             boundaryRisk: source.boundary_risk,
             resetRisk: source.reset_risk,
-            unsafeDirections: source.unsafe_directions,
-            safeDirections: source.safe_directions,
             isCritical: source.critical,
             resetRequired: false,
-            headingProfile: profile,
             currentHeading: source.current_heading);
     }
 

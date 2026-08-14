@@ -715,7 +715,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            info != null ? $"safe direction: {info.SafeDirection}" : "reset started");
+            info != null ? $"safe heading yaw: {info.RelativeYawDegrees:F1} deg" : "reset started");
     }
 
     private void HandleResetCompleted(ResetEventInfo _)
@@ -730,7 +730,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            "safe direction reached");
+            "safe heading reached");
         if (taskController != null &&
             taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
         {
