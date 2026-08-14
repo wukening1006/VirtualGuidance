@@ -9,50 +9,240 @@ using UnityEngine;
 /// </summary>
 public sealed class GuidanceRecoveryStageFourEditModeTests
 {
-    /// <summary>验证恢复规划器可以选择多角度 Profile 中的非正交安全朝向。</summary>
+    /// <summary>验证全角域分层覆盖能发现两个 Unsafe 粗采样点之间的狭窄 Safe 区间。</summary>
     [Test]
-    public void RecoveryHeadingPlanner_SelectsNonOrthogonalSafeHeading()
+    public void RecoveryHeadingPlanner_FindsNarrowSafeBandBetweenUnsafeCoarseSamples()
     {
         var planner = new RecoveryHeadingPlanner();
-        var plan = planner.Plan(new[]
-        {
-            Sample(0f, 0.9f, HeadingSafety.Unknown),
-            Sample(30f, 1.1f, HeadingSafety.Unknown),
-            Sample(60f, 2.6f, HeadingSafety.Safe),
-            Sample(90f, 1.4f, HeadingSafety.Safe)
-        });
+        var evaluator = new TestHeadingEvaluator((yaw, _) =>
+            yaw >= 42.6f && yaw <= 43.5f ? HeadingSafety.Safe : HeadingSafety.Unsafe);
+        var result = planner.Search(
+            SearchRisk(),
+            evaluator,
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 30f,
+                minimumResolutionDegrees = 1f,
+                refinementFactor = 3f,
+                maximumEvaluations = 720
+            });
 
-        Assert.That(plan.IsSuccess, Is.True);
-        Assert.That(plan.RelativeYawDegrees, Is.EqualTo(60f).Within(0.01f));
-        Assert.That(Vector2.Distance(plan.SafePhysicalForward, ForwardAt(60f)), Is.LessThan(0.001f));
+        Assert.That(result.Plan.IsSuccess, Is.True);
+        Assert.That(result.Plan.RelativeYawDegrees, Is.InRange(42.6f, 43.5f));
+        Assert.That(result.CompletedCoverageResolutionDegrees, Is.EqualTo(1f).Within(0.001f));
+        Assert.That(result.Evaluations, Has.Some.Matches<HeadingSample>(
+            sample => Mathf.Abs(Mathf.DeltaAngle(sample.RelativeYawDegrees, 30f)) < 0.001f &&
+                      sample.Safety == HeadingSafety.Unsafe));
+        Assert.That(result.Evaluations, Has.Some.Matches<HeadingSample>(
+            sample => Mathf.Abs(Mathf.DeltaAngle(sample.RelativeYawDegrees, 60f)) < 0.001f &&
+                      sample.Safety == HeadingSafety.Unsafe));
+    }
+
+    /// <summary>验证预算耗尽时 NoAcceptableHeading 只表达当前分辨率和预算下未发现 Safe。</summary>
+    [Test]
+    public void RecoveryHeadingPlanner_NoSafeWithinBudgetReturnsResolutionScopedFailure()
+    {
+        var result = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            new TestHeadingEvaluator((_, __) => HeadingSafety.Unsafe),
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 30f,
+                minimumResolutionDegrees = 1f,
+                refinementFactor = 3f,
+                maximumEvaluations = 72
+            });
+
+        Assert.That(result.Plan.IsSuccess, Is.False);
+        Assert.That(result.Plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
+        Assert.That(result.BudgetExhausted, Is.True);
+        Assert.That(result.AttemptedEvaluationCount, Is.LessThanOrEqualTo(72));
+        Assert.That(result.FailureReason, Is.EqualTo("no_safe_heading_at_current_resolution_budget_exhausted"));
+    }
+
+    /// <summary>验证失败的精确查询同样消耗预算，并报告评估器不可用。</summary>
+    [Test]
+    public void RecoveryHeadingPlanner_FailedQueriesConsumeBudgetAndReportUnavailableEvaluator()
+    {
+        var evaluator = new UnavailableHeadingEvaluator();
+        var result = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            evaluator,
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 30f,
+                minimumResolutionDegrees = 1f,
+                maximumEvaluations = 8
+            });
+
+        Assert.That(result.Plan.Failure, Is.EqualTo(RecoveryHeadingFailure.EvaluationUnavailable));
+        Assert.That(result.BudgetExhausted, Is.True);
+        Assert.That(result.AttemptedEvaluationCount, Is.EqualTo(7));
+        Assert.That(result.SuccessfulEvaluationCount, Is.Zero);
+        Assert.That(result.Evaluations, Is.Empty);
+        Assert.That(evaluator.CallCount, Is.EqualTo(result.AttemptedEvaluationCount));
+    }
+
+    /// <summary>验证搜索查询与独立终验合计不会超过配置预算。</summary>
+    [Test]
+    public void RecoveryHeadingPlanner_FinalValidationStaysWithinTotalEvaluationBudget()
+    {
+        var evaluator = new TestHeadingEvaluator((yaw, _) =>
+            Mathf.Abs(yaw) < 0.001f ? HeadingSafety.Safe : HeadingSafety.Unsafe);
+        var result = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            evaluator,
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 90f,
+                minimumResolutionDegrees = 90f,
+                maximumEvaluations = 5
+            });
+
+        Assert.That(result.Plan.IsSuccess, Is.True);
+        Assert.That(result.FinalValidationAttempted, Is.True);
+        Assert.That(result.AttemptedEvaluationCount, Is.EqualTo(5));
+        Assert.That(result.SuccessfulEvaluationCount, Is.EqualTo(5));
+    }
+
+    /// <summary>验证最佳候选在独立终验时失效后不得生成 Recovery Plan。</summary>
+    [Test]
+    public void RecoveryHeadingPlanner_FinalValidationFailureDoesNotProducePlan()
+    {
+        var evaluator = new TestHeadingEvaluator((yaw, headingCallCount) =>
+            Mathf.Abs(yaw) < 0.001f && headingCallCount == 1
+                ? HeadingSafety.Safe
+                : HeadingSafety.Unsafe);
+        var result = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            evaluator,
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 90f,
+                minimumResolutionDegrees = 90f,
+                maximumEvaluations = 16
+            });
+
+        Assert.That(result.Plan.IsSuccess, Is.False);
+        Assert.That(result.Plan.Failure, Is.EqualTo(RecoveryHeadingFailure.FinalValidationFailed));
+        Assert.That(result.FinalValidationAttempted, Is.True);
+        Assert.That(result.FinalValidationPassed, Is.False);
+    }
+
+    /// <summary>验证任意非正交动作方向直接交给精确评估器，不做最近样本量化。</summary>
+    [TestCase(47f)]
+    [TestCase(-128f)]
+    public void GuidanceActionSafetyEvaluator_UsesExactArbitraryYaw(float yawDegrees)
+    {
+        var evaluator = new TestHeadingEvaluator((_, __) => HeadingSafety.Safe);
+        var action = new GuidanceAction(
+            GuidanceActionType.TurnInPlace,
+            yawDegrees < 0f ? TurnSide.Left : TurnSide.Right,
+            yawDegrees,
+            true);
+        var state = new GuidanceActionSafetyEvaluator().Evaluate(
+            action,
+            SearchRisk(),
+            evaluator,
+            out var reason);
+
+        Assert.That(state, Is.EqualTo(CandidateExecutionState.Executable), reason);
+        Assert.That(evaluator.LastYawDegrees, Is.EqualTo(yawDegrees).Within(0.001f));
     }
 
     /// <summary>验证不存在可接受朝向时返回明确不可恢复结果。</summary>
     [Test]
     public void RecoveryHeadingPlanner_NoAcceptableHeadingReturnsExplicitFailure()
     {
-        var planner = new RecoveryHeadingPlanner();
-        var plan = planner.Plan(new[]
-        {
-            Sample(0f, 0.2f, HeadingSafety.Critical),
-            Sample(30f, 0.5f, HeadingSafety.Unsafe),
-            Sample(-60f, 0.3f, HeadingSafety.Critical)
-        });
+        var evaluator = new TestHeadingEvaluator((_, __) => HeadingSafety.Critical);
+        var result = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            evaluator,
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 60f,
+                minimumResolutionDegrees = 10f,
+                maximumEvaluations = 128
+            });
 
-        Assert.That(plan.IsSuccess, Is.False);
-        Assert.That(plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
+        Assert.That(result.Plan.IsSuccess, Is.False);
+        Assert.That(result.Plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
+    }
+
+    private static PhysicalRiskState SearchRisk()
+    {
+        return new PhysicalRiskState(
+            riskSnapshotId: "continuous-search-risk",
+            riskRevision: 1,
+            calibrationId: "continuous-search-calibration",
+            physicalSpace: "continuous-search-space",
+            physicalForward: Vector2.up,
+            currentHeading: new HeadingSample(0f, Vector2.up, 0.5f, HeadingSafety.Unsafe));
+    }
+
+    private sealed class TestHeadingEvaluator : IPhysicalHeadingEvaluator
+    {
+        private readonly Func<float, int, HeadingSafety> classify;
+        private readonly Dictionary<int, int> headingCallCounts = new Dictionary<int, int>();
+
+        public float LastYawDegrees { get; private set; }
+
+        public TestHeadingEvaluator(Func<float, int, HeadingSafety> classifyHeading)
+        {
+            classify = classifyHeading;
+        }
+
+        public bool TryEvaluateAbsoluteHeading(
+            PhysicalRiskState riskState,
+            Vector2 absolutePhysicalForward,
+            out HeadingSample sample)
+        {
+            LastYawDegrees = Mathf.DeltaAngle(
+                0f,
+                Mathf.Atan2(absolutePhysicalForward.x, absolutePhysicalForward.y) * Mathf.Rad2Deg);
+            var key = Mathf.RoundToInt(LastYawDegrees * 1000f);
+            headingCallCounts.TryGetValue(key, out var count);
+            count++;
+            headingCallCounts[key] = count;
+            var safety = classify(LastYawDegrees, count);
+            sample = new HeadingSample(
+                LastYawDegrees,
+                absolutePhysicalForward,
+                safety == HeadingSafety.Safe ? 2f : 0.4f,
+                safety);
+            return true;
+        }
+    }
+
+    private sealed class UnavailableHeadingEvaluator : IPhysicalHeadingEvaluator
+    {
+        public int CallCount { get; private set; }
+
+        public bool TryEvaluateAbsoluteHeading(
+            PhysicalRiskState riskState,
+            Vector2 absolutePhysicalForward,
+            out HeadingSample sample)
+        {
+            CallCount++;
+            sample = default;
+            return false;
+        }
     }
 
     /// <summary>验证 Unknown 航向不能作为 Reset 的安全恢复目标。</summary>
     [Test]
     public void RecoveryHeadingPlanner_UnknownHeadingIsNotAcceptable()
     {
-        var planner = new RecoveryHeadingPlanner();
-        var plan = planner.Plan(new[]
-        {
-            Sample(0f, 1f, HeadingSafety.Unknown),
-            Sample(45f, 0.7f, HeadingSafety.Unsafe)
-        });
+        var plan = new RecoveryHeadingPlanner().Search(
+            SearchRisk(),
+            new TestHeadingEvaluator((yaw, _) =>
+                Mathf.Abs(yaw) < 0.001f ? HeadingSafety.Unknown : HeadingSafety.Unsafe),
+            new RecoveryHeadingSearchSettings
+            {
+                coarseStepDegrees = 60f,
+                minimumResolutionDegrees = 10f,
+                maximumEvaluations = 128
+            }).Plan;
 
         Assert.That(plan.IsSuccess, Is.False);
         Assert.That(plan.Failure, Is.EqualTo(RecoveryHeadingFailure.NoAcceptableHeading));
@@ -80,6 +270,36 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         {
             UnityEngine.Object.DestroyImmediate(root);
         }
+    }
+
+    /// <summary>验证旧离散字段不能回填当前朝向或重新进入运行时风险事实。</summary>
+    [Test]
+    public void PhysicalRiskState_LegacyDirectionInputsRemainFrozenAndDoNotFallback()
+    {
+        var state = new PhysicalRiskState(
+            riskSnapshotId: "legacy-input-risk",
+            riskRevision: 1,
+            calibrationId: "legacy-input-calibration",
+            physicalSpace: "legacy-input-space",
+            physicalForward: Vector2.up,
+            clearanceForward: 9f,
+            clearanceLeft: 8f,
+            clearanceRight: 7f,
+            unsafeDirections: new[] { "forward" },
+            safeDirections: new[] { "left", "right" },
+            headingProfile: new[]
+            {
+                new HeadingSample(0f, Vector2.up, 9f, HeadingSafety.Safe)
+            });
+
+        Assert.That(state.current_heading.Safety, Is.EqualTo(HeadingSafety.Unknown));
+        Assert.That(state.current_heading.ClearanceMeters, Is.Zero);
+        Assert.That(state.clearance_forward, Is.Zero);
+        Assert.That(state.clearance_left, Is.Zero);
+        Assert.That(state.clearance_right, Is.Zero);
+        Assert.That(state.safe_directions, Is.Empty);
+        Assert.That(state.unsafe_directions, Is.Empty);
+        Assert.That(state.heading_profile, Is.Empty);
     }
 
     /// <summary>验证完成转向后先稳定等待，再按 Revalidating、Replanning 顺序恢复。</summary>
@@ -141,7 +361,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             InvokePrivate(coordinator, "TriggerPauseReset", null, risk.CurrentRiskState, "planned heading unsafe");
             var originalForward = reset.SafePhysicalForward;
             var originalYaw = Mathf.Atan2(originalForward.x, originalForward.y) * Mathf.Rad2Deg;
-            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 4.3f), originalYaw);
+            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 4.6f), originalYaw);
             states.Clear();
             reset.ProcessPhysicalForward(pose.PhysicalForwardXZ);
 
@@ -210,11 +430,8 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             Assert.That(risk.TryEvaluateAbsoluteHeading(latestRisk, frozenForward, out var exactFrozen), Is.True);
             Assert.That(exactFrozen.Safety, Is.EqualTo(HeadingSafety.Critical),
                 "测试位姿必须让旧冻结航向真实进入 Critical 区间");
-            var replacement = new RecoveryHeadingPlanner().Plan(
-                latestRisk.heading_profile,
-                null,
-                coordinator.FrozenRecoveryPlan);
-            Assert.That(replacement.IsSuccess, Is.True, "最新真实 Profile 必须仍存在 Safe 替代航向");
+            var replacement = new RecoveryHeadingPlanner().Search(latestRisk, risk).Plan;
+            Assert.That(replacement.IsSuccess, Is.True, "最新精确几何事实必须仍存在 Safe 替代航向");
             Assert.That(Vector2.Distance(replacement.SafePhysicalForward, frozenForward), Is.GreaterThan(0.001f));
 
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", latestRisk);
@@ -223,7 +440,8 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             Assert.That(coordinator.FrozenRecoveryPlan, Is.Null);
             Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
 
-            var refreshedRisk = CopyRisk(latestRisk, latestRisk.heading_profile);
+            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 2.5f), 0f);
+            var refreshedRisk = risk.EvaluateNow();
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", refreshedRisk);
 
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
@@ -276,11 +494,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         try
         {
             CreateCoordinatorHarness(root, "MissingFinal", out var coordinator, out var task, out var risk, out var reset);
-            var recoveryRisk = CopyRisk(risk.CurrentRiskState, new[]
-            {
-                Sample(0f, 2.4f, HeadingSafety.Safe),
-                Sample(60f, 1.8f, HeadingSafety.Safe)
-            });
+            var recoveryRisk = risk.CurrentRiskState;
 
             InvokePrivate(coordinator, "TriggerPauseReset", null, recoveryRisk, "planned heading unsafe");
             reset.ProcessPhysicalForward(reset.SafePhysicalForward);
@@ -305,12 +519,10 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         try
         {
             CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
-            var noSafeRisk = CopyRisk(risk.CurrentRiskState, new[]
-            {
-                Sample(0f, 0.8f, HeadingSafety.Unsafe),
-                Sample(60f, 0.7f, HeadingSafety.Unknown),
-                Sample(-60f, 0.6f, HeadingSafety.Critical)
-            });
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            var pose = root.GetComponent<UserPoseTracker>();
+            pose.SetCalibratedPhysicalPose(new Vector2(0.1f, 2.5f), 0f);
+            var noSafeRisk = risk.EvaluateNow();
 
             InvokePrivate(coordinator, "TriggerPauseReset", null, noSafeRisk, "planned heading unsafe");
 
@@ -321,10 +533,8 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             Assert.That(task.RuntimeState.phase, Is.Not.EqualTo(GuidanceRuntimePhase.Ended));
             Assert.That(reset.IsActive, Is.False);
 
-            var safeRisk = CopyRisk(noSafeRisk, new[]
-            {
-                Sample(90f, 2f, HeadingSafety.Safe)
-            });
+            pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 2.5f), 0f);
+            var safeRisk = risk.EvaluateNow();
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", safeRisk);
 
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
@@ -348,10 +558,10 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         try
         {
             CreateCoordinatorHarness(root, "E5", out var coordinator, out var task, out var risk, out var reset);
-            var noSafeRisk = CopyRisk(risk.CurrentRiskState, new[]
-            {
-                Sample(0f, 0.8f, HeadingSafety.Unsafe)
-            });
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            var pose = root.GetComponent<UserPoseTracker>();
+            pose.SetCalibratedPhysicalPose(new Vector2(0.1f, 2.5f), 0f);
+            var noSafeRisk = risk.EvaluateNow();
             InvokePrivate(coordinator, "TriggerPauseReset", null, noSafeRisk, "planned heading unsafe");
 
             Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.HoldingForSafeHeading));
@@ -451,10 +661,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         try
         {
             CreateCoordinatorHarness(root, "E5", out var coordinator, out _, out var risk, out var reset);
-            var recoveryRisk = CopyRisk(risk.CurrentRiskState, new[]
-            {
-                Sample(30f, 2f, HeadingSafety.Safe)
-            });
+            var recoveryRisk = risk.CurrentRiskState;
 
             InvokePrivate(coordinator, "TriggerPauseReset", null, recoveryRisk, "planned heading unsafe");
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", (PhysicalRiskState)null);
@@ -553,7 +760,8 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
             safeDirections: source.safe_directions,
             isCritical: source.critical,
             resetRequired: false,
-            headingProfile: profile);
+            headingProfile: profile,
+            currentHeading: source.current_heading);
     }
 
     private static HeadingSample Sample(float yawDegrees, float clearanceMeters, HeadingSafety safety)

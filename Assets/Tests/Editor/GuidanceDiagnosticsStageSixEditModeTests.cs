@@ -62,7 +62,8 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
             logger.Flush();
 
             var record = FindEvent(logger.LogPath, "guidance.requested");
-            Assert.That(record["data"]["heading_profile"], Has.Count.EqualTo(10));
+            Assert.That(record["data"]["heading_profile"], Is.Null);
+            Assert.That((float)record["data"]["current_heading"]["clearance_m"], Is.EqualTo(1.8f));
             var assessments = (JArray)record["data"]["candidate_assessments"];
             Assert.That(assessments, Has.Count.EqualTo(2));
             Assert.That((string)assessments[0]["target_id"], Is.EqualTo("E5"));
@@ -117,9 +118,9 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
         }
     }
 
-    /// <summary>验证遥测记录保留生产风险模型的全部十个方位样本。</summary>
+    /// <summary>验证遥测只记录当前真实 Heading，不再发布固定 Heading Profile。</summary>
     [Test]
-    public void ExperimentLogger_TelemetryCarriesAllTenHeadingSamples()
+    public void ExperimentLogger_TelemetryCarriesCurrentExactHeading()
     {
         var root = new GameObject("StageSixTelemetryDiagnosticsTest");
         ExperimentLogger logger = null;
@@ -139,13 +140,12 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
             logger.Flush();
 
             var record = JObject.Parse(ReadLines(logger.TelemetryLogPath).Single());
-            var profile = (JArray)record["data"]["heading_profile"];
-            Assert.That(profile, Has.Count.EqualTo(10));
-            Assert.That((float)profile[0]["relative_yaw_deg"], Is.EqualTo(0f));
-            Assert.That((float)profile[8]["relative_yaw_deg"], Is.EqualTo(135f));
-            Assert.That((string)profile[9]["safety"], Is.EqualTo("safe"));
-            Assert.That(profile[9]["physical_forward"]["x"], Is.Not.Null);
-            Assert.That(profile[9]["clearance_m"], Is.Not.Null);
+            var heading = record["data"]["current_heading"];
+            Assert.That((float)heading["relative_yaw_deg"], Is.EqualTo(0f));
+            Assert.That((string)heading["safety"], Is.EqualTo("safe"));
+            Assert.That(heading["physical_forward"]["x"], Is.Not.Null);
+            Assert.That((float)heading["clearance_m"], Is.EqualTo(1.8f));
+            Assert.That(record["data"]["heading_profile"], Is.Null);
         }
         finally
         {
@@ -288,7 +288,6 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
 
     private static PhysicalRiskState RiskWithTenHeadings()
     {
-        var yaws = new[] { 0f, -30f, 30f, -60f, 60f, -90f, 90f, -135f, 135f, 180f };
         return new PhysicalRiskState(
             riskSnapshotId: "risk-stage-6",
             riskRevision: 6,
@@ -296,14 +295,9 @@ public sealed class GuidanceDiagnosticsStageSixEditModeTests
             physicalSpace: "wide_room",
             physicalPosition: new Vector2(2f, 2f),
             physicalForward: Vector2.up,
-            clearanceForward: 1f,
-            clearanceLeft: 1.5f,
-            clearanceRight: 2f,
             boundaryRisk: "low",
             resetRisk: "low",
-            safeDirections: new[] { "forward", "left", "right" },
-            headingProfile: yaws.Select((yaw, index) =>
-                new HeadingSample(yaw, ForwardAt(yaw), 1f + index * 0.1f, HeadingSafety.Safe)));
+            currentHeading: new HeadingSample(0f, Vector2.up, 1.8f, HeadingSafety.Safe));
     }
 
     private static Vector2 ForwardAt(float yawDegrees)

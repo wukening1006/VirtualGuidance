@@ -84,9 +84,6 @@ public sealed class PauseResetController : MonoBehaviour
     [SerializeField] private RotationGainController rotationGainController;
     [Tooltip("提供校准后的 Physical Room Forward，用于检测用户安全转向。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
-    [Tooltip("提供最近一次 forward/left/right clearance。")]
-    [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
-
     [Header("安全转向")]
     [Tooltip("用户朝向与安全目标的最大完成误差，单位：度。")]
     [SerializeField] private float completionToleranceDegrees = 12f;
@@ -108,7 +105,6 @@ public sealed class PauseResetController : MonoBehaviour
     private string safeDirection = string.Empty;
     private Vector2 safePhysicalForward = Vector2.up;
     private RecoveryHeadingPlan activePlan;
-    private readonly RecoveryHeadingPlanner compatibilityPlanner = new RecoveryHeadingPlanner();
     private bool mappingResetEnabled;
     private bool physicalHeadingReached;
     private bool mappingFailureRaised;
@@ -183,7 +179,7 @@ public sealed class PauseResetController : MonoBehaviour
     }
 
     /// <summary>
-    /// 注入 Reset 使用的表现、Gain、Physical Pose 与风险依赖。
+    /// 注入 Reset 使用的表现、Gain 与 Physical Pose 依赖。
     /// </summary>
     public void Configure(
         GuidanceExecutor executor,
@@ -195,7 +191,7 @@ public sealed class PauseResetController : MonoBehaviour
         if (executor != null) guidanceExecutor = executor;
         if (gainController != null) rotationGainController = gainController;
         if (poseTracker != null) userPoseTracker = poseTracker;
-        if (evaluator != null) riskEvaluator = evaluator;
+        // evaluator 仅保留调用签名；航向搜索与终验统一由 GuidanceCoordinator 负责。
     }
 
     /// <summary>
@@ -249,23 +245,6 @@ public sealed class PauseResetController : MonoBehaviour
         TransitionTo(ResetLifecycleState.TurningToSafeDirection);
         ResetStarted?.Invoke(CreateEventInfo());
         return true;
-    }
-
-    /// <summary>
-    /// 兼容旧调用边界：从风险快照规划一次航向后立即冻结；生产流程应显式传入 RecoveryHeadingPlan。
-    /// </summary>
-    /// <param name="reason">触发 Reset 的安全原因。</param>
-    /// <param name="riskState">触发时风险快照；为空时使用风险计算器最近状态。</param>
-    public void PauseForReset(string reason, PhysicalRiskState riskState = null)
-    {
-        var facts = riskState ?? riskEvaluator?.CurrentRiskState;
-        var plan = compatibilityPlanner.Plan(facts != null ? facts.heading_profile : null);
-        if (!plan.IsSuccess)
-        {
-            plan = CreateLegacyForwardPlan(facts);
-        }
-
-        PauseForReset(reason, plan);
     }
 
     /// <summary>
@@ -456,64 +435,6 @@ public sealed class PauseResetController : MonoBehaviour
     private static Vector2 NormalizeForward(Vector2 forward)
     {
         return forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
-    }
-
-    private RecoveryHeadingPlan CreateLegacyForwardPlan(PhysicalRiskState riskState)
-    {
-        var currentForward = userPoseTracker != null
-            ? NormalizeForward(userPoseTracker.PhysicalForwardXZ)
-            : Vector2.up;
-        var samples = new[]
-        {
-            CreateLegacySample(0f, currentForward, "forward", riskState != null ? riskState.clearance_forward : 0f, riskState),
-            CreateLegacySample(-90f, new Vector2(-currentForward.y, currentForward.x), "left", riskState != null ? riskState.clearance_left : 0f, riskState),
-            CreateLegacySample(90f, new Vector2(currentForward.y, -currentForward.x), "right", riskState != null ? riskState.clearance_right : 0f, riskState)
-        };
-        return compatibilityPlanner.Plan(samples);
-    }
-
-    private HeadingSample CreateLegacySample(
-        float relativeYawDegrees,
-        Vector2 physicalForward,
-        string direction,
-        float clearanceMeters,
-        PhysicalRiskState riskState)
-    {
-        if (riskEvaluator != null && riskState != null &&
-            riskEvaluator.TryEvaluateAbsoluteHeading(riskState, physicalForward, out var exactSample))
-        {
-            return exactSample;
-        }
-
-        // 仅兼容缺失 evaluator 的旧场景；生产 Recovery 由 exact evaluator 负责。
-        var safety = clearanceMeters <= 0f || float.IsNaN(clearanceMeters) || float.IsInfinity(clearanceMeters)
-            ? HeadingSafety.Critical
-            : Contains(riskState != null ? riskState.unsafe_directions : null, direction)
-                ? HeadingSafety.Unsafe
-                : Contains(riskState != null ? riskState.safe_directions : null, direction)
-                    ? HeadingSafety.Safe
-                    : riskEvaluator != null && riskEvaluator.IsCriticalClearance(clearanceMeters)
-                        ? HeadingSafety.Critical
-                        : HeadingSafety.Unknown;
-        return new HeadingSample(relativeYawDegrees, physicalForward, clearanceMeters, safety);
-    }
-
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
-    {
-        if (values == null)
-        {
-            return false;
-        }
-
-        foreach (var value in values)
-        {
-            if (string.Equals(value, expected, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 }

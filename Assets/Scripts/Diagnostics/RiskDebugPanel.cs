@@ -11,6 +11,8 @@ public sealed class RiskDebugPanel : MonoBehaviour
     [Header("调试面板引用")]
     [Tooltip("提供当前 physical risk state 的计算器；未配置时会在场景中自动查找。")]
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [Tooltip("提供最近一次 Continuous Recovery Heading Search 诊断；未配置时会自动查找。")]
+    [SerializeField] private GuidanceCoordinator guidanceCoordinator;
     [Tooltip("显示研究者调试信息的 TextMeshPro 文本控件。")]
     [SerializeField] private TMP_Text riskText;
 
@@ -28,8 +30,12 @@ public sealed class RiskDebugPanel : MonoBehaviour
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
-            WriteState(riskEvaluator.CurrentRiskState);
         }
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted += HandleRecoverySearchCompleted;
+        }
+        WriteState(riskEvaluator != null ? riskEvaluator.CurrentRiskState : null);
     }
 
     private void OnDisable()
@@ -37,6 +43,10 @@ public sealed class RiskDebugPanel : MonoBehaviour
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        }
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
         }
     }
 
@@ -69,6 +79,11 @@ public sealed class RiskDebugPanel : MonoBehaviour
         WriteState(state);
     }
 
+    private void HandleRecoverySearchCompleted(RecoveryHeadingSearchResult _)
+    {
+        WriteState(riskEvaluator != null ? riskEvaluator.CurrentRiskState : null);
+    }
+
     private void WriteState(PhysicalRiskState state)
     {
         if (riskText == null)
@@ -88,14 +103,18 @@ public sealed class RiskDebugPanel : MonoBehaviour
         builder.Append("Physical Pose: (")
             .Append(state.user_physical_position.x.ToString("0.00")).Append(", ")
             .Append(state.user_physical_position.y.ToString("0.00")).AppendLine(")");
-        builder.Append("Forward Clearance: ").Append(state.clearance_forward.ToString("0.00")).AppendLine("m");
-        builder.Append("Left Clearance: ").Append(state.clearance_left.ToString("0.00")).AppendLine("m");
-        builder.Append("Right Clearance: ").Append(state.clearance_right.ToString("0.00")).AppendLine("m");
-        builder.Append("Boundary Risk: ").AppendLine(EmptyFallback(state.boundary_risk));
+        builder.Append("Current Heading: ")
+            .Append(state.current_heading.RelativeYawDegrees.ToString("0.###"))
+            .Append(" deg, clearance=")
+            .Append(state.current_heading.ClearanceMeters.ToString("0.00"))
+            .Append("m, safety=").AppendLine(state.current_heading.Safety.ToString());
+        builder.Append("Current Physical Forward Risk: ")
+            .AppendLine(EmptyFallback(state.boundary_risk));
         builder.Append("Reset Risk: ").AppendLine(EmptyFallback(state.reset_risk));
-        builder.Append("Safe: ").AppendLine(JoinOrNone(state.safe_directions));
-        builder.Append("Unsafe: ").AppendLine(JoinOrNone(state.unsafe_directions));
-        builder.Append("Reset Required: ").Append(state.reset_required ? "true" : "false");
+        builder.Append("Reset Required: ").AppendLine(state.reset_required ? "true" : "false");
+        AppendRecoverySearch(guidanceCoordinator != null
+            ? guidanceCoordinator.LatestRecoverySearchResult
+            : null);
 
         riskText.text = builder.ToString();
     }
@@ -108,6 +127,11 @@ public sealed class RiskDebugPanel : MonoBehaviour
             riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         }
 
+        if (guidanceCoordinator == null)
+        {
+            guidanceCoordinator = FindObjectOfType<GuidanceCoordinator>();
+        }
+
         if (riskText == null)
         {
             var textObject = GameObject.Find("RiskDebugPanel_Text");
@@ -118,13 +142,46 @@ public sealed class RiskDebugPanel : MonoBehaviour
         }
     }
 
-    private static string JoinOrNone(System.Collections.Generic.IReadOnlyList<string> values)
-    {
-        return values == null || values.Count == 0 ? "none" : string.Join(", ", values);
-    }
-
     private static string EmptyFallback(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+    }
+
+    private void AppendRecoverySearch(RecoveryHeadingSearchResult result)
+    {
+        if (result == null)
+        {
+            builder.Append("Recovery Search: none");
+            return;
+        }
+
+        builder.Append("Recovery Search: ")
+            .Append(result.AttemptedEvaluationCount)
+            .Append(" attempted / ")
+            .Append(result.SuccessfulEvaluationCount)
+            .Append(" successful, ")
+            .Append(result.Evaluations.Count)
+            .Append(" search samples, resolution=")
+            .Append(float.IsInfinity(result.CompletedCoverageResolutionDegrees)
+                ? "none"
+                : result.CompletedCoverageResolutionDegrees.ToString("0.###"))
+            .Append(" deg, budget=")
+            .AppendLine(result.BudgetExhausted ? "exhausted" : "available");
+
+        if (result.Plan.IsSuccess)
+        {
+            builder.Append("Best Safe Heading: ")
+                .Append(result.Plan.RelativeYawDegrees.ToString("0.###"))
+                .Append(" deg, clearance=")
+                .Append(result.Plan.ClearanceMeters.ToString("0.00"))
+                .Append("m, score=")
+                .Append(result.Plan.Score.ToString("0.###"));
+            return;
+        }
+
+        builder.Append("Search Failure: ").Append(
+            string.IsNullOrWhiteSpace(result.FailureReason)
+                ? result.Plan.Failure.ToString()
+                : result.FailureReason);
     }
 }

@@ -30,7 +30,7 @@ public sealed class GuidanceRequestSnapshot
     public string preferredTaskTargetId { get; private set; }
     /// <summary>请求使用的 physical space ID。</summary>
     public string physicalSpaceId { get; private set; }
-    /// <summary>请求发出时由空间、reset 状态及安全方向组成的风险签名。</summary>
+    /// <summary>请求发出时由空间、当前真实朝向风险和 Reset 状态组成的风险签名。</summary>
     public string riskSignature { get; private set; }
 
     /// <summary>
@@ -124,12 +124,8 @@ public sealed class GuidanceRequestSnapshot
             "|",
             riskState.physical_space,
             riskState.reset_required ? "reset" : "no_reset",
-            Join(riskState.unsafe_directions),
-            Join(riskState.safe_directions));
-    }
-
-    private static string Join(System.Collections.Generic.IReadOnlyList<string> values)
-    {
-        return values == null || values.Count == 0 ? "none" : string.Join(",", values);
+            riskState.boundary_risk,
+            riskState.current_heading.ClearanceMeters.ToString("0.###"),
+            riskState.current_heading.Safety);
     }
 }

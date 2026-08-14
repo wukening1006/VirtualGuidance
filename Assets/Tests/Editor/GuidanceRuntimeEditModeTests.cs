@@ -361,13 +361,6 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(dashboard, "EnterSafetyHold", "critical risk", true);
             Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.SafetyHold));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
-            Assert.That(reset.IsActive, Is.True);
-
-            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
-
-            Assert.That(dashboard.RunState, Is.EqualTo(ExperimentRunState.Paused));
-            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedByResearcher));
-            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(reset.IsActive, Is.False);
         }
         finally
@@ -461,7 +454,7 @@ public sealed class GuidanceRuntimeEditModeTests
             task.PauseForReset();
             var reset = root.AddComponent<PauseResetController>();
             reset.Configure(null, null, null, pose, risk);
-            reset.PauseForReset("critical risk");
+            Assert.That(reset.PauseForReset("critical risk", SafeRecoveryPlan()), Is.True);
             reset.CancelReset("tracking lost");
             Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Cancelled));
             var dashboard = root.AddComponent<ExperimentDashboard>();
@@ -908,31 +901,17 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
             Assert.That(gain.IsActive, Is.False,
                 "普通 left/right Guidance 不得启动 Semantic Rotation Gain。");
-            var selectedDirection = CandidateDirectionForRequest(request, "E3");
-
-            var unsafeForward = new PhysicalRiskState(
-                riskSnapshotId: "runtime-risk-1",
-                calibrationId: calibration.CalibrationId,
-                physicalSpace: space.CurrentSpaceId,
-                clearanceForward: 0.6f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: new[] { selectedDirection },
-                safeDirections: SafeDirectionsExcept(selectedDirection));
+            var unsafeForward = EvaluateRiskNearTargetBoundary(
+                coordinator, riskEvaluator, targets, pose, "E3", 0.4f);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unsafeForward);
             Assert.That(requests.Contexts.Count, Is.EqualTo(1));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
 
-            var nextUnsafeForward = new PhysicalRiskState(
-                riskSnapshotId: "runtime-risk-2",
-                calibrationId: calibration.CalibrationId,
-                physicalSpace: space.CurrentSpaceId,
-                clearanceForward: 0.6f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: new[] { selectedDirection },
-                safeDirections: SafeDirectionsExcept(selectedDirection));
+            pose.SetCalibratedPhysicalPose(
+                pose.PhysicalPositionXZ + new Vector2(0f, 0.03f),
+                0f);
+            var nextUnsafeForward = riskEvaluator.EvaluateNow();
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", nextUnsafeForward);
 
@@ -1215,17 +1194,14 @@ public sealed class GuidanceRuntimeEditModeTests
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
             coordinator.HandleGuidanceResponse(ResponseForRequest(request, "E3"));
             Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Executing));
-            var selectedDirection = CandidateDirectionForRequest(request, "E3");
-
-            SetPrivateField(riskEvaluator, "currentRiskState", new PhysicalRiskState(
-                riskSnapshotId: "risk-gain-abort",
-                calibrationId: calibration.CalibrationId,
-                physicalSpace: space.CurrentSpaceId,
-                clearanceForward: 0.6f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: new[] { selectedDirection },
-                safeDirections: SafeDirectionsExcept(selectedDirection)));
+            var unsafeRisk = EvaluateRiskNearTargetBoundary(
+                coordinator,
+                riskEvaluator,
+                root.GetComponent<NavigationTargetManager>(),
+                root.GetComponent<UserPoseTracker>(),
+                "E3",
+                0.4f);
+            SetPrivateField(riskEvaluator, "currentRiskState", unsafeRisk);
 
             gain.BeginPendingTurn(1, 30f, "stale-decision");
             gain.AbortGain("turn_stopped_timeout");
@@ -1868,7 +1844,7 @@ public sealed class GuidanceRuntimeEditModeTests
     }
 
     [Test]
-    public void PauseResetController_SelectsLargestClearanceAndCompletesAtSafeHeading()
+    public void PauseResetController_ExecutesFrozenSafeHeadingAndCompletes()
     {
         var root = new GameObject("TurnToSafeDirectionResetTest");
         try
@@ -1882,14 +1858,10 @@ public sealed class GuidanceRuntimeEditModeTests
             pauseReset.ResetStarted += info => started = info;
             pauseReset.ResetCompleted += info => completed = info;
 
-            pauseReset.PauseForReset("critical risk", new PhysicalRiskState(
-                clearanceForward: 0.2f,
-                clearanceLeft: 1.4f,
-                clearanceRight: 0.6f,
-                boundaryRisk: "critical",
-                unsafeDirections: new[] {"forward", "right"},
-                safeDirections: new[] {"left"},
-                resetRequired: true));
+            var plan = new RecoveryHeadingPlan(
+                new HeadingSample(-90f, Vector2.left, 1.4f, HeadingSafety.Safe),
+                1.4f);
+            Assert.That(pauseReset.PauseForReset("critical risk", plan), Is.True);
 
             Assert.That(pauseReset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
             Assert.That(pauseReset.SafeDirection, Is.EqualTo("left"));
@@ -3238,6 +3210,14 @@ public sealed class GuidanceRuntimeEditModeTests
             virtualUser.transform.SetParent(root.transform, false);
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(2.5f, 2.5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
@@ -4394,9 +4374,8 @@ public sealed class GuidanceRuntimeEditModeTests
         var requiresSafetyIntervention = plannedDirectionCritical ||
                                           (risk != null && risk.reset_required) ||
                                           unsafeSamples >= 2;
-        var hasRecoveryHeading = risk != null && risk.heading_profile != null &&
-                                 risk.heading_profile.Any(sample =>
-                                     PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(sample));
+        // Policy 只消费 Coordinator 已完成的连续搜索结论；测试不再从离散 Profile 推导该事实。
+        var hasRecoveryHeading = risk != null && !risk.reset_required;
         return new RuntimeGuidanceSafetyInput(
             "decision-runtime-safety",
             "E3",
@@ -4523,13 +4502,11 @@ public sealed class GuidanceRuntimeEditModeTests
             var request = RequestForContext(requests.Contexts[0], "request-latest-safe");
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
             var selectedTarget = request.model_candidate_ids[0];
-            var selectedDirection = CandidateDirectionForRequest(request, selectedTarget);
             var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
-            var latestRisk = CopyRiskWithDirections(
-                riskEvaluator.CurrentRiskState,
-                riskEvaluator.CurrentRiskState.risk_revision + 1,
-                new[] { selectedDirection },
-                SafeDirectionsExcept(selectedDirection));
+            var pose = root.GetComponent<UserPoseTracker>();
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            pose.SetCalibratedPhysicalPose(new Vector2(2.6f, 2.5f), 0f);
+            var latestRisk = riskEvaluator.EvaluateNow();
             SetPrivateField(riskEvaluator, "currentRiskState", latestRisk);
 
             coordinator.HandleGuidanceResponse(ResponseForRequest(request, selectedTarget));
@@ -4576,13 +4553,14 @@ public sealed class GuidanceRuntimeEditModeTests
             var request = RequestForContext(requests.Contexts[0], "request-became-unsafe");
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
             var selectedTarget = request.model_candidate_ids[0];
-            var selectedDirection = CandidateDirectionForRequest(request, selectedTarget);
             var riskEvaluator = root.GetComponent<PhysicalRiskEvaluator>();
-            var latestRisk = CopyRiskWithDirections(
-                riskEvaluator.CurrentRiskState,
-                riskEvaluator.CurrentRiskState.risk_revision + 1,
-                SafeDirectionsExcept(selectedDirection),
-                new[] { selectedDirection });
+            var latestRisk = EvaluateRiskNearTargetBoundary(
+                coordinator,
+                riskEvaluator,
+                root.GetComponent<NavigationTargetManager>(),
+                root.GetComponent<UserPoseTracker>(),
+                selectedTarget,
+                0.4f);
             SetPrivateField(riskEvaluator, "currentRiskState", latestRisk);
 
             var oldResponse = ResponseForRequest(request, selectedTarget);
@@ -4647,13 +4625,10 @@ public sealed class GuidanceRuntimeEditModeTests
             coordinator.RequestNextGuidance();
             var request = RequestForContext(requests.Contexts[0], "request-pending-risk");
             InvokePrivate(coordinator, "HandleRequestBuilt", request);
-            var selectedDirection = CandidateDirectionForRequest(request, request.model_candidate_ids[0]);
-            var currentRisk = riskEvaluator.CurrentRiskState;
-            var oneSafeCandidate = CopyRiskWithDirections(
-                currentRisk,
-                currentRisk.risk_revision + 1,
-                new[] { selectedDirection },
-                SafeDirectionsExcept(selectedDirection));
+            var pose = root.GetComponent<UserPoseTracker>();
+            InvokePrivate(coordinator, "UnbindRuntimeSafety");
+            pose.SetCalibratedPhysicalPose(new Vector2(2.6f, 2.5f), 0f);
+            var oneSafeCandidate = riskEvaluator.EvaluateNow();
 
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", oneSafeCandidate);
 
@@ -4662,33 +4637,9 @@ public sealed class GuidanceRuntimeEditModeTests
             Assert.That(pauseResetCount, Is.Zero);
             Assert.That(hardStopCount, Is.Zero);
 
-            var unknownCandidates = CopyRiskWithDirections(
-                currentRisk,
-                currentRisk.risk_revision + 2,
-                System.Array.Empty<string>(),
-                System.Array.Empty<string>(),
-                1f);
-            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unknownCandidates);
-            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", unknownCandidates);
-
-            Assert.That(coordinator.RequestPhase, Is.EqualTo(GuidanceRequestPhase.Requested));
-            Assert.That(coordinator.IsHoldingForReplan, Is.False);
-            Assert.That(requests.CancelCount, Is.Zero);
-
-            var noSafeCandidate = CopyRiskWithDirections(
-                currentRisk,
-                currentRisk.risk_revision + 3,
-                System.Array.Empty<string>(),
-                new[] { "forward", "left", "right" },
-                0.6f);
+            pose.SetCalibratedPhysicalPose(new Vector2(0.1f, 2.5f), 0f);
+            var noSafeCandidate = riskEvaluator.EvaluateNow();
             InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", noSafeCandidate);
-            var jitteredNoSafeCandidate = CopyRiskWithDirections(
-                noSafeCandidate,
-                noSafeCandidate.risk_revision,
-                noSafeCandidate.safe_directions.ToArray(),
-                noSafeCandidate.unsafe_directions.ToArray(),
-                noSafeCandidate.clearance_forward);
-            InvokePrivate(coordinator, "HandleRuntimeRiskStateChanged", jitteredNoSafeCandidate);
 
             Assert.That(pauseResetCount, Is.Zero);
             Assert.That(hardStopCount, Is.Zero);
@@ -5057,6 +5008,14 @@ public sealed class GuidanceRuntimeEditModeTests
             virtualUser.transform.SetParent(root.transform, false);
             var pose = root.AddComponent<UserPoseTracker>();
             pose.ConfigureVirtualUserRoot(virtualUser.transform);
+            var space = root.AddComponent<PhysicalSpaceManager>();
+            space.LoadSpaces();
+            Assert.That(space.SetPhysicalSpace("wide_room"), Is.True);
+            var calibration = root.AddComponent<PhysicalSpaceCalibration>();
+            calibration.Configure(space, pose);
+            calibration.SetCalibrationPoint(new Vector2(2.5f, 2.5f), 0f);
+            calibration.UpdateRawTrackingPose(new Vector2(2.5f, 2.5f), 0f);
+            Assert.That(calibration.CalibrateCurrentPose(), Is.True);
             var targets = root.AddComponent<NavigationTargetManager>();
             targets.Configure(pose);
             targets.RebuildIndex();
@@ -5064,17 +5023,11 @@ public sealed class GuidanceRuntimeEditModeTests
             var selector = root.AddComponent<SemanticTargetSelector>();
             selector.Configure(targets);
             var riskEvaluator = root.AddComponent<PhysicalRiskEvaluator>();
+            riskEvaluator.Configure(space, pose, calibration);
             var runtime = new GuidanceRuntimeState();
             runtime.Begin("T2_main_target", "E1", "E5", "E5");
             var policy = ExperimentConditionMatrix.GetPolicy("ours_full");
-            var initialRisk = new PhysicalRiskState(
-                riskSnapshotId: "selected-risk-1",
-                riskRevision: 1,
-                calibrationId: "calibration-current",
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                safeDirections: new[] { "forward", "left", "right" });
+            var initialRisk = riskEvaluator.EvaluateNow();
             var candidateSet = selector.BuildCandidateSet(runtime, initialRisk, policy);
             Assert.That(runtime.TryReserveCandidateSet(
                 candidateSet,
@@ -5087,14 +5040,8 @@ public sealed class GuidanceRuntimeEditModeTests
             var selectedTargetId = candidateSet.ModelCandidateIds[0];
             Assert.That(reservation.TryGetCandidate(selectedTargetId, out var selectedCandidate), Is.True);
 
-            var changedRisk = new PhysicalRiskState(
-                riskSnapshotId: "selected-risk-2",
-                riskRevision: 2,
-                calibrationId: "calibration-current",
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                safeDirections: new[] { selectedCandidate.RelativeDirection });
+            pose.SetCalibratedPhysicalPose(new Vector2(2.6f, 2.5f), 0f);
+            var changedRisk = riskEvaluator.EvaluateNow();
             Assert.That(
                 selector.IsSelectedCandidateCurrent(
                     reservation,
@@ -5107,15 +5054,12 @@ public sealed class GuidanceRuntimeEditModeTests
                 Is.True,
                 changedReason);
 
-            var unsafeRisk = new PhysicalRiskState(
-                riskSnapshotId: "selected-risk-3",
-                riskRevision: 3,
-                calibrationId: "calibration-current",
-                clearanceForward: 2f,
-                clearanceLeft: 2f,
-                clearanceRight: 2f,
-                unsafeDirections: new[] { selectedCandidate.RelativeDirection },
-                safeDirections: SafeDirectionsExcept(selectedCandidate.RelativeDirection));
+            var unsafeRisk = EvaluateRiskNearTargetBoundary(
+                riskEvaluator,
+                targets,
+                pose,
+                selectedTargetId,
+                0.4f);
             Assert.That(
                 selector.IsSelectedCandidateCurrent(
                     reservation,
@@ -5283,13 +5227,6 @@ public sealed class GuidanceRuntimeEditModeTests
         return selectedTarget == "E3" ? "left" : selectedTarget == "E4" ? "right" : "forward";
     }
 
-    private static string[] SafeDirectionsExcept(string unsafeDirection)
-    {
-        return new[] { "forward", "left", "right" }
-            .Where(direction => direction != unsafeDirection)
-            .ToArray();
-    }
-
     private static Vector2 RotatePhysicalForwardForTest(Vector2 forward, float yawDegrees)
     {
         var normalized = forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
@@ -5311,35 +5248,34 @@ public sealed class GuidanceRuntimeEditModeTests
         return distance;
     }
 
-    private static PhysicalRiskState CopyRiskWithDirections(
-        PhysicalRiskState source,
-        int riskRevision,
-        string[] safeDirections,
-        string[] unsafeDirections,
-        float? clearanceMeters = null)
+    private static PhysicalRiskState EvaluateRiskNearTargetBoundary(
+        GuidanceCoordinator coordinator,
+        PhysicalRiskEvaluator evaluator,
+        NavigationTargetManager targets,
+        UserPoseTracker pose,
+        string targetId,
+        float boundaryInsetMeters)
     {
-        var clearance = clearanceMeters;
-        return new PhysicalRiskState(
-            riskSnapshotId: $"risk-copy-{riskRevision}",
-            riskRevision: riskRevision,
-            calibrationId: source.calibration_id,
-            sampledAtUtc: source.sampled_at_utc,
-            riskPolicyVersion: source.risk_policy_version,
-            snapshotSource: source.source,
-            physicalSpace: source.physical_space,
-            physicalPosition: source.user_physical_position,
-            physicalForward: source.user_physical_forward,
-            boundaryContext: source.boundary_context,
-            obstacleContext: source.obstacle_context,
-            clearanceForward: clearance ?? source.clearance_forward,
-            clearanceLeft: clearance ?? source.clearance_left,
-            clearanceRight: clearance ?? source.clearance_right,
-            boundaryRisk: source.boundary_risk,
-            resetRisk: source.reset_risk,
-            unsafeDirections: unsafeDirections,
-            safeDirections: safeDirections,
-            isCritical: source.critical,
-            resetRequired: false);
+        if (coordinator != null) InvokePrivate(coordinator, "UnbindRuntimeSafety");
+        Assert.That(targets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYaw), Is.True);
+        var direction = RotatePhysicalForwardForTest(Vector2.up, relativeYaw);
+        var center = Vector2.one * 2.5f;
+        var distance = DistanceToSquareBoundary(center, direction, 5f);
+        pose.SetCalibratedPhysicalPose(
+            center + direction * Mathf.Max(0.35f, distance - boundaryInsetMeters),
+            0f);
+        return evaluator.EvaluateNow();
+    }
+
+    private static PhysicalRiskState EvaluateRiskNearTargetBoundary(
+        PhysicalRiskEvaluator evaluator,
+        NavigationTargetManager targets,
+        UserPoseTracker pose,
+        string targetId,
+        float boundaryInsetMeters)
+    {
+        return EvaluateRiskNearTargetBoundary(
+            null, evaluator, targets, pose, targetId, boundaryInsetMeters);
     }
 
     private static void ConfigureT2CoordinatorHarness(

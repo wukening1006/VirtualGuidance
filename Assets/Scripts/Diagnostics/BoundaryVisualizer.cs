@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 在虚拟展厅旁绘制 physical space 边界、障碍物、用户物理位姿和安全方向。
+/// 在虚拟展厅旁绘制 physical space、当前朝向和 Continuous Recovery Search 诊断。
 /// </summary>
 public sealed class BoundaryVisualizer : MonoBehaviour
 {
@@ -13,30 +13,35 @@ public sealed class BoundaryVisualizer : MonoBehaviour
     [SerializeField] private UserPoseTracker userPoseTracker;
     [Tooltip("提供方向安全/危险标签的计算器；未配置时自动查找。")]
     [SerializeField] private PhysicalRiskEvaluator riskEvaluator;
+    [Tooltip("提供最近一次 Continuous Recovery Heading Search；未配置时自动查找。")]
+    [SerializeField] private GuidanceCoordinator guidanceCoordinator;
     [Tooltip("提供固定校准点和校准状态；未校准时隐藏 Physical User Marker。")]
     [SerializeField] private PhysicalSpaceCalibration physicalSpaceCalibration;
 
     [Header("可视化参数")]
     [Tooltip("physical debug view 在 Unity 世界中的起点，单位：米；用于把调试图放在展厅旁边。")]
     [SerializeField] private Vector3 visualizationOrigin = new Vector3(7f, 0.04f, 0f);
-    [Tooltip("forward/left/right 方向箭头长度，单位：米。")]
+    [Tooltip("当前朝向和搜索射线的最大显示长度，单位：米。")]
     [SerializeField] private float directionArrowLength = 0.9f;
     [Tooltip("边界线和方向线宽度，单位：米。")]
     [SerializeField] private float lineWidth = 0.04f;
     [Tooltip("研究员专用调试 Layer；运行时生成的所有可视化对象都会使用该 Layer。")]
     [SerializeField] private string researcherOnlyLayerName = "ResearcherOnly";
 
-    // 三个方向线随 risk state 改色，使用字典可避免每帧按名称查找对象。
-    private readonly Dictionary<string, LineRenderer> directionLines = new Dictionary<string, LineRenderer>();
+    // 搜索射线仅在新结果到达时调整数量，普通帧只更新位姿。
+    private readonly List<LineRenderer> searchLines = new List<LineRenderer>();
 
     // 障碍物随 physical space 切换重建，需要记录实例以便清理旧空间内容。
     private readonly List<GameObject> obstacleObjects = new List<GameObject>();
     private Transform visualizationRoot;
     private LineRenderer boundaryLine;
+    private LineRenderer currentHeadingLine;
+    private LineRenderer bestHeadingLine;
     private GameObject calibrationPointMarker;
     private GameObject userMarker;
     private Material lineMaterial;
     private Vector2 physicalSpaceCenter;
+    private RecoveryHeadingSearchResult latestSearchResult;
 
     private void Awake()
     {
@@ -55,6 +60,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
+        }
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted += HandleRecoverySearchCompleted;
+            latestSearchResult = guidanceCoordinator.LatestRecoverySearchResult;
         }
 
         if (physicalSpaceCalibration != null)
@@ -76,6 +86,10 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        }
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
         }
 
         if (physicalSpaceCalibration != null)
@@ -99,7 +113,8 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         PhysicalSpaceManager spaceManager,
         UserPoseTracker poseTracker,
         PhysicalRiskEvaluator evaluator,
-        PhysicalSpaceCalibration calibration = null)
+        PhysicalSpaceCalibration calibration = null,
+        GuidanceCoordinator coordinator = null)
     {
         if (physicalSpaceManager != null)
         {
@@ -109,6 +124,10 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        }
+        if (guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
         }
 
         if (physicalSpaceCalibration != null)
@@ -120,6 +139,7 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         userPoseTracker = poseTracker;
         riskEvaluator = evaluator;
         if (calibration != null) physicalSpaceCalibration = calibration;
+        if (coordinator != null) guidanceCoordinator = coordinator;
 
         if (isActiveAndEnabled && physicalSpaceManager != null)
         {
@@ -129,6 +149,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         if (isActiveAndEnabled && riskEvaluator != null)
         {
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
+        }
+        if (isActiveAndEnabled && guidanceCoordinator != null)
+        {
+            guidanceCoordinator.RecoverySearchCompleted += HandleRecoverySearchCompleted;
+            latestSearchResult = guidanceCoordinator.LatestRecoverySearchResult;
         }
 
         if (isActiveAndEnabled && physicalSpaceCalibration != null)
@@ -201,10 +226,9 @@ public sealed class BoundaryVisualizer : MonoBehaviour
 
         var showPhysicalUser = physicalSpaceCalibration == null || physicalSpaceCalibration.IsCalibrationValid;
         userMarker.SetActive(showPhysicalUser);
-        foreach (var line in directionLines.Values)
-        {
-            line.gameObject.SetActive(showPhysicalUser);
-        }
+        currentHeadingLine.gameObject.SetActive(showPhysicalUser);
+        bestHeadingLine.gameObject.SetActive(showPhysicalUser && latestSearchResult?.Plan?.IsSuccess == true);
+        foreach (var line in searchLines) line.gameObject.SetActive(showPhysicalUser);
         if (!showPhysicalUser)
         {
             return;
@@ -218,46 +242,79 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             forward = Vector2.up;
         }
 
-        var left = new Vector2(-forward.y, forward.x);
-        var right = new Vector2(forward.y, -forward.x);
-
         userMarker.transform.position = ToWorld(position) + Vector3.up * 0.04f;
-        UpdateDirectionLine("forward", position, forward);
-        UpdateDirectionLine("left", position, left);
-        UpdateDirectionLine("right", position, right);
+        UpdateHeadingLine(
+            currentHeadingLine,
+            position,
+            forward,
+            directionArrowLength,
+            CurrentHeadingColor());
+        RefreshSearchLines(position);
     }
 
-    private void UpdateDirectionLine(string directionName, Vector2 origin, Vector2 direction)
+    private void UpdateHeadingLine(
+        LineRenderer line,
+        Vector2 origin,
+        Vector2 direction,
+        float length,
+        Color color)
     {
-        var line = directionLines[directionName];
         line.positionCount = 2;
         line.SetPosition(0, ToWorld(origin) + Vector3.up * 0.05f);
-        line.SetPosition(1, ToWorld(origin + direction.normalized * directionArrowLength) + Vector3.up * 0.05f);
-        line.startColor = DirectionColor(directionName);
-        line.endColor = line.startColor;
+        line.SetPosition(1, ToWorld(origin + direction.normalized * length) + Vector3.up * 0.05f);
+        line.startColor = color;
+        line.endColor = color;
     }
 
-    private Color DirectionColor(string directionName)
+    private void RefreshSearchLines(Vector2 origin)
+    {
+        var evaluations = latestSearchResult?.Evaluations;
+        var required = evaluations != null ? evaluations.Count : 0;
+        EnsureSearchLineCount(required);
+        for (var index = 0; index < searchLines.Count; index++)
+        {
+            var active = index < required;
+            var line = searchLines[index];
+            line.gameObject.SetActive(active);
+            if (!active) continue;
+
+            var sample = evaluations[index];
+            var length = Mathf.Clamp(sample.ClearanceMeters, 0.12f, directionArrowLength);
+            UpdateHeadingLine(line, origin, sample.PhysicalForward, length, SafetyColor(sample.Safety));
+        }
+
+        var plan = latestSearchResult?.Plan;
+        if (plan != null && plan.IsSuccess)
+        {
+            bestHeadingLine.gameObject.SetActive(true);
+            UpdateHeadingLine(
+                bestHeadingLine,
+                origin,
+                plan.SafePhysicalForward,
+                directionArrowLength,
+                new Color(0.1f, 1f, 0.85f));
+        }
+        else
+        {
+            bestHeadingLine.gameObject.SetActive(false);
+        }
+    }
+
+    private Color CurrentHeadingColor()
     {
         var state = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
-        if (state == null)
-        {
-            return Color.gray;
-        }
+        return state != null ? SafetyColor(state.current_heading.Safety) : Color.gray;
+    }
 
-        if (Contains(state.unsafe_directions, directionName))
+    private static Color SafetyColor(HeadingSafety safety)
+    {
+        switch (safety)
         {
-            // 红色表示 verifier 不应允许该方向的自然导览指令。
-            return new Color(0.95f, 0.15f, 0.1f);
+            case HeadingSafety.Safe: return new Color(0.1f, 0.8f, 0.25f);
+            case HeadingSafety.Unknown: return new Color(1f, 0.68f, 0.1f);
+            case HeadingSafety.Unsafe: return new Color(1f, 0.3f, 0.08f);
+            default: return new Color(0.95f, 0.1f, 0.1f);
         }
-
-        if (Contains(state.safe_directions, directionName))
-        {
-            // 绿色表示该方向可作为 semantic redirection 的候选方向。
-            return new Color(0.1f, 0.8f, 0.25f);
-        }
-
-        return new Color(1f, 0.68f, 0.1f);
     }
 
     private void EnsureObjects()
@@ -297,9 +354,14 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             }
         }
 
-        EnsureDirectionLine("forward");
-        EnsureDirectionLine("left");
-        EnsureDirectionLine("right");
+        if (currentHeadingLine == null)
+        {
+            currentHeadingLine = CreateLine("CurrentPhysicalHeading", Color.gray);
+        }
+        if (bestHeadingLine == null)
+        {
+            bestHeadingLine = CreateLine("BestSafeRecoveryHeading", new Color(0.1f, 1f, 0.85f));
+        }
 
         if (userMarker == null)
         {
@@ -316,11 +378,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         }
     }
 
-    private void EnsureDirectionLine(string directionName)
+    private void EnsureSearchLineCount(int required)
     {
-        if (!directionLines.ContainsKey(directionName))
+        while (searchLines.Count < required)
         {
-            directionLines[directionName] = CreateLine($"Direction_{directionName}", Color.gray);
+            searchLines.Add(CreateLine($"RecoverySearch_{searchLines.Count:000}", Color.gray));
         }
     }
 
@@ -443,6 +505,11 @@ public sealed class BoundaryVisualizer : MonoBehaviour
             riskEvaluator = FindObjectOfType<PhysicalRiskEvaluator>();
         }
 
+        if (guidanceCoordinator == null)
+        {
+            guidanceCoordinator = FindObjectOfType<GuidanceCoordinator>();
+        }
+
         if (physicalSpaceCalibration == null)
         {
             physicalSpaceCalibration = FindObjectOfType<PhysicalSpaceCalibration>();
@@ -459,26 +526,15 @@ public sealed class BoundaryVisualizer : MonoBehaviour
         RefreshPoseAndDirections();
     }
 
+    private void HandleRecoverySearchCompleted(RecoveryHeadingSearchResult result)
+    {
+        latestSearchResult = result;
+        RefreshPoseAndDirections();
+    }
+
     private void HandleCalibrationStateChanged(PhysicalCalibrationState _)
     {
         RefreshPoseAndDirections();
     }
 
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string target)
-    {
-        if (values == null)
-        {
-            return false;
-        }
-
-        foreach (var value in values)
-        {
-            if (value == target)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 }

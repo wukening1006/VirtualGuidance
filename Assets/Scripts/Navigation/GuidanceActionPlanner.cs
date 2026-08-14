@@ -100,7 +100,7 @@ public sealed class GuidanceActionPlanner
 }
 
 /// <summary>
-/// 使用最新 Physical Heading Profile 判断原子动作当前能否执行。
+/// 使用 Unity 精确 Physical Heading Evaluation 判断原子动作当前能否执行。
 /// </summary>
 public sealed class GuidanceActionSafetyEvaluator
 {
@@ -121,9 +121,38 @@ public sealed class GuidanceActionSafetyEvaluator
         switch (action.Type)
         {
             case GuidanceActionType.MoveForward:
-                return EvaluateHeading(action, riskState, 0f, true, out reason);
+                return EvaluateHeading(action, riskState, null, 0f, true, out reason);
             case GuidanceActionType.TurnInPlace:
-                return EvaluateHeading(action, riskState, action.TargetYawDegrees, false, out reason);
+                return EvaluateHeading(action, riskState, null, action.TargetYawDegrees, false, out reason);
+            case GuidanceActionType.Hold:
+            case GuidanceActionType.Reevaluate:
+                reason = "action_requires_reevaluation";
+                return CandidateExecutionState.TemporarilyBlocked;
+            default:
+                reason = "unknown_action";
+                return CandidateExecutionState.Unknown;
+        }
+    }
+
+    /// <summary>使用指定 Unity 精确评估器评估任意真实动作方向。</summary>
+    public CandidateExecutionState Evaluate(
+        GuidanceAction action,
+        PhysicalRiskState riskState,
+        IPhysicalHeadingEvaluator evaluator,
+        out string reason)
+    {
+        if (action == null || riskState == null || evaluator == null)
+        {
+            reason = "exact_heading_evaluator_unavailable";
+            return CandidateExecutionState.Unknown;
+        }
+
+        switch (action.Type)
+        {
+            case GuidanceActionType.MoveForward:
+                return EvaluateHeading(action, riskState, evaluator, 0f, true, out reason);
+            case GuidanceActionType.TurnInPlace:
+                return EvaluateHeading(action, riskState, evaluator, action.TargetYawDegrees, false, out reason);
             case GuidanceActionType.Hold:
             case GuidanceActionType.Reevaluate:
                 reason = "action_requires_reevaluation";
@@ -137,64 +166,55 @@ public sealed class GuidanceActionSafetyEvaluator
     private static CandidateExecutionState EvaluateHeading(
         GuidanceAction action,
         PhysicalRiskState riskState,
+        IPhysicalHeadingEvaluator evaluator,
         float relativeYawDegrees,
         bool requireMovementSafe,
         out string reason)
     {
-        if (riskState.TryGetNearestHeading(relativeYawDegrees, out var heading))
-        {
-            var executable = requireMovementSafe
-                ? PhysicalRiskEvaluator.IsMovementSafe(heading)
-                : PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(heading);
-            if (executable)
-            {
-                reason = string.Empty;
-                return CandidateExecutionState.Executable;
-            }
+        var currentForward = riskState.user_physical_forward.sqrMagnitude > 0.0001f
+            ? riskState.user_physical_forward.normalized
+            : Vector2.up;
+        var radians = relativeYawDegrees * Mathf.Deg2Rad;
+        var sin = Mathf.Sin(radians);
+        var cos = Mathf.Cos(radians);
+        var physicalDirection = new Vector2(
+            currentForward.x * cos + currentForward.y * sin,
+            -currentForward.x * sin + currentForward.y * cos).normalized;
 
-            reason = heading.Safety == HeadingSafety.Unknown
-                ? "heading_requires_hold"
-                : "heading_clearance_blocked";
-            return heading.Safety == HeadingSafety.Unknown
-                ? CandidateExecutionState.TemporarilyBlocked
-                : CandidateExecutionState.Blocked;
+        HeadingSample heading;
+        if (evaluator != null)
+        {
+            if (!evaluator.TryEvaluateAbsoluteHeading(riskState, physicalDirection, out heading))
+            {
+                reason = "exact_heading_evaluation_failed";
+                return CandidateExecutionState.Unknown;
+            }
+        }
+        else if (Mathf.Abs(Mathf.DeltaAngle(0f, relativeYawDegrees)) <= 0.001f)
+        {
+            heading = riskState.current_heading;
+        }
+        else
+        {
+            reason = "exact_heading_evaluator_required";
+            return CandidateExecutionState.Unknown;
         }
 
-        // 兼容尚未携带 Heading Profile 的旧风险快照和测试数据。
-        var direction = action.Type == GuidanceActionType.MoveForward
-            ? "forward"
-            : action.TurnSide == TurnSide.Left ? "left" : "right";
-        if (Contains(riskState.safe_directions, direction))
+        var executable = requireMovementSafe
+            ? PhysicalRiskEvaluator.IsMovementSafe(heading)
+            : PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(heading);
+        if (executable)
         {
             reason = string.Empty;
             return CandidateExecutionState.Executable;
         }
-        if (Contains(riskState.unsafe_directions, direction))
-        {
-            reason = "legacy_direction_blocked";
-            return CandidateExecutionState.Blocked;
-        }
 
-        reason = "heading_safety_unknown";
-        return CandidateExecutionState.Unknown;
-    }
-
-    private static bool Contains(System.Collections.Generic.IReadOnlyList<string> values, string expected)
-    {
-        if (values == null)
-        {
-            return false;
-        }
-
-        foreach (var value in values)
-        {
-            if (string.Equals(value, expected, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        reason = heading.Safety == HeadingSafety.Unknown
+            ? "heading_requires_hold"
+            : "heading_clearance_blocked";
+        return heading.Safety == HeadingSafety.Unknown
+            ? CandidateExecutionState.TemporarilyBlocked
+            : CandidateExecutionState.Blocked;
     }
 }
 

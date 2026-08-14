@@ -24832,7 +24832,6 @@ MonoBehaviour:
   guidanceExecutor: {fileID: 1780042341}
   rotationGainController: {fileID: 1039273993}
   userPoseTracker: {fileID: 2100100002}
-  riskEvaluator: {fileID: 2100100012}
   completionToleranceDegrees: 12
   mappingStrategy: 1
   mappingInjectionRatio: 1
@@ -31247,6 +31246,19 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   rotationGainController: {fileID: 1039273993}
+  continuousRdwEnabled: 1
+  continuousRedirectorMode: 1
+  s2cMovementThresholdMetersPerSecond: 0.2
+  s2cRotationThresholdDegreesPerSecond: 1.5
+  s2cCurvatureRadiusMeters: 10
+  s2cMaxCurvatureDegreesPerSecond: 15
+  s2cMaxRotationDegreesPerSecond: 30
+  s2cRotationGainMultiplier: 0.05
+  s2cSteeringDampening: 0.75
+  s2cSmoothingFactor: 0.125
+  s2cCenterToleranceMeters: 0.15
+  s2cNearOppositeAngleDegrees: 160
+  s2cOppositeTemporaryBearingDegrees: 90
   guidanceExecutor: {fileID: 1780042341}
   experimentDashboard: {fileID: 891366376}
   experimentLogger: {fileID: 891366375}
@@ -33486,8 +33498,9 @@ MonoBehaviour:
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
   riskEvaluator: {fileID: 2100100012}
+  guidanceCoordinator: {fileID: 0}
   physicalSpaceCalibration: {fileID: 0}
-  visualizationOrigin: {x: 45.7, y: 7, z: 0.21}
+  visualizationOrigin: {x: 40, y: 7, z: 0.21}
   directionArrowLength: 0.9
   lineWidth: 0.04
   researcherOnlyLayerName: ResearcherOnly
@@ -33504,6 +33517,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   riskEvaluator: {fileID: 2100100012}
+  guidanceCoordinator: {fileID: 0}
   riskText: {fileID: 882524796}
 --- !u!114 &2100100005
 MonoBehaviour:
@@ -33518,7 +33532,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
-  physicalSpaceCalibration: {fileID: 0}
+  physicalSpaceCalibration: {fileID: 1896314442}
   inputMode: 1
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}

@@ -5,13 +5,9 @@ using UnityEngine;
 /// <summary>
 /// 根据 physical boundary、obstacle 和用户 physical pose 计算确定性风险状态。
 /// </summary>
-public sealed class PhysicalRiskEvaluator : MonoBehaviour
+public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvaluator
 {
     private const float Epsilon = 0.0001f;
-    private static readonly float[] HeadingAnglesDegrees =
-    {
-        0f, -30f, 30f, -60f, 60f, -90f, 90f, -135f, 135f, 180f
-    };
 
     [Header("风险计算依赖")]
     [Tooltip("提供当前 physical space 配置的管理器；未配置时自动查找。")]
@@ -41,7 +37,6 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
     private PhysicalRiskState currentRiskState;
     private int riskRevision;
     private string lastExecutionSignature = string.Empty;
-    private readonly HeadingSample[] headingBuffer = new HeadingSample[HeadingAnglesDegrees.Length];
 
     /// <summary>
     /// 每次定时或显式风险计算完成后触发，即使风险等级未变化也会重复触发。
@@ -201,36 +196,6 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
                    StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// 从指定风险快照读取 forward、left 或 right 的 clearance，单位：米。
-    /// </summary>
-    /// <returns>方向有效且 clearance 为有限数值时返回 true。</returns>
-    public bool TryGetDirectionClearance(PhysicalRiskState riskState, string direction, out float clearanceMeters)
-    {
-        clearanceMeters = 0f;
-        if (riskState == null)
-        {
-            return false;
-        }
-
-        switch (direction)
-        {
-            case "forward":
-                clearanceMeters = riskState.clearance_forward;
-                break;
-            case "left":
-                clearanceMeters = riskState.clearance_left;
-                break;
-            case "right":
-                clearanceMeters = riskState.clearance_right;
-                break;
-            default:
-                return false;
-        }
-
-        return !float.IsNaN(clearanceMeters) && !float.IsInfinity(clearanceMeters);
-    }
-
     /// <summary>判断指定 clearance 是否进入本风险计算器配置的 critical 阈值。</summary>
     public bool IsCriticalClearance(float clearanceMeters)
     {
@@ -239,10 +204,10 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
                clearanceMeters < criticalClearanceMeters;
     }
 
-    /// <summary>判断 Heading Profile 采样是否达到可移动的 Safe 等级。</summary>
+    /// <summary>判断精确 Heading Evaluation 是否达到可移动的 Safe 等级。</summary>
     public static bool IsMovementSafe(HeadingSample sample) => sample.Safety == HeadingSafety.Safe;
 
-    /// <summary>判断 Heading Profile 采样是否可作为原地转向后的恢复朝向。</summary>
+    /// <summary>判断精确 Heading Evaluation 是否可作为原地转向后的恢复朝向。</summary>
     public static bool IsRecoveryHeadingAcceptable(HeadingSample sample)
     {
         return sample.Safety == HeadingSafety.Safe;
@@ -284,7 +249,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
 
     /// <summary>
     /// 对任意 Physical XZ 位置和方向执行精确走廊风险计算。
-    /// 本查询不读取或量化到 Heading Profile，也不修改当前风险快照。
+    /// 本查询不读取或量化到固定方向集合，也不修改当前风险快照。
     /// </summary>
     /// <param name="physicalPositionXZ">Physical Room XZ 位置，单位：米。</param>
     /// <param name="physicalDirectionXZ">Physical Room XZ 连续方向向量。</param>
@@ -359,44 +324,21 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
 
         if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, position))
         {
-            // 用户已经离开 tracking boundary 时不再尝试自然导览，直接标记所有方向危险。
-            sample.headingProfile = BuildBlockedHeadingProfile(forward);
-            sample.clearanceForward = 0f;
-            sample.clearanceLeft = 0f;
-            sample.clearanceRight = 0f;
+            // 用户已经离开 tracking boundary 时，当前真实朝向直接进入 Critical。
+            sample.currentHeading = new HeadingSample(0f, forward, 0f, HeadingSafety.Critical);
             sample.boundaryRisk = "critical";
             sample.resetRisk = "critical";
-            sample.unsafeDirections = new[] {"forward", "left", "right"};
-            sample.safeDirections = Array.Empty<string>();
             sample.resetRequired = true;
             return sample;
         }
 
-        sample.headingProfile = BuildHeadingProfile(space, position, forward);
-        sample.clearanceForward = GetHeadingClearance(sample.headingProfile, 0f);
-        sample.clearanceLeft = GetHeadingClearance(sample.headingProfile, -90f);
-        sample.clearanceRight = GetHeadingClearance(sample.headingProfile, 90f);
-        sample.boundaryRisk = ClearanceToRisk(sample.clearanceForward);
-
-        var unsafeDirections = new List<string>();
-        var safeDirections = new List<string>();
-        AddDirectionStatus("forward", sample.clearanceForward, unsafeDirections, safeDirections);
-        AddDirectionStatus("left", sample.clearanceLeft, unsafeDirections, safeDirections);
-        AddDirectionStatus("right", sample.clearanceRight, unsafeDirections, safeDirections);
-
-        sample.unsafeDirections = unsafeDirections.ToArray();
-        sample.safeDirections = safeDirections.ToArray();
-        var bestHeadingClearance = 0f;
-        var hasRecoveryHeading = false;
-        foreach (var heading in sample.headingProfile)
-        {
-            bestHeadingClearance = Mathf.Max(bestHeadingClearance, heading.ClearanceMeters);
-            hasRecoveryHeading |= IsRecoveryHeadingAcceptable(heading);
-        }
-
-        // 只有明确 Safe 的航向可用于恢复；Unknown 不足以证明 Reset 后可以安全恢复导航。
-        sample.resetRequired = !hasRecoveryHeading;
-        sample.resetRisk = sample.resetRequired ? "critical" : ClearanceToRisk(bestHeadingClearance);
+        var currentClearance = ComputeCorridorClearance(space, position, forward);
+        sample.currentHeading = new HeadingSample(
+            0f, forward, currentClearance, ClassifyHeadingSafety(currentClearance));
+        // boundary_risk 只描述当前真实 Physical Forward，不表达全角域可恢复性。
+        sample.boundaryRisk = ClearanceToRisk(currentClearance);
+        sample.resetRequired = sample.currentHeading.Safety == HeadingSafety.Critical;
+        sample.resetRisk = sample.resetRequired ? "critical" : sample.boundaryRisk;
 
         return sample;
     }
@@ -415,27 +357,22 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         var critical = string.Equals(sample.boundaryRisk, "critical", StringComparison.Ordinal) ||
                        string.Equals(sample.resetRisk, "critical", StringComparison.Ordinal);
         return new PhysicalRiskState(
-            Guid.NewGuid().ToString("N"),
-            riskRevision,
-            calibrationId,
-            DateTime.UtcNow.ToString("o"),
-            GuidanceProtocolVersions.RiskPolicy,
-            "unity",
-            space.id,
-            sample.physicalPosition,
-            sample.physicalForward,
-            space.boundary,
-            obstacles,
-            sample.clearanceForward,
-            sample.clearanceLeft,
-            sample.clearanceRight,
-            sample.boundaryRisk,
-            sample.resetRisk,
-            sample.unsafeDirections,
-            sample.safeDirections,
-            critical,
-            sample.resetRequired,
-            sample.headingProfile);
+            riskSnapshotId: Guid.NewGuid().ToString("N"),
+            riskRevision: riskRevision,
+            calibrationId: calibrationId,
+            sampledAtUtc: DateTime.UtcNow.ToString("o"),
+            riskPolicyVersion: GuidanceProtocolVersions.RiskPolicy,
+            snapshotSource: "unity",
+            physicalSpace: space.id,
+            physicalPosition: sample.physicalPosition,
+            physicalForward: sample.physicalForward,
+            boundaryContext: space.boundary,
+            obstacleContext: obstacles,
+            boundaryRisk: sample.boundaryRisk,
+            resetRisk: sample.resetRisk,
+            isCritical: critical,
+            resetRequired: sample.resetRequired,
+            currentHeading: sample.currentHeading);
     }
 
     private static string BuildExecutionSignature(RiskSample sample, string physicalSpaceId, string calibrationId)
@@ -448,60 +385,18 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
             sample.boundaryRisk ?? string.Empty,
             sample.resetRisk ?? string.Empty,
             sample.resetRequired ? "reset" : "no_reset",
-            BuildHeadingSignature(sample.headingProfile),
-            string.Join(",", sample.unsafeDirections ?? Array.Empty<string>()),
-            string.Join(",", sample.safeDirections ?? Array.Empty<string>()));
+            sample.currentHeading.ClearanceMeters.ToString("0.###"),
+            sample.currentHeading.Safety);
     }
 
     private sealed class RiskSample
     {
         public Vector2 physicalPosition;
         public Vector2 physicalForward;
-        public float clearanceForward;
-        public float clearanceLeft;
-        public float clearanceRight;
+        public HeadingSample currentHeading;
         public string boundaryRisk;
         public string resetRisk;
-        public string[] unsafeDirections = Array.Empty<string>();
-        public string[] safeDirections = Array.Empty<string>();
         public bool resetRequired;
-        public HeadingSample[] headingProfile = Array.Empty<HeadingSample>();
-    }
-
-    private HeadingSample[] BuildHeadingProfile(PhysicalSpaceConfig space, Vector2 origin, Vector2 forward)
-    {
-        for (var i = 0; i < HeadingAnglesDegrees.Length; i++)
-        {
-            var relativeYaw = HeadingAnglesDegrees[i];
-            var headingForward = Rotate(forward, relativeYaw);
-            var clearance = ComputeCorridorClearance(space, origin, headingForward);
-            headingBuffer[i] = new HeadingSample(
-                relativeYaw,
-                headingForward,
-                clearance,
-                ClassifyHeadingSafety(clearance));
-        }
-
-        var result = new HeadingSample[headingBuffer.Length];
-        Array.Copy(headingBuffer, result, headingBuffer.Length);
-        return result;
-    }
-
-    private HeadingSample[] BuildBlockedHeadingProfile(Vector2 forward)
-    {
-        for (var i = 0; i < HeadingAnglesDegrees.Length; i++)
-        {
-            var relativeYaw = HeadingAnglesDegrees[i];
-            headingBuffer[i] = new HeadingSample(
-                relativeYaw,
-                Rotate(forward, relativeYaw),
-                0f,
-                HeadingSafety.Critical);
-        }
-
-        var result = new HeadingSample[headingBuffer.Length];
-        Array.Copy(headingBuffer, result, headingBuffer.Length);
-        return result;
     }
 
     private float ComputeCorridorClearance(PhysicalSpaceConfig space, Vector2 origin, Vector2 direction)
@@ -584,19 +479,6 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         return bestDistance;
     }
 
-    private void AddDirectionStatus(string direction, float clearance, List<string> unsafeDirections, List<string> safeDirections)
-    {
-        // medium 区间既不加入 safe 也不加入 unsafe，给上层策略保留谨慎选择空间。
-        if (clearance < unsafeClearanceMeters)
-        {
-            unsafeDirections.Add(direction);
-        }
-        else if (clearance >= safeClearanceMeters)
-        {
-            safeDirections.Add(direction);
-        }
-    }
-
     private string ClearanceToRisk(float clearance)
     {
         if (clearance < criticalClearanceMeters)
@@ -623,53 +505,6 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour
         if (clearance < unsafeClearanceMeters) return HeadingSafety.Unsafe;
         if (clearance < safeClearanceMeters) return HeadingSafety.Unknown;
         return HeadingSafety.Safe;
-    }
-
-    private static float GetHeadingClearance(HeadingSample[] profile, float relativeYawDegrees)
-    {
-        if (profile == null || profile.Length == 0)
-        {
-            return 0f;
-        }
-
-        var bestClearance = 0f;
-        var bestDelta = float.PositiveInfinity;
-        foreach (var heading in profile)
-        {
-            var delta = Mathf.Abs(Mathf.DeltaAngle(relativeYawDegrees, heading.RelativeYawDegrees));
-            if (delta < bestDelta)
-            {
-                bestDelta = delta;
-                bestClearance = heading.ClearanceMeters;
-            }
-        }
-
-        return bestClearance;
-    }
-
-    private static string BuildHeadingSignature(HeadingSample[] profile)
-    {
-        if (profile == null || profile.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        var values = new string[profile.Length];
-        for (var i = 0; i < profile.Length; i++)
-        {
-            values[i] = $"{profile[i].RelativeYawDegrees:0}:{profile[i].Safety}";
-        }
-        return string.Join(",", values);
-    }
-
-    private static Vector2 Rotate(Vector2 forward, float yawDegrees)
-    {
-        var radians = yawDegrees * Mathf.Deg2Rad;
-        var sin = Mathf.Sin(radians);
-        var cos = Mathf.Cos(radians);
-        return new Vector2(
-            forward.x * cos + forward.y * sin,
-            -forward.x * sin + forward.y * cos).normalized;
     }
 
     private static float SignedAngle(Vector2 from, Vector2 to)

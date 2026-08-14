@@ -145,25 +145,27 @@ public sealed class PhysicalRiskState
     public IReadOnlyList<Vector2> boundary_context { get; }
     /// <summary>Physical Obstacles 的只读副本。</summary>
     public IReadOnlyList<PhysicalRiskObstacleSnapshot> obstacle_context { get; }
-    /// <summary>前方 clearance，单位：米。</summary>
+    /// <summary>当前真实 Physical Forward 的精确走廊评估。</summary>
+    public HeadingSample current_heading { get; }
+    /// <summary>旧协议字段；不再作为 Unity 物理安全事实。</summary>
     public float clearance_forward { get; }
-    /// <summary>左侧 clearance，单位：米。</summary>
+    /// <summary>旧协议字段；不再生产左侧正交采样。</summary>
     public float clearance_left { get; }
-    /// <summary>右侧 clearance，单位：米。</summary>
+    /// <summary>旧协议字段；不再生产右侧正交采样。</summary>
     public float clearance_right { get; }
-    /// <summary>由最小 clearance 映射出的风险标签。</summary>
+    /// <summary>当前真实 Physical Forward 的精确风险标签。</summary>
     public string boundary_risk { get; }
     /// <summary>面向 Reset 决策的风险标签。</summary>
     public string reset_risk { get; }
-    /// <summary>不可执行方向的只读集合。</summary>
+    /// <summary>旧协议字段；生产快照固定为空且不得参与控制。</summary>
     public IReadOnlyList<string> unsafe_directions { get; }
-    /// <summary>可执行方向的只读集合。</summary>
+    /// <summary>旧协议字段；生产快照固定为空且不得参与控制。</summary>
     public IReadOnlyList<string> safe_directions { get; }
     /// <summary>快照是否达到 Critical 风险。</summary>
     public bool critical { get; }
     /// <summary>确定性安全链是否要求 Reset。</summary>
     public bool reset_required { get; }
-    /// <summary>多角度 Physical Heading Profile 的只读副本。</summary>
+    /// <summary>旧诊断字段；生产快照不再发布固定 Heading Profile。</summary>
     public IReadOnlyList<HeadingSample> heading_profile { get; }
 
     /// <summary>创建完整、深拷贝且发布后不可修改的风险快照。</summary>
@@ -188,7 +190,8 @@ public sealed class PhysicalRiskState
         IEnumerable<string> safeDirections = null,
         bool isCritical = false,
         bool resetRequired = false,
-        IEnumerable<HeadingSample> headingProfile = null)
+        IEnumerable<HeadingSample> headingProfile = null,
+        HeadingSample currentHeading = default(HeadingSample))
     {
         risk_snapshot_id = riskSnapshotId ?? string.Empty;
         risk_revision = Math.Max(0, riskRevision);
@@ -202,41 +205,22 @@ public sealed class PhysicalRiskState
         boundary_context = Array.AsReadOnly(new List<Vector2>(boundaryContext ?? Array.Empty<Vector2>()).ToArray());
         obstacle_context = Array.AsReadOnly(new List<PhysicalRiskObstacleSnapshot>(
             obstacleContext ?? Array.Empty<PhysicalRiskObstacleSnapshot>()).ToArray());
-        clearance_forward = clearanceForward;
-        clearance_left = clearanceLeft;
-        clearance_right = clearanceRight;
+        current_heading = currentHeading.PhysicalForward.sqrMagnitude > 0.0001f
+            ? currentHeading
+            : new HeadingSample(0f, physicalForward, 0f, HeadingSafety.Unknown);
+        // 旧槽位仅为冻结数据形状保留，禁止把调用方传入的离散事实重新带回控制链。
+        clearance_forward = 0f;
+        clearance_left = 0f;
+        clearance_right = 0f;
         boundary_risk = boundaryRisk ?? string.Empty;
         reset_risk = resetRisk ?? string.Empty;
-        unsafe_directions = Array.AsReadOnly(new List<string>(unsafeDirections ?? Array.Empty<string>()).ToArray());
-        safe_directions = Array.AsReadOnly(new List<string>(safeDirections ?? Array.Empty<string>()).ToArray());
+        unsafe_directions = Array.AsReadOnly(Array.Empty<string>());
+        safe_directions = Array.AsReadOnly(Array.Empty<string>());
         critical = isCritical;
         reset_required = resetRequired;
-        heading_profile = Array.AsReadOnly(new List<HeadingSample>(
-            headingProfile ?? Array.Empty<HeadingSample>()).ToArray());
+        heading_profile = Array.AsReadOnly(Array.Empty<HeadingSample>());
     }
 
-    /// <summary>
-    /// 按相对偏航查询最近的 Heading Profile 采样。
-    /// </summary>
-    /// <returns>Profile 包含至少一项时返回 true。</returns>
-    public bool TryGetNearestHeading(float relativeYawDegrees, out HeadingSample sample)
-    {
-        sample = default;
-        var bestDelta = float.PositiveInfinity;
-        var found = false;
-        foreach (var item in heading_profile)
-        {
-            var delta = Mathf.Abs(Mathf.DeltaAngle(relativeYawDegrees, item.RelativeYawDegrees));
-            if (delta < bestDelta)
-            {
-                bestDelta = delta;
-                sample = item;
-                found = true;
-            }
-        }
-
-        return found;
-    }
 }
 
 internal static class PhysicalSpaceGeometry

@@ -80,9 +80,9 @@ public sealed class SafetyPlanningStageOneEditModeTests
         }
     }
 
-    /// <summary>验证风险快照发布全部采样角度并保持旧三方向字段一致。</summary>
+    /// <summary>验证风险快照只发布当前真实 Physical Forward 的精确安全事实。</summary>
     [Test]
-    public void PhysicalRiskEvaluator_PublishesMultiAngleCorridorHeadingProfile()
+    public void PhysicalRiskEvaluator_PublishesCurrentExactHeadingWithoutFixedProfile()
     {
         var root = new GameObject("PhysicalHeadingProfileTest");
         try
@@ -97,19 +97,12 @@ public sealed class SafetyPlanningStageOneEditModeTests
             var risk = evaluator.EvaluateNow();
 
             Assert.That(risk, Is.Not.Null);
-            Assert.That(risk.heading_profile, Has.Count.EqualTo(10));
-            Assert.That(
-                risk.heading_profile.Select(sample => sample.RelativeYawDegrees),
-                Is.EquivalentTo(new[] { 0f, -30f, 30f, -60f, 60f, -90f, 90f, -135f, 135f, 180f }));
-            Assert.That(risk.TryGetNearestHeading(30f, out var diagonalHeading), Is.True);
-            Assert.That(diagonalHeading.RelativeYawDegrees, Is.EqualTo(30f));
-            Assert.That(diagonalHeading.PhysicalForward.magnitude, Is.EqualTo(1f).Within(0.001f));
-            Assert.That(risk.TryGetNearestHeading(0f, out var forwardHeading), Is.True);
-            Assert.That(risk.TryGetNearestHeading(-90f, out var leftHeading), Is.True);
-            Assert.That(risk.TryGetNearestHeading(90f, out var rightHeading), Is.True);
-            Assert.That(risk.clearance_forward, Is.EqualTo(forwardHeading.ClearanceMeters).Within(0.001f));
-            Assert.That(risk.clearance_left, Is.EqualTo(leftHeading.ClearanceMeters).Within(0.001f));
-            Assert.That(risk.clearance_right, Is.EqualTo(rightHeading.ClearanceMeters).Within(0.001f));
+            Assert.That(risk.current_heading.RelativeYawDegrees, Is.EqualTo(0f).Within(0.001f));
+            Assert.That(risk.current_heading.PhysicalForward.magnitude, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(risk.current_heading.ClearanceMeters, Is.GreaterThan(0f));
+            Assert.That(risk.heading_profile, Is.Empty);
+            Assert.That(risk.safe_directions, Is.Empty);
+            Assert.That(risk.unsafe_directions, Is.Empty);
         }
         finally
         {

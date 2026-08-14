@@ -215,6 +215,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private int automaticResetAttempts;
     private string resetAbandonedTargetId = string.Empty;
     private readonly RecoveryHeadingPlanner recoveryHeadingPlanner = new RecoveryHeadingPlanner();
+    private RecoveryHeadingSearchResult latestRecoverySearchResult;
+    private string latestRecoverySearchFingerprint = string.Empty;
     private RecoveryHeadingPlan frozenRecoveryPlan;
     private GuidanceRecoveryState recoveryState = GuidanceRecoveryState.Inactive;
     private float recoveryRevalidationAt = float.PositiveInfinity;
@@ -263,6 +265,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceRecoveryState> RecoveryStateChanged;
     /// <summary>自动物理恢复状态发生变化时发布完整诊断上下文。</summary>
     public event Action<GuidanceRecoveryTransitionInfo> RecoveryTransitioned;
+    /// <summary>完成一次 Continuous Recovery Heading Search 时发布只读诊断结果。</summary>
+    public event Action<RecoveryHeadingSearchResult> RecoverySearchCompleted;
     /// <summary>进入、更新或退出重规划等待时触发。</summary>
     public event Action<ReplanHoldInfo> ReplanHoldChanged;
 
@@ -286,6 +290,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public GuidanceRecoveryState RecoveryState => recoveryState;
     /// <summary>当前恢复流程冻结的具体物理朝向计划。</summary>
     public RecoveryHeadingPlan FrozenRecoveryPlan => frozenRecoveryPlan;
+    /// <summary>最近一次 Continuous Recovery Heading Search 的完整诊断结果。</summary>
+    public RecoveryHeadingSearchResult LatestRecoverySearchResult => latestRecoverySearchResult;
     /// <summary>当前是否正在执行自动物理朝向恢复。</summary>
     public bool IsAutomaticRecoveryActive =>
         recoveryState != GuidanceRecoveryState.Inactive &&
@@ -1084,8 +1090,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             directionAvailable,
             plannedHeading.Safety,
             plannedDirectionCritical);
-        var hasRecoveryHeading = recoveryHeadingPlanner.Plan(
-            riskState != null ? riskState.heading_profile : null).IsSuccess;
+        // 仅在确实需要安全介入且没有语义绕行时执行全角域搜索，避免正常安全帧重复查询物理几何。
+        var shouldSearchRecovery = safeCandidate == null &&
+                                   (requiresSafetyIntervention || !directionAvailable);
+        var hasRecoveryHeading = shouldSearchRecovery &&
+                                 SearchRecoveryHeading(riskState).Plan.IsSuccess;
         var input = new RuntimeGuidanceSafetyInput(
             activeSnapshot.decisionId,
             activeResponse.selected_target,
@@ -1322,11 +1331,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         SetRequestPhase(GuidanceRequestPhase.Cancelled);
         TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "guidance_stopped");
         taskController.PauseForReset();
-        var semanticYaw = TryGetRecoverySemanticYaw(response);
-        var nextPlan = recoveryHeadingPlanner.Plan(
-            riskState != null ? riskState.heading_profile : null,
-            semanticYaw,
-            frozenRecoveryPlan);
+        var searchResult = SearchRecoveryHeading(riskState);
+        var nextPlan = searchResult.Plan;
         if (!nextPlan.IsSuccess ||
             !TryEvaluateRecoveryPlanHeading(riskState, nextPlan, out var exactRecoveryHeading) ||
             !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(exactRecoveryHeading))
@@ -1463,9 +1469,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             recoveryHoldAttemptCount++;
             CaptureRecoveryHoldFacts(riskState);
             nextRecoveryHoldAttemptAt = Time.realtimeSinceStartup + Mathf.Max(0.05f, recoveryHoldRetryIntervalSeconds);
-            var plan = recoveryHeadingPlanner.Plan(
-                riskState.heading_profile,
-                TryGetRecoverySemanticYaw(null));
+            var plan = SearchRecoveryHeading(riskState, true).Plan;
             if (!plan.IsSuccess ||
                 !TryEvaluateRecoveryPlanHeading(riskState, plan, out var selectedHeading) ||
                 !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(selectedHeading))
@@ -1849,25 +1853,55 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             : $"target:{targetId}|state:{stateVersion}|risk:{riskRevision}|reason:{normalizedReason}";
     }
 
-    private float? TryGetRecoverySemanticYaw(GuidanceResponse response)
-    {
-        var targetId = response != null ? response.selected_target : resetAbandonedTargetId;
-        if (string.IsNullOrWhiteSpace(targetId) && taskController != null)
-        {
-            targetId = taskController.RuntimeState.nextTargetId;
-        }
-
-        return navigationTargets != null &&
-               navigationTargets.TryGetTargetRelativeYawDegrees(targetId, out var relativeYawDegrees)
-            ? relativeYawDegrees
-            : (float?)null;
-    }
-
     private static string RecoveryFailureReason(RecoveryHeadingFailure failure)
     {
-        return failure == RecoveryHeadingFailure.NoAcceptableHeading
-            ? "No acceptable physical recovery heading is available."
-            : "Automatic recovery has no valid Heading Profile.";
+        switch (failure)
+        {
+            case RecoveryHeadingFailure.NoAcceptableHeading:
+                return "continuous_heading_search_exhausted";
+            case RecoveryHeadingFailure.FinalValidationFailed:
+                return "recovery_heading_final_validation_failed";
+            case RecoveryHeadingFailure.EvaluationUnavailable:
+                return "recovery_heading_evaluation_unavailable";
+            default:
+                return "recovery_heading_search_context_invalid";
+        }
+    }
+
+    private RecoveryHeadingSearchResult SearchRecoveryHeading(
+        PhysicalRiskState riskState,
+        bool forceRefresh = false)
+    {
+        var fingerprint = BuildRecoverySearchFingerprint(riskState);
+        if (!forceRefresh &&
+            latestRecoverySearchResult != null &&
+            string.Equals(latestRecoverySearchFingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            return latestRecoverySearchResult;
+        }
+
+        latestRecoverySearchResult = recoveryHeadingPlanner.Search(riskState, riskEvaluator);
+        latestRecoverySearchFingerprint = fingerprint;
+        RecoverySearchCompleted?.Invoke(latestRecoverySearchResult);
+        return latestRecoverySearchResult;
+    }
+
+    private static string BuildRecoverySearchFingerprint(PhysicalRiskState riskState)
+    {
+        if (riskState == null)
+        {
+            return "risk:none";
+        }
+
+        return string.Join(
+            "|",
+            riskState.physical_space,
+            riskState.calibration_id,
+            riskState.risk_revision,
+            riskState.user_physical_position.x.ToString("0.####"),
+            riskState.user_physical_position.y.ToString("0.####"),
+            riskState.user_physical_forward.x.ToString("0.####"),
+            riskState.user_physical_forward.y.ToString("0.####"));
     }
 
     private bool TryEvaluateFrozenRecoveryHeading(
@@ -1984,7 +2018,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return true;
         }
 
-        if (input.HasRecoveryHeading && HasTrustedRecoveryFacts(riskState))
+        // 单次搜索未找到 Safe 只允许进入 Recovery Hold；不能因当前预算结果直接 HardStop。
+        if (HasTrustedRecoveryFacts(riskState))
         {
             TriggerPauseReset(
                 activeResponse,

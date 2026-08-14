@@ -385,6 +385,26 @@ public sealed class ExperimentLogger : MonoBehaviour
             recoveryTransition: transition);
     }
 
+    /// <summary>记录一次 Continuous Recovery Heading Search 的完整可重建诊断。</summary>
+    public void LogRecoverySearch(
+        RecoveryHeadingSearchResult searchResult,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (searchResult == null) return;
+        Write(
+            "recovery_search_completed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            searchResult.FailureReason,
+            trace,
+            recoverySearchResult: searchResult);
+    }
+
     /// <summary>记录通过运行时验证并实际开始执行的 Guidance。</summary>
     public void LogGuidanceExecuted(
         LogTraceContext trace,
@@ -607,6 +627,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         CandidateSetReservation candidateReservation = null,
         RecoveryHeadingPlan recoveryPlan = null,
         GuidanceRecoveryTransitionInfo recoveryTransition = null,
+        RecoveryHeadingSearchResult recoverySearchResult = null,
         RotationGainEventInfo rotationGainEvent = null,
         ReplanHoldInfo replanHoldInfo = null,
         BackendHealthStatusInfo backendHealthInfo = null,
@@ -711,12 +732,12 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["physical_intent"] = FirstNonEmpty(response?.physical_intent, trace.GuidanceIntent),
                 ["runtime_validation_result"] = runtimeValidationResult,
                 ["runtime_intervention"] = runtimeIntervention,
+                // 协议键名保持不变，但值只表示当前真实 Physical Forward 的即时风险。
                 ["boundary_risk"] = riskState != null ? riskState.boundary_risk : string.Empty,
                 ["reset_risk"] = riskState != null ? riskState.reset_risk : string.Empty,
                 ["reset_required"] = riskState != null && riskState.reset_required,
-                ["safe_directions"] = JArray.FromObject(riskState?.safe_directions ?? Array.Empty<string>()),
-                ["unsafe_directions"] = JArray.FromObject(riskState?.unsafe_directions ?? Array.Empty<string>()),
-                ["heading_profile"] = SerializeHeadingProfile(riskState?.heading_profile)
+                ["current_heading"] = SerializeHeadingSample(
+                    riskState != null ? riskState.current_heading : default(HeadingSample))
             };
 
             if (request != null)
@@ -758,6 +779,10 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["previous_state"] = RecoveryStateLabel(recoveryTransition.PreviousState);
                 data["next_state"] = RecoveryStateLabel(recoveryTransition.NextState);
                 data["transition_reason"] = recoveryTransition.Reason;
+            }
+            if (recoverySearchResult != null)
+            {
+                data["recovery_search"] = SerializeRecoverySearch(recoverySearchResult, riskState);
             }
             if (rotationGainEvent != null)
             {
@@ -1071,6 +1096,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "gain_aborted": return new EventDescriptor("rdw.gain_aborted", "RDW", level);
             case "rdw_frame": return new EventDescriptor("rdw.frame", "RDW", level);
             case "recovery_state_changed": return new EventDescriptor("rdw.recovery_state_changed", "RDW", level);
+            case "recovery_search_completed": return new EventDescriptor("rdw.recovery_search_completed", "RDW", level);
             default:
                 return new EventDescriptor(
                     "system." + FirstNonEmpty(eventType, "unspecified_event").Replace('_', '.'),
@@ -1138,18 +1164,10 @@ public sealed class ExperimentLogger : MonoBehaviour
                     ["y"] = virtualForward.y,
                     ["z"] = virtualForward.z
                 },
-                ["clearance_m"] = new JObject
-                {
-                    ["forward"] = riskState.clearance_forward,
-                    ["left"] = riskState.clearance_left,
-                    ["right"] = riskState.clearance_right
-                },
+                ["current_heading"] = SerializeHeadingSample(riskState.current_heading),
                 ["boundary_risk"] = riskState.boundary_risk ?? string.Empty,
                 ["reset_risk"] = riskState.reset_risk ?? string.Empty,
                 ["reset_required"] = riskState.reset_required,
-                ["safe_directions"] = JArray.FromObject(riskState.safe_directions ?? Array.Empty<string>()),
-                ["unsafe_directions"] = JArray.FromObject(riskState.unsafe_directions ?? Array.Empty<string>()),
-                ["heading_profile"] = SerializeHeadingProfile(riskState.heading_profile),
                 ["active_target"] = FirstNonEmpty(runtimeState?.guidanceTargetId, trace.TargetId),
                 ["active_decision_id"] = trace.DecisionId,
                 ["active_guidance_intent"] = trace.GuidanceIntent,
@@ -1213,23 +1231,28 @@ public sealed class ExperimentLogger : MonoBehaviour
         }
     }
 
-    private static JArray SerializeHeadingProfile(IReadOnlyList<HeadingSample> headingProfile)
+    private static JObject SerializeHeadingSample(HeadingSample sample)
+    {
+        return new JObject
+        {
+            ["relative_yaw_deg"] = sample.RelativeYawDegrees,
+            ["physical_forward"] = new JObject
+            {
+                ["x"] = sample.PhysicalForward.x,
+                ["z"] = sample.PhysicalForward.y
+            },
+            ["clearance_m"] = sample.ClearanceMeters,
+            ["safety"] = sample.Safety.ToString().ToLowerInvariant()
+        };
+    }
+
+    private static JArray SerializeHeadingEvaluations(IReadOnlyList<HeadingSample> evaluations)
     {
         var result = new JArray();
-        if (headingProfile == null) return result;
-        foreach (var sample in headingProfile)
+        if (evaluations == null) return result;
+        foreach (var sample in evaluations)
         {
-            result.Add(new JObject
-            {
-                ["relative_yaw_deg"] = sample.RelativeYawDegrees,
-                ["physical_forward"] = new JObject
-                {
-                    ["x"] = sample.PhysicalForward.x,
-                    ["z"] = sample.PhysicalForward.y
-                },
-                ["clearance_m"] = sample.ClearanceMeters,
-                ["safety"] = sample.Safety.ToString().ToLowerInvariant()
-            });
+            result.Add(SerializeHeadingSample(sample));
         }
         return result;
     }
@@ -1276,6 +1299,46 @@ public sealed class ExperimentLogger : MonoBehaviour
             ["clearance_m"] = plan?.ClearanceMeters ?? 0f,
             ["safety"] = plan != null ? plan.Safety.ToString().ToLowerInvariant() : string.Empty,
             ["score"] = plan != null && !float.IsInfinity(plan.Score) ? plan.Score : (float?)null
+        };
+    }
+
+    private static JObject SerializeRecoverySearch(
+        RecoveryHeadingSearchResult result,
+        PhysicalRiskState riskState)
+    {
+        var settings = result.Settings;
+        return new JObject
+        {
+            ["search_origin_position_m"] = new JObject
+            {
+                ["x"] = riskState?.user_physical_position.x ?? 0f,
+                ["z"] = riskState?.user_physical_position.y ?? 0f
+            },
+            ["search_origin_forward"] = new JObject
+            {
+                ["x"] = riskState?.user_physical_forward.x ?? 0f,
+                ["z"] = riskState?.user_physical_forward.y ?? 0f
+            },
+            ["coarse_step_deg"] = settings.coarseStepDegrees,
+            ["minimum_resolution_deg"] = settings.minimumResolutionDegrees,
+            ["refinement_factor"] = settings.refinementFactor,
+            ["maximum_evaluations"] = settings.maximumEvaluations,
+            ["clearance_weight"] = settings.clearanceWeight,
+            ["future_distance_weight"] = settings.futureDistanceWeight,
+            ["turn_cost_weight"] = settings.turnCostWeight,
+            ["completed_coverage_resolution_deg"] =
+                float.IsInfinity(result.CompletedCoverageResolutionDegrees)
+                    ? (float?)null
+                    : result.CompletedCoverageResolutionDegrees,
+            ["attempted_evaluation_count"] = result.AttemptedEvaluationCount,
+            ["successful_evaluation_count"] = result.SuccessfulEvaluationCount,
+            ["evaluated_heading_count"] = result.Evaluations.Count,
+            ["budget_exhausted"] = result.BudgetExhausted,
+            ["evaluations"] = SerializeHeadingEvaluations(result.Evaluations),
+            ["best_heading"] = SerializeRecoveryPlan(result.Plan),
+            ["final_validation_attempted"] = result.FinalValidationAttempted,
+            ["final_validation_passed"] = result.FinalValidationPassed,
+            ["search_failure_reason"] = result.FailureReason
         };
     }
 
@@ -1689,8 +1752,8 @@ public sealed class ExperimentLogger : MonoBehaviour
                 riskState.boundary_risk,
                 riskState.reset_risk,
                 riskState.reset_required,
-                Join(riskState.safe_directions),
-                Join(riskState.unsafe_directions));
+                riskState.current_heading.ClearanceMeters.ToString("0.###"),
+                riskState.current_heading.Safety);
     }
 
     private static void AppendConsoleValue(StringBuilder builder, string key, string value)
@@ -1717,11 +1780,6 @@ public sealed class ExperimentLogger : MonoBehaviour
         }
 
         return string.Empty;
-    }
-
-    private static string Join(System.Collections.Generic.IReadOnlyList<string> values)
-    {
-        return values == null || values.Count == 0 ? string.Empty : string.Join(",", values);
     }
 
     /// <summary>保存稳定事件名、固定分类和日志等级的目录项。</summary>

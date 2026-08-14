@@ -560,15 +560,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             pauseResetController?.CancelReset(reason);
         }
-        if (startReset &&
-            stateBeforeSafetyHold != ExperimentRunState.Completing &&
-            stateBeforeSafetyHold != ExperimentRunState.Paused)
-        {
-            taskController?.PauseForReset();
-        }
         if (startReset)
         {
-            pauseResetController?.PauseForReset(reason);
+            guidanceCoordinator?.BeginAutomaticRecovery(
+                riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+                reason);
         }
         if (runtimeInterventionActive)
             participantUiController?.ShowRuntimeIntervention();
@@ -1344,6 +1340,15 @@ public sealed class ExperimentDashboard : MonoBehaviour
         HandleRecoveryStateChanged(transition.NextState);
     }
 
+    private void HandleRecoverySearchCompleted(RecoveryHeadingSearchResult result)
+    {
+        experimentLogger?.LogRecoverySearch(
+            result,
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState);
+    }
+
     private void StartCompletionCountdown()
     {
         StopCompletionCountdown();
@@ -1447,6 +1452,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
     private static bool IsCritical(PhysicalRiskState state)
     {
+        // boundary_risk/reset_risk 均只描述当前真实 Physical Forward 的即时风险；恢复能力由 Coordinator 搜索。
         return state != null && (state.reset_required || state.boundary_risk == "critical" || state.reset_risk == "critical");
     }
 
@@ -1459,8 +1465,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
                !string.IsNullOrWhiteSpace(state.risk_snapshot_id) &&
                string.Equals(state.calibration_id, physicalSpaceCalibration.CalibrationId, StringComparison.Ordinal) &&
                string.Equals(state.physical_space, physicalSpaceManager.CurrentSpaceId, StringComparison.Ordinal) &&
-               !IsCritical(state) &&
-               state.safe_directions != null && state.safe_directions.Count > 0;
+                !IsCritical(state);
     }
 
     private void Subscribe()
@@ -1509,6 +1514,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.DetourCompleted += HandleDetourCompleted;
             guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
             guidanceCoordinator.RecoveryTransitioned += HandleRecoveryTransitioned;
+            guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
+            guidanceCoordinator.RecoverySearchCompleted += HandleRecoverySearchCompleted;
             guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
             guidanceCoordinator.ReplanHoldChanged += HandleReplanHoldChanged;
         }
@@ -1571,6 +1578,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.TargetReached -= HandleTargetReached;
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
             guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
+            guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
             guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
@@ -1601,7 +1609,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             $"Physical Space: {spec.physicalSpaceId}\nBackend: {(agentClient != null && agentClient.BackendOnline ? "Online" : "Offline")}\n" +
             $"Tracking: {(xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive ? "Valid" : "Invalid")}\n" +
             $"Calibration: {(physicalSpaceCalibration != null ? physicalSpaceCalibration.State.ToString() : "Missing")}\n" +
-            $"Risk: {(riskEvaluator != null && riskEvaluator.CurrentRiskState != null ? riskEvaluator.CurrentRiskState.boundary_risk : "unknown")}\n" +
+            $"Current Physical Forward Risk: {(riskEvaluator != null && riskEvaluator.CurrentRiskState != null ? riskEvaluator.CurrentRiskState.boundary_risk : "unknown")}\n" +
             $"Task State: {(taskController != null ? taskController.RuntimeState.phase.ToString() : "missing")}\n" +
             $"Session State: {runState}\nStatus: {lastStatusMessage}{countdown}";
     }

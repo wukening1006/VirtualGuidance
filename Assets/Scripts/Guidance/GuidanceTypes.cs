@@ -64,17 +64,17 @@ public sealed class GuidanceRiskSnapshot
     public GuidanceRiskBoundaryContext boundary_context = new GuidanceRiskBoundaryContext();
     /// <summary>障碍物原始上下文。</summary>
     public GuidanceRiskObstacleContext[] obstacle_context = Array.Empty<GuidanceRiskObstacleContext>();
-    /// <summary>前方 clearance，单位：米。</summary>
+    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
     public float clearance_forward;
-    /// <summary>左侧 clearance，单位：米。</summary>
+    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
     public float clearance_left;
-    /// <summary>右侧 clearance，单位：米。</summary>
+    /// <summary>冻结协议占位字段；Unity 不再发布三方向 clearance。</summary>
     public float clearance_right;
     /// <summary>统一风险等级。</summary>
     public string risk_level;
-    /// <summary>安全方向。</summary>
+    /// <summary>冻结协议占位字段；Unity 不再发布离散安全方向。</summary>
     public string[] safe_directions = Array.Empty<string>();
-    /// <summary>不安全方向。</summary>
+    /// <summary>冻结协议占位字段；Unity 不再发布离散不安全方向。</summary>
     public string[] unsafe_directions = Array.Empty<string>();
     /// <summary>是否达到 Critical 风险。</summary>
     public bool critical;
@@ -120,22 +120,15 @@ public sealed class GuidanceRiskSnapshot
             physical_forward = GuidanceTypeUtility.Vector2ToArray(state.user_physical_forward),
             boundary_context = new GuidanceRiskBoundaryContext { points = boundary },
             obstacle_context = obstacles,
-            clearance_forward = state.clearance_forward,
-            clearance_left = state.clearance_left,
-            clearance_right = state.clearance_right,
+            clearance_forward = 0f,
+            clearance_left = 0f,
+            clearance_right = 0f,
             risk_level = state.boundary_risk,
-            safe_directions = CopyStrings(state.safe_directions),
-            unsafe_directions = CopyStrings(state.unsafe_directions),
+            safe_directions = Array.Empty<string>(),
+            unsafe_directions = Array.Empty<string>(),
             critical = state.critical,
             reset_required = state.reset_required
         };
-    }
-
-    private static string[] CopyStrings(System.Collections.Generic.IReadOnlyList<string> values)
-    {
-        var result = new string[values != null ? values.Count : 0];
-        for (var i = 0; i < result.Length; i++) result[i] = values[i];
-        return result;
     }
 }
 

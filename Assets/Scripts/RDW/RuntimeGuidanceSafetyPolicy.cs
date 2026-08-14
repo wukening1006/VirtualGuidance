@@ -91,7 +91,7 @@ public sealed class RuntimeGuidanceSafetyInput
             consecutiveUnsafeSamples,
             ComputeRequiresSafetyIntervention(latestRisk, plannedDirection, plannedDirectionCritical, consecutiveUnsafeSamples),
             safeCandidateAvailable,
-            HasRecoveryHeadingInRisk(latestRisk))
+            false)
     {
     }
 
@@ -153,24 +153,6 @@ public sealed class RuntimeGuidanceSafetyInput
         return plannedDirectionCritical ||
                risk.reset_required ||
                consecutiveUnsafeSamples >= UnsafeSamplesRequiredForIntervention;
-    }
-
-    private static bool HasRecoveryHeadingInRisk(PhysicalRiskState risk)
-    {
-        if (risk == null || risk.heading_profile == null)
-        {
-            return false;
-        }
-
-        foreach (var sample in risk.heading_profile)
-        {
-            if (PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(sample))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 }

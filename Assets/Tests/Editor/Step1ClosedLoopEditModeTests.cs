@@ -71,10 +71,11 @@ public sealed class Step1ClosedLoopEditModeTests
         using (var harness = new RiskHarness())
         {
             var risk = harness.Evaluate(new Vector2(2.5f, 4.5f), 0f);
-            var hasRecoveryHeading = harness.RecoveryPlanner.Plan(risk.heading_profile).IsSuccess;
+            var hasRecoveryHeading = harness.RecoveryPlanner.Search(risk, harness.Evaluator).Plan.IsSuccess;
             var input = harness.CreateInput(risk, true, false, hasRecoveryHeading);
 
-            Assert.That(risk.unsafe_directions, Does.Contain("forward"));
+            Assert.That(risk.current_heading.Safety,
+                Is.EqualTo(HeadingSafety.Unsafe).Or.EqualTo(HeadingSafety.Critical));
             Assert.That(risk.reset_required, Is.False);
             Assert.That(hasRecoveryHeading, Is.True);
             Assert.That(harness.Policy.Evaluate(input), Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
@@ -90,7 +91,7 @@ public sealed class Step1ClosedLoopEditModeTests
         using (var harness = new RiskHarness())
         {
             var risk = harness.Evaluate(new Vector2(5.2f, 5.2f), 0f);
-            var hasRecoveryHeading = harness.RecoveryPlanner.Plan(risk.heading_profile).IsSuccess;
+            var hasRecoveryHeading = harness.RecoveryPlanner.Search(risk, harness.Evaluator).Plan.IsSuccess;
             var input = harness.CreateInput(risk, true, false, hasRecoveryHeading);
 
             Assert.That(risk.reset_required, Is.True);
@@ -108,7 +109,7 @@ public sealed class Step1ClosedLoopEditModeTests
         using (var harness = new RiskHarness())
         {
             var risk = harness.Evaluate(new Vector2(0.2f, 2.5f), 0f);
-            var hasRecoveryHeading = harness.RecoveryPlanner.Plan(risk.heading_profile).IsSuccess;
+            var hasRecoveryHeading = harness.RecoveryPlanner.Search(risk, harness.Evaluator).Plan.IsSuccess;
             var input = harness.CreateInput(risk, true, false, hasRecoveryHeading);
 
             Assert.That(hasRecoveryHeading, Is.False);
@@ -144,7 +145,8 @@ public sealed class Step1ClosedLoopEditModeTests
             var firstUnsafeRisk = harness.Risk.EvaluateNow();
             var secondUnsafeRisk = harness.Risk.EvaluateNow();
 
-            Assert.That(firstUnsafeRisk.unsafe_directions, Does.Contain("forward"));
+            Assert.That(firstUnsafeRisk.current_heading.Safety,
+                Is.EqualTo(HeadingSafety.Unsafe).Or.EqualTo(HeadingSafety.Critical));
             Assert.That(secondUnsafeRisk.reset_required, Is.True);
             Assert.That(harness.Coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.HoldingForSafeHeading));
             Assert.That(harness.Coordinator.IsHoldingForRecovery, Is.True);
@@ -154,7 +156,7 @@ public sealed class Step1ClosedLoopEditModeTests
             // 位姿事实恢复后由真实 RiskStateChanged 唤醒 Hold，并选择一条精确验证为 Safe 的航向。
             harness.Pose.SetCalibratedPhysicalPose(new Vector2(2.5f, 4.3f), 0f);
             var safeRecoveryRisk = harness.Risk.EvaluateNow();
-            Assert.That(new RecoveryHeadingPlanner().Plan(safeRecoveryRisk.heading_profile).IsSuccess, Is.True);
+            Assert.That(new RecoveryHeadingPlanner().Search(safeRecoveryRisk, harness.Risk).Plan.IsSuccess, Is.True);
             Assert.That(harness.Coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
             Assert.That(harness.Reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeDirection));
 
@@ -329,6 +331,8 @@ public sealed class Step1ClosedLoopEditModeTests
 
         public RuntimeGuidanceSafetyPolicy Policy { get; } = new RuntimeGuidanceSafetyPolicy();
         public RecoveryHeadingPlanner RecoveryPlanner { get; } = new RecoveryHeadingPlanner();
+        /// <summary>提供任意角度精确物理评估的生产计算器。</summary>
+        public PhysicalRiskEvaluator Evaluator => evaluator;
 
         public RiskHarness()
         {
@@ -372,9 +376,9 @@ public sealed class Step1ClosedLoopEditModeTests
                 evaluator.IsCalibrationValid,
                 evaluator.IsRiskIdentityCurrent(risk),
                 "forward",
-                risk.clearance_forward,
+                risk.current_heading.ClearanceMeters,
                 true,
-                evaluator.IsCriticalClearance(risk.clearance_forward),
+                risk.current_heading.Safety == HeadingSafety.Critical,
                 ResetLifecycleState.Inactive,
                 requiresSafetyIntervention ? 2 : 0,
                 requiresSafetyIntervention,
