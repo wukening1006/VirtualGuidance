@@ -31245,6 +31245,8 @@ MonoBehaviour:
   replanMaxRetryDelaySeconds: 2
   replanWakePositionMeters: 0.25
   replanWakeHeadingDegrees: 12
+  navigationRecoveryResetBudget: 1
+  navigationRecoveryHoldBudgetSeconds: 8
 --- !u!114 &1761135464
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -31273,7 +31275,7 @@ MonoBehaviour:
   pauseResetController: {fileID: 1039273992}
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 1
-  continuousRedirectorMode: 2
+  continuousRedirectorMode: 3
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5
   s2cCurvatureRadiusMeters: 10

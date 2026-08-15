@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -83,6 +84,10 @@ public enum GuidanceRecoveryState
     Revalidating,
     /// <summary>物理恢复已完成，正在恢复任务并重新规划。</summary>
     Replanning,
+    /// <summary>Reset 后没有可执行候选，正在主动寻找导航恢复路径。</summary>
+    NavigationRecovery,
+    /// <summary>导航恢复暂时没有结果，等待事实变化后再次主动恢复。</summary>
+    RecoveryHold,
     /// <summary>物理状态已明确不可恢复，流程终止。</summary>
     Terminated
 }
@@ -205,6 +210,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [Tooltip("Hold 期间触发重新检查的最小物理转角，单位：度。")]
     [SerializeField, Range(1f, 180f)] private float replanWakeHeadingDegrees = 12f;
 
+    [Header("Reset 后导航恢复")]
+    [Tooltip("一次 Initial Reset 后允许执行的 Recovery Reset 次数；最小恢复策略限制为 0 或 1。")]
+    [SerializeField, Range(0, 1)] private int navigationRecoveryResetBudget = 1;
+    [Tooltip("Navigation Recovery Hold 的最长等待时间，单位：秒。")]
+    [SerializeField, Min(0.1f)] private float navigationRecoveryHoldBudgetSeconds = 8f;
+
     private GuidanceRequestSnapshot activeSnapshot;
     private GuidanceResponse activeResponse;
     private IGuidanceRequestClient requestClient;
@@ -217,9 +228,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private readonly TurnCueCompletionTracker turnCueCompletionTracker = new TurnCueCompletionTracker();
     private bool handlingGainTermination;
     private bool recoveryDecisionPending;
+    private bool navigationRecoveryDeferred;
+    private PhysicalRiskState deferredNavigationRecoveryRiskState;
+    private string deferredNavigationRecoveryPlanningFingerprint = string.Empty;
     private int automaticResetAttempts;
     private string resetAbandonedTargetId = string.Empty;
     private readonly RecoveryHeadingPlanner recoveryHeadingPlanner = new RecoveryHeadingPlanner();
+    private readonly PostResetContinuationEvaluator postResetContinuationEvaluator =
+        new PostResetContinuationEvaluator();
     private RecoveryHeadingSearchResult latestRecoverySearchResult;
     private string latestRecoverySearchFingerprint = string.Empty;
     private RecoveryHeadingPlan frozenRecoveryPlan;
@@ -246,6 +262,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private bool planningRequestInProgress;
     private string lastDeterministicRejectionFingerprint = string.Empty;
     private bool replanHoldRequiresNewFacts;
+    private bool postResetNavigationRecoveryPending;
+    private int navigationRecoveryResetAttempts;
+    private float navigationRecoveryHoldStartedAt = float.PositiveInfinity;
+    private Vector2 lastCompletedRecoveryForward = Vector2.up;
+    private bool hasLastCompletedRecoveryForward;
+    private PostResetContinuationAssessment latestPostResetContinuation;
     private RdwPlanningSettings rdwPlanningSettings;
     private RdwPlanningPipeline rdwPlanningPipeline;
     private RdwFrameCoordinator rdwPlanningFrameCoordinator;
@@ -285,6 +307,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<GuidanceRecoveryTransitionInfo> RecoveryTransitioned;
     /// <summary>完成一次 Continuous Recovery Heading Search 时发布只读诊断结果。</summary>
     public event Action<RecoveryHeadingSearchResult> RecoverySearchCompleted;
+    /// <summary>Navigation Recovery 状态机或 Heading 选择产生诊断记录时触发。</summary>
+    public event Action<NavigationRecoveryDiagnosticInfo> NavigationRecoveryDiagnosed;
     /// <summary>进入、更新或退出重规划等待时触发。</summary>
     public event Action<ReplanHoldInfo> ReplanHoldChanged;
 
@@ -315,7 +339,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryState != GuidanceRecoveryState.Inactive &&
         recoveryState != GuidanceRecoveryState.Terminated;
     /// <summary>当前是否因没有明确 Safe 航向而保持恢复等待。</summary>
-    public bool IsHoldingForRecovery => recoveryState == GuidanceRecoveryState.HoldingForSafeHeading;
+    public bool IsHoldingForRecovery =>
+        recoveryState == GuidanceRecoveryState.HoldingForSafeHeading ||
+        recoveryState == GuidanceRecoveryState.RecoveryHold;
+    /// <summary>当前是否因 Reset 后导航不可行而短暂等待新事实。</summary>
+    public bool IsHoldingForNavigationRecovery => recoveryState == GuidanceRecoveryState.RecoveryHold;
+    /// <summary>本轮 Initial Reset 后已经执行的 Recovery Reset 次数。</summary>
+    public int NavigationRecoveryResetAttempts => navigationRecoveryResetAttempts;
+    /// <summary>当前 Recovery 决策结束后是否需要消费一次 Navigation Recovery 请求。</summary>
+    public bool IsNavigationRecoveryDeferred => navigationRecoveryDeferred;
+    /// <summary>最近一次 Safe Heading 的 Reset 后导航延续评估。</summary>
+    public PostResetContinuationAssessment LatestPostResetContinuation => latestPostResetContinuation;
     /// <summary>当前 Recovery Hold 已执行的选向次数。</summary>
     public int RecoveryHoldAttemptCount => recoveryHoldAttemptCount;
     /// <summary>当前是否因没有可执行语义候选而等待下一份事实重规划。</summary>
@@ -350,9 +384,23 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             UpdateRecoveryHold(riskEvaluator != null ? riskEvaluator.CurrentRiskState : null);
         }
 
+        if (recoveryState == GuidanceRecoveryState.RecoveryHold &&
+            IsNavigationRecoveryHoldBudgetExhausted())
+        {
+            TriggerRecoveryHardStop(
+                "Navigation Recovery budget was exhausted without an executable continuation.");
+            return;
+        }
+
         if (holdForReplan && !IsResetRecoveryActive &&
             !string.IsNullOrEmpty(GetReplanHoldWakeReason(riskEvaluator?.CurrentRiskState)))
         {
+            if (recoveryState == GuidanceRecoveryState.RecoveryHold)
+            {
+                TransitionRecoveryTo(
+                    GuidanceRecoveryState.NavigationRecovery,
+                    "recovery_hold_woken");
+            }
             RequestNextGuidance();
         }
     }
@@ -520,9 +568,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (!candidateSet.HasModelCandidates)
+        var hasExecutableCandidates = candidateSet.AllowedCandidateIds != null &&
+                                       candidateSet.AllowedCandidateIds.Count > 0;
+        if (!candidateSet.HasModelCandidates ||
+            (postResetNavigationRecoveryPending && !hasExecutableCandidates))
         {
-            HandleUnavailableCandidatePlanning(riskState, planningFingerprint);
+            HandleUnavailableCandidatePlanning(riskState, candidateSet, planningFingerprint);
             return;
         }
 
@@ -545,6 +596,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     rdwPlanningFailure);
                 if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
                 {
+                    if (postResetNavigationRecoveryPending)
+                    {
+                        BeginNavigationRecovery(riskState, planningFingerprint);
+                        return;
+                    }
+
                     EnterHoldAndReplan(
                         riskState,
                         planningFingerprint,
@@ -569,6 +626,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             {
                 if (rdwPlanningResult == null || !rdwPlanningResult.HasRoutes)
                 {
+                    if (postResetNavigationRecoveryPending)
+                    {
+                        BeginNavigationRecovery(riskState, planningFingerprint);
+                        return;
+                    }
+
                     EnterHoldAndReplan(
                         riskState,
                         planningFingerprint,
@@ -606,6 +669,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         ExitReplanHold("executable_candidate_reserved");
+        CompletePostResetNavigationRecovery("executable_candidate_reserved");
         SetRequestPhase(GuidanceRequestPhase.Requested);
         if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
         {
@@ -1441,6 +1505,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         automaticResetAttempts = 0;
         resetAbandonedTargetId = string.Empty;
+        postResetNavigationRecoveryPending = false;
+        navigationRecoveryResetAttempts = 0;
+        navigationRecoveryHoldStartedAt = float.PositiveInfinity;
+        hasLastCompletedRecoveryForward = false;
+        ClearDeferredNavigationRecovery();
         ExitReplanHold("guidance_cancelled");
         if (requestPhase == GuidanceRequestPhase.Requested ||
             requestPhase == GuidanceRequestPhase.Received ||
@@ -1525,11 +1594,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         finally
         {
             recoveryDecisionPending = false;
+            ConsumeDeferredNavigationRecovery();
         }
     }
 
     private void CompleteResetAndReplan()
     {
+        if (frozenRecoveryPlan != null && frozenRecoveryPlan.IsSuccess)
+        {
+            lastCompletedRecoveryForward = frozenRecoveryPlan.SafePhysicalForward;
+            hasLastCompletedRecoveryForward = true;
+        }
+
         TransitionRecoveryTo(GuidanceRecoveryState.Replanning, "recovery_heading_revalidated");
         if (!pauseResetController.ResumeAfterReset())
         {
@@ -1567,6 +1643,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private void TriggerRecoveryHardStop(string reason)
     {
         ClearRecoveryHold();
+        postResetNavigationRecoveryPending = false;
+        navigationRecoveryHoldStartedAt = float.PositiveInfinity;
+        ClearDeferredNavigationRecovery();
         TransitionRecoveryTo(GuidanceRecoveryState.Terminated, reason);
         pauseResetController?.CancelReset(reason);
         taskController?.EndTask();
@@ -1711,6 +1790,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
+            if (recoveryState == GuidanceRecoveryState.RecoveryHold)
+            {
+                TransitionRecoveryTo(
+                    GuidanceRecoveryState.NavigationRecovery,
+                    "recovery_hold_woken_by_risk");
+            }
             RequestNextGuidance();
             return;
         }
@@ -2010,7 +2095,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "guidance_stopped");
         taskController.PauseForReset();
         var searchResult = SearchRecoveryHeading(riskState);
-        var nextPlan = searchResult.Plan;
+        var selectedPostResetPlan = SelectPostResetRecoveryPlan(
+            riskState,
+            searchResult,
+            null,
+            out _);
+        var nextPlan = selectedPostResetPlan ?? searchResult.Plan;
         if (!nextPlan.IsSuccess ||
             !TryEvaluateRecoveryPlanHeading(riskState, nextPlan, out var exactRecoveryHeading) ||
             !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(exactRecoveryHeading))
@@ -2025,6 +2115,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         ClearRecoveryHold();
         automaticResetAttempts++;
+        postResetNavigationRecoveryPending = true;
+        navigationRecoveryResetAttempts = 0;
+        navigationRecoveryHoldStartedAt = float.PositiveInfinity;
         frozenRecoveryPlan = nextPlan;
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
             response,
@@ -2147,7 +2240,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             recoveryHoldAttemptCount++;
             CaptureRecoveryHoldFacts(riskState);
             nextRecoveryHoldAttemptAt = Time.realtimeSinceStartup + Mathf.Max(0.05f, recoveryHoldRetryIntervalSeconds);
-            var plan = SearchRecoveryHeading(riskState, true).Plan;
+            var searchResult = SearchRecoveryHeading(riskState, true);
+            var selectedPostResetPlan = SelectPostResetRecoveryPlan(
+                riskState,
+                searchResult,
+                null,
+                out _);
+            var plan = selectedPostResetPlan ?? searchResult.Plan;
             if (!plan.IsSuccess ||
                 !TryEvaluateRecoveryPlanHeading(riskState, plan, out var selectedHeading) ||
                 !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(selectedHeading))
@@ -2163,6 +2262,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             frozenRecoveryPlan = plan;
             ClearRecoveryHold();
             automaticResetAttempts++;
+            postResetNavigationRecoveryPending = true;
+            navigationRecoveryResetAttempts = 0;
+            navigationRecoveryHoldStartedAt = float.PositiveInfinity;
             if (!pauseResetController.PauseForReset(
                     "An explicitly Safe recovery heading became available.",
                     frozenRecoveryPlan))
@@ -2334,6 +2436,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleUnavailableCandidatePlanning(
         PhysicalRiskState riskState,
+        NavigationCandidateSet candidateSet,
         string planningFingerprint)
     {
         if (!HasTrustedRecoveryFacts(riskState))
@@ -2344,10 +2447,223 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        // Reset 后无论候选为空还是全部不可执行，都先走一次主动导航恢复，避免直接进入长期 Hold。
+        if (postResetNavigationRecoveryPending && candidateSet != null)
+        {
+            EmitNavigationRecoveryDiagnostic(
+                "fresh_replan_zero_candidates",
+                planningFingerprint);
+            BeginNavigationRecovery(riskState, planningFingerprint);
+            return;
+        }
+
         EnterHoldAndReplan(
             riskState,
             planningFingerprint,
             "No semantic candidate is currently executable; holding while the task remains active.");
+    }
+
+    /// <summary>
+    /// Reset 后 0 executable candidates 时尝试受控恢复或最多一次 Recovery Reset。
+    /// </summary>
+    private void BeginNavigationRecovery(
+        PhysicalRiskState riskState,
+        string planningFingerprint)
+    {
+        if (recoveryDecisionPending)
+        {
+            if (postResetNavigationRecoveryPending &&
+                recoveryState != GuidanceRecoveryState.NavigationRecovery &&
+                recoveryState != GuidanceRecoveryState.WaitingForUserTurn &&
+                recoveryState != GuidanceRecoveryState.RecoveryHold)
+            {
+                DeferNavigationRecoveryOnce(riskState, planningFingerprint);
+            }
+            return;
+        }
+
+        if (!postResetNavigationRecoveryPending ||
+            !HasTrustedRecoveryFacts(riskState) || taskController == null ||
+            !taskController.RuntimeState.IsNavigating)
+        {
+            return;
+        }
+
+        recoveryDecisionPending = true;
+        try
+        {
+            EmitNavigationRecoveryDiagnostic(
+                "navigation_recovery_started",
+                planningFingerprint);
+            TransitionRecoveryTo(
+                GuidanceRecoveryState.NavigationRecovery,
+                "navigation_recovery_started");
+
+            var searchResult = SearchRecoveryHeading(riskState, true);
+            var candidatePlan = SelectPostResetRecoveryPlan(
+                riskState,
+                searchResult,
+                hasLastCompletedRecoveryForward ? lastCompletedRecoveryForward : (Vector2?)null,
+                out var continuation,
+                planningFingerprint);
+
+            if (candidatePlan == null || !candidatePlan.IsSuccess ||
+                continuation.Level == PostResetContinuationLevel.HoldOnly)
+            {
+                EnterNavigationRecoveryHold(
+                    riskState,
+                    planningFingerprint,
+                    "No direct target, safe reroute, or RDW recovery is currently available.");
+                return;
+            }
+
+            var budget = Mathf.Clamp(navigationRecoveryResetBudget, 0, 1);
+            if (navigationRecoveryResetAttempts >= budget)
+            {
+                EnterNavigationRecoveryHold(
+                    riskState,
+                    planningFingerprint,
+                    "Navigation Recovery Reset budget has been exhausted; waiting for new facts.");
+                return;
+            }
+
+            navigationRecoveryResetAttempts++;
+            frozenRecoveryPlan = candidatePlan;
+            taskController.PauseForReset();
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.ResetStarted,
+                "Navigation Recovery selected a new Safe Heading for one bounded Recovery Reset.");
+            ExitReplanHold("navigation_recovery_reset_started");
+            var recoveryResetReason = string.IsNullOrWhiteSpace(continuation.TargetId)
+                ? "Navigation Recovery selected a Safe Heading with RDW continuation."
+                : $"Navigation Recovery selected continuation target '{continuation.TargetId}'.";
+            RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+                null,
+                recoveryResetReason,
+                RuntimeGuidanceSafetyDecision.PauseReset,
+                true,
+                navigationRecoveryResetAttempts + 1,
+                continuation.Level != PostResetContinuationLevel.HoldOnly));
+
+            if (pauseResetController == null ||
+                !pauseResetController.PauseForReset(recoveryResetReason, frozenRecoveryPlan))
+            {
+                TriggerRecoveryHardStop("Navigation Recovery Reset was rejected by the reset controller.");
+                return;
+            }
+
+            EmitNavigationRecoveryDiagnostic(
+                "recovery_reset_started",
+                planningFingerprint);
+            TransitionRecoveryTo(
+                GuidanceRecoveryState.WaitingForUserTurn,
+                "navigation_recovery_heading_selected");
+        }
+        finally
+        {
+            recoveryDecisionPending = false;
+        }
+    }
+
+    private void DeferNavigationRecoveryOnce(
+        PhysicalRiskState riskState,
+        string planningFingerprint)
+    {
+        if (navigationRecoveryDeferred)
+        {
+            return;
+        }
+
+        navigationRecoveryDeferred = true;
+        deferredNavigationRecoveryRiskState = riskState;
+        deferredNavigationRecoveryPlanningFingerprint = planningFingerprint ?? string.Empty;
+        EmitNavigationRecoveryDiagnostic(
+            "navigation_recovery_deferred",
+            deferredNavigationRecoveryPlanningFingerprint);
+    }
+
+    private void ConsumeDeferredNavigationRecovery()
+    {
+        if (!navigationRecoveryDeferred)
+        {
+            return;
+        }
+
+        var riskState = deferredNavigationRecoveryRiskState;
+        var planningFingerprint = deferredNavigationRecoveryPlanningFingerprint;
+        ClearDeferredNavigationRecovery();
+        EmitNavigationRecoveryDiagnostic(
+            "navigation_recovery_deferred_consumed",
+            planningFingerprint);
+        BeginNavigationRecovery(riskState, planningFingerprint);
+    }
+
+    private void ClearDeferredNavigationRecovery()
+    {
+        navigationRecoveryDeferred = false;
+        deferredNavigationRecoveryRiskState = null;
+        deferredNavigationRecoveryPlanningFingerprint = string.Empty;
+    }
+
+    private void EmitNavigationRecoveryDiagnostic(
+        string eventName,
+        string planningFingerprint,
+        IList<PostResetHeadingSelectionRecord> headingSelections = null)
+    {
+        NavigationRecoveryDiagnosed?.Invoke(new NavigationRecoveryDiagnosticInfo(
+            eventName,
+            planningFingerprint,
+            navigationRecoveryResetAttempts,
+            headingSelections));
+    }
+
+    private void EnterNavigationRecoveryHold(
+        PhysicalRiskState riskState,
+        string planningFingerprint,
+        string reason)
+    {
+        var started = recoveryState != GuidanceRecoveryState.RecoveryHold;
+        if (float.IsPositiveInfinity(navigationRecoveryHoldStartedAt))
+        {
+            navigationRecoveryHoldStartedAt = Time.realtimeSinceStartup;
+        }
+
+        TransitionRecoveryTo(GuidanceRecoveryState.RecoveryHold, reason);
+        if (started)
+        {
+            EmitNavigationRecoveryDiagnostic(
+                "recovery_hold_started",
+                planningFingerprint);
+        }
+        EnterHoldAndReplan(riskState, planningFingerprint, reason, false);
+    }
+
+    private bool IsNavigationRecoveryHoldBudgetExhausted()
+    {
+        return recoveryState == GuidanceRecoveryState.RecoveryHold &&
+               !float.IsPositiveInfinity(navigationRecoveryHoldStartedAt) &&
+               Time.realtimeSinceStartup - navigationRecoveryHoldStartedAt >=
+               Mathf.Max(0.1f, navigationRecoveryHoldBudgetSeconds);
+    }
+
+    private void CompletePostResetNavigationRecovery(string reason)
+    {
+        if (!postResetNavigationRecoveryPending &&
+            recoveryState != GuidanceRecoveryState.NavigationRecovery &&
+            recoveryState != GuidanceRecoveryState.RecoveryHold)
+        {
+            return;
+        }
+
+        postResetNavigationRecoveryPending = false;
+        navigationRecoveryResetAttempts = 0;
+        navigationRecoveryHoldStartedAt = float.PositiveInfinity;
+        ClearDeferredNavigationRecovery();
+        if (recoveryState == GuidanceRecoveryState.NavigationRecovery ||
+            recoveryState == GuidanceRecoveryState.RecoveryHold)
+        {
+            TransitionRecoveryTo(GuidanceRecoveryState.Inactive, reason);
+        }
     }
 
     private bool HasTrustedRecoveryFacts(PhysicalRiskState riskState)
@@ -2565,6 +2881,175 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         latestRecoverySearchFingerprint = fingerprint;
         RecoverySearchCompleted?.Invoke(latestRecoverySearchResult);
         return latestRecoverySearchResult;
+    }
+
+    /// <summary>
+    /// 在所有已搜索 Safe Heading 中优先选择 Reset 后仍可继续导航的朝向。
+    /// </summary>
+    private RecoveryHeadingPlan SelectPostResetRecoveryPlan(
+        PhysicalRiskState riskState,
+        RecoveryHeadingSearchResult searchResult,
+        Vector2? excludedForward,
+        out PostResetContinuationAssessment bestContinuation,
+        string planningFingerprint = "")
+    {
+        bestContinuation = new PostResetContinuationAssessment(
+            PostResetContinuationLevel.HoldOnly,
+            string.Empty,
+            false,
+            float.NegativeInfinity,
+            "no_safe_heading");
+        if (riskState == null || searchResult == null || riskEvaluator == null)
+        {
+            return null;
+        }
+
+        var candidateSet = semanticTargetSelector != null && taskController != null
+            ? semanticTargetSelector.BuildCandidateSet(
+                taskController.RuntimeState,
+                riskState,
+                ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition),
+                true)
+            : null;
+        var candidates = candidateSet != null ? candidateSet.Candidates : null;
+        RecoveryHeadingPlan bestPlan = null;
+        var samples = new List<HeadingSample>(searchResult.Evaluations ?? Array.Empty<HeadingSample>());
+        if (searchResult.Plan != null && searchResult.Plan.IsSuccess)
+        {
+            samples.Add(new HeadingSample(
+                searchResult.Plan.RelativeYawDegrees,
+                searchResult.Plan.SafePhysicalForward,
+                searchResult.Plan.ClearanceMeters,
+                searchResult.Plan.Safety));
+        }
+
+        var seenHeadings = new HashSet<int>();
+        var assessedHeadings = new List<HeadingSample>();
+        var assessedContinuations = new List<PostResetContinuationAssessment>();
+        foreach (var sample in samples)
+        {
+            var headingKey = Mathf.RoundToInt(sample.PhysicalForward.x * 10000f) * 100000 +
+                             Mathf.RoundToInt(sample.PhysicalForward.y * 10000f);
+            if (!seenHeadings.Add(headingKey))
+            {
+                continue;
+            }
+
+            if (sample.Safety != HeadingSafety.Safe)
+            {
+                assessedHeadings.Add(sample);
+                assessedContinuations.Add(HoldContinuation(
+                    "physical_heading_not_safe",
+                    false));
+                continue;
+            }
+
+            if (excludedForward.HasValue &&
+                Vector2.Angle(sample.PhysicalForward, excludedForward.Value) < 1f)
+            {
+                assessedHeadings.Add(sample);
+                assessedContinuations.Add(HoldContinuation(
+                    "previous_recovery_heading_excluded",
+                    true));
+                continue;
+            }
+
+            if (!riskEvaluator.TryEvaluateAbsoluteHeading(
+                    riskState,
+                    sample.PhysicalForward,
+                    out var validatedHeading))
+            {
+                assessedHeadings.Add(new HeadingSample(
+                    sample.RelativeYawDegrees,
+                    sample.PhysicalForward,
+                    sample.ClearanceMeters,
+                    HeadingSafety.Unknown));
+                assessedContinuations.Add(HoldContinuation(
+                    "exact_heading_evaluation_failed",
+                    false));
+                continue;
+            }
+
+            if (!PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(validatedHeading))
+            {
+                assessedHeadings.Add(validatedHeading);
+                assessedContinuations.Add(HoldContinuation(
+                    "physical_heading_not_acceptable",
+                    false));
+                continue;
+            }
+
+            var plan = new RecoveryHeadingPlan(validatedHeading, sample.ClearanceMeters);
+            var continuation = postResetContinuationEvaluator.EvaluateHeading(
+                riskState,
+                validatedHeading.PhysicalForward,
+                plan.Score,
+                candidates,
+                riskEvaluator,
+                false);
+            assessedHeadings.Add(validatedHeading);
+            assessedContinuations.Add(continuation);
+            if (bestPlan == null || IsBetterContinuation(plan, continuation, bestPlan, bestContinuation))
+            {
+                bestPlan = plan;
+                bestContinuation = continuation;
+            }
+        }
+
+        latestPostResetContinuation = bestContinuation;
+        var headingSelections = new List<PostResetHeadingSelectionRecord>(assessedHeadings.Count);
+        for (var index = 0; index < assessedHeadings.Count; index++)
+        {
+            var selected = bestPlan != null &&
+                           Vector2.Angle(
+                               assessedHeadings[index].PhysicalForward,
+                               bestPlan.SafePhysicalForward) < 0.01f;
+            headingSelections.Add(new PostResetHeadingSelectionRecord(
+                assessedHeadings[index],
+                assessedContinuations[index],
+                selected));
+        }
+        EmitNavigationRecoveryDiagnostic(
+            "recovery_heading_selection_evaluated",
+            planningFingerprint,
+            headingSelections);
+        return bestPlan;
+    }
+
+    private static PostResetContinuationAssessment HoldContinuation(
+        string reason,
+        bool physicalSafe)
+    {
+        return new PostResetContinuationAssessment(
+            PostResetContinuationLevel.HoldOnly,
+            string.Empty,
+            physicalSafe,
+            float.NegativeInfinity,
+            reason);
+    }
+
+    private static bool IsBetterContinuation(
+        RecoveryHeadingPlan plan,
+        PostResetContinuationAssessment continuation,
+        RecoveryHeadingPlan currentPlan,
+        PostResetContinuationAssessment currentContinuation)
+    {
+        if (continuation.Level != currentContinuation.Level)
+        {
+            return continuation.Level > currentContinuation.Level;
+        }
+
+        if (!Mathf.Approximately(continuation.Score, currentContinuation.Score))
+        {
+            return continuation.Score > currentContinuation.Score;
+        }
+
+        if (!Mathf.Approximately(plan.ClearanceMeters, currentPlan.ClearanceMeters))
+        {
+            return plan.ClearanceMeters > currentPlan.ClearanceMeters;
+        }
+
+        return plan.PhysicalTurnDegrees < currentPlan.PhysicalTurnDegrees;
     }
 
     private static string BuildRecoverySearchFingerprint(PhysicalRiskState riskState)

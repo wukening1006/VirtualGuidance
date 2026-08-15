@@ -37,13 +37,22 @@ public sealed class RdwGainLimiter
     private readonly float maxYawPerFrameDegrees;
     private readonly float maxYawPerSecondDegrees;
     private readonly float movementThresholdMeters;
+    private readonly float maxContinuousRotationDegreesPerSecond;
+    private readonly float maxContinuousCurvatureDegreesPerSecond;
 
-    /// <summary>创建 Step 2A 使用的统一限幅器。</summary>
-    public RdwGainLimiter(float maxYawPerFrame = 8f, float maxYawPerSecond = float.PositiveInfinity, float movementThreshold = 0.001f)
+    /// <summary>创建统一 Gain 限幅器，并集中配置 Continuous rotation/curvature 安全上限。</summary>
+    public RdwGainLimiter(
+        float maxYawPerFrame = 8f,
+        float maxYawPerSecond = float.PositiveInfinity,
+        float movementThreshold = 0.001f,
+        float maxContinuousRotationDegreesPerSecond = 30f,
+        float maxContinuousCurvatureDegreesPerSecond = 15f)
     {
         maxYawPerFrameDegrees = Mathf.Max(0f, maxYawPerFrame);
         maxYawPerSecondDegrees = Mathf.Max(0f, maxYawPerSecond);
         movementThresholdMeters = Mathf.Max(0f, movementThreshold);
+        this.maxContinuousRotationDegreesPerSecond = Mathf.Max(0f, maxContinuousRotationDegreesPerSecond);
+        this.maxContinuousCurvatureDegreesPerSecond = Mathf.Max(0f, maxContinuousCurvatureDegreesPerSecond);
     }
 
     /// <summary>对命令执行身份、安全、有限值和幅值检查。</summary>
@@ -67,8 +76,18 @@ public sealed class RdwGainLimiter
             return RdwGainCommand.Zero(command.PoseSequence, "invalid_command");
         }
 
+        var rotationYaw = command.RotationYawDeltaDeg;
         var curvatureYaw = context.UserMoving ? command.CurvatureYawDeltaDeg : 0f;
-        var requestedYaw = command.RotationYawDeltaDeg + curvatureYaw;
+        if (command.Source == RdwGainOwner.ContinuousRedirector)
+        {
+            // Continuous proposal 的最终分量安全上限只在统一 Limiter 中执行。
+            var rotationCap = maxContinuousRotationDegreesPerSecond * context.DeltaTime;
+            var curvatureCap = maxContinuousCurvatureDegreesPerSecond * context.DeltaTime;
+            rotationYaw = Mathf.Clamp(rotationYaw, -rotationCap, rotationCap);
+            curvatureYaw = Mathf.Clamp(curvatureYaw, -curvatureCap, curvatureCap);
+        }
+
+        var requestedYaw = rotationYaw + curvatureYaw;
         var cap = maxYawPerFrameDegrees;
         if (context.DeltaTime > 0.0001f)
         {
@@ -79,7 +98,7 @@ public sealed class RdwGainLimiter
         var yawScale = Mathf.Abs(requestedYaw) > 0.0001f
             ? Mathf.Abs(limitedYaw / requestedYaw)
             : 1f;
-        var limitedRotationYaw = command.RotationYawDeltaDeg * yawScale;
+        var limitedRotationYaw = rotationYaw * yawScale;
         var limitedCurvatureYaw = curvatureYaw * yawScale;
         // 虚拟平移只开放给 ContinuousRedirector；Reset 与 Rotation Gain 仍只拥有 yaw。
         var limitedTranslation = command.Source == RdwGainOwner.ContinuousRedirector

@@ -45,9 +45,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [SerializeField] private float s2cRotationThresholdDegreesPerSecond = 1.5f;
     [Tooltip("三种 Continuous steering 算法共享的曲率半径，单位：米。")]
     [SerializeField] private float s2cCurvatureRadiusMeters = 10f;
-    [Tooltip("三种 Continuous steering 算法共享的最大曲率转速，单位：度/秒。")]
+    [Tooltip("统一 GainLimiter 对三种 Continuous steering 算法执行的最大曲率转速，单位：度/秒。")]
     [SerializeField] private float s2cMaxCurvatureDegreesPerSecond = 15f;
-    [Tooltip("三种 Continuous steering 算法共享的最大旋转增益转速，单位：度/秒。")]
+    [Tooltip("统一 GainLimiter 对三种 Continuous steering 算法执行的最大旋转增益转速，单位：度/秒。")]
     [SerializeField] private float s2cMaxRotationDegreesPerSecond = 30f;
     [Tooltip("物理转动映射为额外虚拟 yaw 的比例。")]
     [SerializeField] private float s2cRotationGainMultiplier = 0.05f;
@@ -269,6 +269,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
         rdwGainApplier = new RdwGainApplier(
             userPoseTracker.VirtualRotationRoot,
             userPoseTracker.VirtualPoseSource);
+        var rdwGainLimiter = new RdwGainLimiter(
+            maxContinuousRotationDegreesPerSecond: s2cMaxRotationDegreesPerSecond,
+            maxContinuousCurvatureDegreesPerSecond: s2cMaxCurvatureDegreesPerSecond);
         rdwFrameCoordinator = new RdwFrameCoordinator(
             userPoseTracker,
             physicalSpaceCalibration,
@@ -281,6 +284,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
             navigationTargetManager,
             rdwGainApplier,
             CreateContinuousRedirector(),
+            limiter: rdwGainLimiter,
             dashboard: experimentDashboard,
             continuousEnabled: continuousRdwEnabled);
         var planningEstimator = new S2CPlanningCostEstimator(
@@ -294,7 +298,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainAllowed: continuousPlanningAvailable,
             curvatureGainAllowed: continuousPlanningAvailable,
             translationGainAllowed: false,
-            gainLimitsVersion: "rdw-gain-limiter-v1",
+            gainLimitsVersion: "rdw-gain-limiter-v2",
             estimatorId: planningEstimator.EstimatorId,
             estimatorVersion: planningEstimator.EstimatorVersion);
         var rdwPlanningPipeline = new RdwPlanningPipeline(
@@ -344,8 +348,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
                     s2cMovementThresholdMetersPerSecond,
                     s2cRotationThresholdDegreesPerSecond,
                     s2cCurvatureRadiusMeters,
-                    s2cMaxCurvatureDegreesPerSecond,
-                    s2cMaxRotationDegreesPerSecond,
                     s2cRotationGainMultiplier,
                     s2cSteeringDampening,
                     s2cSmoothingFactor,
@@ -357,8 +359,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
                     s2cMovementThresholdMetersPerSecond,
                     s2cRotationThresholdDegreesPerSecond,
                     s2cCurvatureRadiusMeters,
-                    s2cMaxCurvatureDegreesPerSecond,
-                    s2cMaxRotationDegreesPerSecond,
                     s2cRotationGainMultiplier,
                     s2cSteeringDampening,
                     s2cSmoothingFactor,
@@ -370,8 +370,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
                     s2cMovementThresholdMetersPerSecond,
                     s2cRotationThresholdDegreesPerSecond,
                     s2cCurvatureRadiusMeters,
-                    s2cMaxCurvatureDegreesPerSecond,
-                    s2cMaxRotationDegreesPerSecond,
                     s2cRotationGainMultiplier,
                     s2cSteeringDampening,
                     s2cSmoothingFactor,

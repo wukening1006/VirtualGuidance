@@ -158,8 +158,6 @@ public sealed class SteerToCenterRedirector : IRdwRedirector, IRdwRedirectorAvai
         float movementThresholdMetersPerSecond = 0.2f,
         float rotationThresholdDegreesPerSecond = 1.5f,
         float curvatureRadiusMeters = 10f,
-        float maxCurvatureDegreesPerSecond = 15f,
-        float maxRotationDegreesPerSecond = 30f,
         float rotationGainMultiplier = 0.05f,
         float steeringDampening = 0.75f,
         float smoothingFactor = 0.125f,
@@ -171,8 +169,6 @@ public sealed class SteerToCenterRedirector : IRdwRedirector, IRdwRedirectorAvai
             movementThresholdMetersPerSecond,
             rotationThresholdDegreesPerSecond,
             curvatureRadiusMeters,
-            maxCurvatureDegreesPerSecond,
-            maxRotationDegreesPerSecond,
             rotationGainMultiplier,
             steeringDampening,
             smoothingFactor);

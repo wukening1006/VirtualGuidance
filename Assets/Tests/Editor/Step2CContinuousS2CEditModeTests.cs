@@ -221,7 +221,11 @@ public sealed class Step2CContinuousS2CEditModeTests
         var root = new GameObject("Step2CGainRoot");
         try
         {
-            var limiter = new RdwGainLimiter(8f, 20f);
+            var limiter = new RdwGainLimiter(
+                8f,
+                20f,
+                maxContinuousRotationDegreesPerSecond: float.PositiveInfinity,
+                maxContinuousCurvatureDegreesPerSecond: float.PositiveInfinity);
             var requested = new RdwGainCommand(
                 3f, 3f, Vector2.zero, RdwGainOwner.ContinuousRedirector, "s2c", 1);
             var limited = limiter.Limit(requested, new RdwGainLimitContext(
@@ -246,8 +250,6 @@ public sealed class Step2CContinuousS2CEditModeTests
             movementThresholdMetersPerSecond: 0.2f,
             rotationThresholdDegreesPerSecond: 1.5f,
             curvatureRadiusMeters: 10f,
-            maxCurvatureDegreesPerSecond: 15f,
-            maxRotationDegreesPerSecond: 30f,
             rotationGainMultiplier: 0.1f,
             steeringDampening: 0f,
             smoothingFactor: 1f,

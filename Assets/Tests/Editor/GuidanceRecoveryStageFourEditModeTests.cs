@@ -518,7 +518,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         }
     }
 
-    /// <summary>验证物理恢复完成后即使仍无语义候选也能退出 Reset，并转入 Hold/Replan。</summary>
+    /// <summary>验证物理恢复完成后仍无语义候选且 RDW 未验证时进入 Navigation Recovery Hold。</summary>
     [Test]
     public void GuidanceCoordinator_RecoveryCompletesWithoutSemanticCandidate()
     {
@@ -534,8 +534,162 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
 
             Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
             Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
-            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.Inactive));
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.RecoveryHold));
+            Assert.That(coordinator.IsHoldingForNavigationRecovery, Is.True);
             Assert.That(coordinator.IsHoldingForReplan, Is.True);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Reset 复验门控期间的 0 Candidate 请求会延迟并启动一次 Recovery Reset。</summary>
+    [Test]
+    public void GuidanceCoordinator_DeferredNavigationRecoveryStartsSecondReset()
+    {
+        var root = new GameObject("StageFourDeferredNavigationRecoveryTest");
+        root.SetActive(false);
+        try
+        {
+            CreateBlockedCandidateHarness(
+                root,
+                out var coordinator,
+                out var task,
+                out _,
+                out var reset,
+                out var riskState);
+            var events = new List<string>();
+            coordinator.NavigationRecoveryDiagnosed += info => events.Add(info.EventName);
+
+            var firstHeading = StartRecoveryResetAfterInitialCompletion(
+                coordinator,
+                reset,
+                riskState);
+
+            Assert.That(coordinator.IsNavigationRecoveryDeferred, Is.False);
+            Assert.That(coordinator.NavigationRecoveryResetAttempts, Is.EqualTo(1));
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.WaitingForUserTurn));
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
+            Assert.That(Vector2.Angle(firstHeading, reset.SafePhysicalForward), Is.GreaterThan(1f));
+            AssertOrdered(
+                events,
+                "fresh_replan_zero_candidates",
+                "navigation_recovery_deferred",
+                "navigation_recovery_deferred_consumed",
+                "navigation_recovery_started",
+                "recovery_reset_started");
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Recovery Reset 后出现 executable candidate 时恢复 Navigating。</summary>
+    [Test]
+    public void GuidanceCoordinator_SecondResetWithExecutableCandidateReturnsToNavigating()
+    {
+        var root = new GameObject("StageFourSecondResetSuccessTest");
+        root.SetActive(false);
+        try
+        {
+            CreateBlockedCandidateHarness(
+                root,
+                out var coordinator,
+                out var task,
+                out var risk,
+                out var reset,
+                out var riskState);
+            StartRecoveryResetAfterInitialCompletion(coordinator, reset, riskState);
+
+            root.GetComponent<UserPoseTracker>().SetCalibratedPhysicalPose(
+                new Vector2(2.5f, 2.5f),
+                0f);
+            risk.EvaluateNow();
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
+
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.Inactive));
+            Assert.That(coordinator.IsHoldingForNavigationRecovery, Is.False);
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证 Recovery Reset 后仍为 0 Candidate 时进入 Hold 且不再启动 Reset。</summary>
+    [Test]
+    public void GuidanceCoordinator_SecondResetStillZeroCandidatesEntersRecoveryHold()
+    {
+        var root = new GameObject("StageFourSecondResetHoldTest");
+        root.SetActive(false);
+        try
+        {
+            CreateBlockedCandidateHarness(
+                root,
+                out var coordinator,
+                out var task,
+                out _,
+                out var reset,
+                out var riskState);
+            var events = new List<string>();
+            coordinator.NavigationRecoveryDiagnosed += info => events.Add(info.EventName);
+            StartRecoveryResetAfterInitialCompletion(coordinator, reset, riskState);
+
+            reset.ProcessPhysicalForward(reset.SafePhysicalForward);
+
+            Assert.That(coordinator.NavigationRecoveryResetAttempts, Is.EqualTo(1));
+            Assert.That(coordinator.RecoveryState, Is.EqualTo(GuidanceRecoveryState.RecoveryHold));
+            Assert.That(coordinator.IsHoldingForNavigationRecovery, Is.True);
+            Assert.That(task.RuntimeState.phase, Is.EqualTo(GuidanceRuntimePhase.Navigating));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.Inactive));
+            Assert.That(Count(events, "recovery_reset_started"), Is.EqualTo(1));
+            Assert.That(Count(events, "recovery_hold_started"), Is.EqualTo(1));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>验证门控期间连续 Recovery 请求只缓存并消费一次。</summary>
+    [Test]
+    public void GuidanceCoordinator_ConsecutiveDeferredRecoveryRequestsConsumeOnce()
+    {
+        var root = new GameObject("StageFourDeferredRecoveryCoalescingTest");
+        root.SetActive(false);
+        try
+        {
+            CreateBlockedCandidateHarness(
+                root,
+                out var coordinator,
+                out _,
+                out _,
+                out var reset,
+                out var riskState);
+            var events = new List<string>();
+            coordinator.NavigationRecoveryDiagnosed += info => events.Add(info.EventName);
+            SetPrivateField(coordinator, "postResetNavigationRecoveryPending", true);
+            SetPrivateField(coordinator, "recoveryDecisionPending", true);
+
+            InvokePrivate(coordinator, "BeginNavigationRecovery", riskState, "deferred-test");
+            InvokePrivate(coordinator, "BeginNavigationRecovery", riskState, "deferred-test");
+
+            Assert.That(coordinator.IsNavigationRecoveryDeferred, Is.True);
+            Assert.That(Count(events, "navigation_recovery_deferred"), Is.EqualTo(1));
+            SetPrivateField(coordinator, "recoveryDecisionPending", false);
+            InvokePrivate(coordinator, "ConsumeDeferredNavigationRecovery");
+
+            Assert.That(coordinator.IsNavigationRecoveryDeferred, Is.False);
+            Assert.That(coordinator.NavigationRecoveryResetAttempts, Is.EqualTo(1));
+            Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
+            Assert.That(Count(events, "navigation_recovery_deferred_consumed"), Is.EqualTo(1));
+            Assert.That(Count(events, "navigation_recovery_started"), Is.EqualTo(1));
+            Assert.That(Count(events, "recovery_reset_started"), Is.EqualTo(1));
         }
         finally
         {
@@ -710,6 +864,76 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         }
     }
 
+    private static void CreateBlockedCandidateHarness(
+        GameObject root,
+        out GuidanceCoordinator coordinator,
+        out GuidanceTaskController task,
+        out PhysicalRiskEvaluator risk,
+        out PauseResetController reset,
+        out PhysicalRiskState riskState)
+    {
+        const string targetId = "RecoveryBlockedTarget";
+        var targetObject = new GameObject(targetId);
+        targetObject.transform.SetParent(root.transform, false);
+        targetObject.transform.localPosition = new Vector3(-2f, 0f, 0f);
+        var metadata = targetObject.AddComponent<ExhibitMetadata>();
+        metadata.Configure(
+            targetId,
+            "Recovery Blocked Target",
+            Array.Empty<string>(),
+            string.Empty,
+            "main_target",
+            Array.Empty<string>(),
+            targetObject.transform,
+            targetObject.transform);
+
+        CreateCoordinatorHarness(root, targetId, out coordinator, out task, out risk, out reset);
+        InvokePrivate(coordinator, "UnbindRuntimeSafety");
+        root.GetComponent<UserPoseTracker>().SetCalibratedPhysicalPose(
+            new Vector2(0.1f, 2.5f),
+            0f);
+        riskState = risk.EvaluateNow();
+        var candidateSet = root.GetComponent<SemanticTargetSelector>().BuildCandidateSet(
+            task.RuntimeState,
+            riskState,
+            ExperimentConditionMatrix.GetPolicy(task.CurrentCondition));
+        Assert.That(candidateSet.Candidates.Count, Is.GreaterThan(0));
+        Assert.That(candidateSet.AllowedCandidateIds.Count, Is.Zero);
+    }
+
+    private static Vector2 StartRecoveryResetAfterInitialCompletion(
+        GuidanceCoordinator coordinator,
+        PauseResetController reset,
+        PhysicalRiskState riskState)
+    {
+        InvokePrivate(coordinator, "TriggerPauseReset", null, riskState, "planned heading unsafe");
+        Assert.That(reset.State, Is.EqualTo(ResetLifecycleState.TurningToSafeHeading));
+        var firstHeading = reset.SafePhysicalForward;
+        reset.ProcessPhysicalForward(firstHeading);
+        return firstHeading;
+    }
+
+    private static void AssertOrdered(IList<string> actual, params string[] expected)
+    {
+        var previousIndex = -1;
+        foreach (var value in expected)
+        {
+            var index = actual.IndexOf(value);
+            Assert.That(index, Is.GreaterThan(previousIndex), value);
+            previousIndex = index;
+        }
+    }
+
+    private static int Count(IEnumerable<string> values, string expected)
+    {
+        var count = 0;
+        foreach (var value in values)
+        {
+            if (string.Equals(value, expected, StringComparison.Ordinal)) count++;
+        }
+        return count;
+    }
+
     private static void CreateCoordinatorHarness(
         GameObject root,
         string finalTargetId,
@@ -748,7 +972,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         targets.Configure(pose);
         targets.RebuildIndex();
         var selector = root.AddComponent<SemanticTargetSelector>();
-        selector.Configure(targets);
+        selector.Configure(targets, risk);
         var validator = root.AddComponent<LocalGuidanceValidator>();
         validator.Configure(targets, risk);
         reset = root.AddComponent<PauseResetController>();
@@ -768,6 +992,7 @@ public sealed class GuidanceRecoveryStageFourEditModeTests
         coordinator.ConfigureRequestClient(new NoOpRequestClient());
         SetPrivateField(coordinator, "resetStabilizationSeconds", 0f);
         root.SetActive(true);
+        targets.RebuildIndex();
     }
 
     private static PhysicalRiskState CopyRisk(PhysicalRiskState source, IReadOnlyList<HeadingSample> profile)

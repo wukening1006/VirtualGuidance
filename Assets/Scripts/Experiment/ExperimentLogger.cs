@@ -405,6 +405,26 @@ public sealed class ExperimentLogger : MonoBehaviour
             recoverySearchResult: searchResult);
     }
 
+    /// <summary>记录 Navigation Recovery 状态机事件与 Recovery Heading 选择明细。</summary>
+    public void LogNavigationRecoveryDiagnostic(
+        NavigationRecoveryDiagnosticInfo diagnostic,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (diagnostic == null || string.IsNullOrWhiteSpace(diagnostic.EventName)) return;
+        Write(
+            diagnostic.EventName,
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            diagnostic.EventName,
+            trace,
+            navigationRecoveryDiagnostic: diagnostic);
+    }
+
     /// <summary>记录通过运行时验证并实际开始执行的 Guidance。</summary>
     public void LogGuidanceExecuted(
         LogTraceContext trace,
@@ -662,6 +682,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         RecoveryHeadingPlan recoveryPlan = null,
         GuidanceRecoveryTransitionInfo recoveryTransition = null,
         RecoveryHeadingSearchResult recoverySearchResult = null,
+        NavigationRecoveryDiagnosticInfo navigationRecoveryDiagnostic = null,
         RotationGainEventInfo rotationGainEvent = null,
         ReplanHoldInfo replanHoldInfo = null,
         BackendHealthStatusInfo backendHealthInfo = null,
@@ -823,6 +844,14 @@ public sealed class ExperimentLogger : MonoBehaviour
             if (recoverySearchResult != null)
             {
                 data["recovery_search"] = SerializeRecoverySearch(recoverySearchResult, riskState);
+            }
+            if (navigationRecoveryDiagnostic != null)
+            {
+                data["navigation_recovery_event"] = navigationRecoveryDiagnostic.EventName;
+                data["planning_fingerprint"] = navigationRecoveryDiagnostic.PlanningFingerprint;
+                data["recovery_reset_attempts"] = navigationRecoveryDiagnostic.RecoveryResetAttempts;
+                data["heading_selections"] = SerializePostResetHeadingSelections(
+                    navigationRecoveryDiagnostic.HeadingSelections);
             }
             if (rotationGainEvent != null)
             {
@@ -1219,6 +1248,13 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "planning_unavailable": return new EventDescriptor("rdw.planning.unavailable", "RDW", level);
             case "recovery_state_changed": return new EventDescriptor("rdw.recovery_state_changed", "RDW", level);
             case "recovery_search_completed": return new EventDescriptor("rdw.recovery_search_completed", "RDW", level);
+            case "fresh_replan_zero_candidates": return new EventDescriptor("rdw.fresh_replan_zero_candidates", "RDW", level);
+            case "navigation_recovery_deferred": return new EventDescriptor("rdw.navigation_recovery_deferred", "RDW", level);
+            case "navigation_recovery_deferred_consumed": return new EventDescriptor("rdw.navigation_recovery_deferred_consumed", "RDW", level);
+            case "navigation_recovery_started": return new EventDescriptor("rdw.navigation_recovery_started", "RDW", level);
+            case "recovery_reset_started": return new EventDescriptor("rdw.recovery_reset_started", "RDW", level);
+            case "recovery_hold_started": return new EventDescriptor("rdw.recovery_hold_started", "RDW", level);
+            case "recovery_heading_selection_evaluated": return new EventDescriptor("rdw.recovery_heading_selection_evaluated", "RDW", level);
             default:
                 return new EventDescriptor(
                     "system." + FirstNonEmpty(eventType, "unspecified_event").Replace('_', '.'),
@@ -1375,6 +1411,29 @@ public sealed class ExperimentLogger : MonoBehaviour
         foreach (var sample in evaluations)
         {
             result.Add(SerializeHeadingSample(sample));
+        }
+        return result;
+    }
+
+    private static JArray SerializePostResetHeadingSelections(
+        IReadOnlyList<PostResetHeadingSelectionRecord> selections)
+    {
+        var result = new JArray();
+        if (selections == null) return result;
+        foreach (var selection in selections)
+        {
+            if (selection == null) continue;
+            var continuation = selection.Continuation;
+            result.Add(new JObject
+            {
+                ["heading"] = SerializeHeadingSample(selection.Heading),
+                ["physical_safety"] = selection.Heading.Safety.ToString().ToLowerInvariant(),
+                ["clearance"] = selection.Heading.ClearanceMeters,
+                ["continuation_level"] = continuation.Level.ToString().ToLowerInvariant(),
+                ["continuation_target"] = continuation.TargetId,
+                ["continuation_reason"] = continuation.Reason,
+                ["selected"] = selection.Selected
+            });
         }
         return result;
     }
@@ -1547,6 +1606,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             case GuidanceRecoveryState.Stabilizing: return "stabilizing";
             case GuidanceRecoveryState.Revalidating: return "revalidating";
             case GuidanceRecoveryState.Replanning: return "replanning";
+            case GuidanceRecoveryState.NavigationRecovery: return "navigation_recovery";
+            case GuidanceRecoveryState.RecoveryHold: return "recovery_hold";
             case GuidanceRecoveryState.Terminated: return "terminated";
             default: return "inactive";
         }

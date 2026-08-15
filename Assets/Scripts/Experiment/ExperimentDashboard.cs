@@ -1320,10 +1320,17 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
+        if (state == GuidanceRecoveryState.RecoveryHold)
+        {
+            participantUiController?.ShowReplanningHold();
+            return;
+        }
+
         if (state == GuidanceRecoveryState.HoldingForSafeHeading ||
             state == GuidanceRecoveryState.Stabilizing ||
             state == GuidanceRecoveryState.Revalidating ||
-            state == GuidanceRecoveryState.Replanning)
+            state == GuidanceRecoveryState.Replanning ||
+            state == GuidanceRecoveryState.NavigationRecovery)
         {
             participantUiController?.ShowRecoveryReplanning();
         }
@@ -1344,6 +1351,15 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         experimentLogger?.LogRecoverySearch(
             result,
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState);
+    }
+
+    private void HandleNavigationRecoveryDiagnosed(NavigationRecoveryDiagnosticInfo diagnostic)
+    {
+        experimentLogger?.LogNavigationRecoveryDiagnostic(
+            diagnostic,
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState);
@@ -1516,6 +1532,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.RecoveryTransitioned += HandleRecoveryTransitioned;
             guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
             guidanceCoordinator.RecoverySearchCompleted += HandleRecoverySearchCompleted;
+            guidanceCoordinator.NavigationRecoveryDiagnosed -= HandleNavigationRecoveryDiagnosed;
+            guidanceCoordinator.NavigationRecoveryDiagnosed += HandleNavigationRecoveryDiagnosed;
             guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
             guidanceCoordinator.ReplanHoldChanged += HandleReplanHoldChanged;
         }
@@ -1579,6 +1597,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.DetourCompleted -= HandleDetourCompleted;
             guidanceCoordinator.RecoveryTransitioned -= HandleRecoveryTransitioned;
             guidanceCoordinator.RecoverySearchCompleted -= HandleRecoverySearchCompleted;
+            guidanceCoordinator.NavigationRecoveryDiagnosed -= HandleNavigationRecoveryDiagnosed;
             guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
         }
         if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;

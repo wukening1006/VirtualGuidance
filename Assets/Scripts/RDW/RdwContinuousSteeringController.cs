@@ -10,8 +10,6 @@ public sealed class RdwContinuousSteeringController
     private readonly float movementThresholdMetersPerSecond;
     private readonly float rotationThresholdDegreesPerSecond;
     private readonly float curvatureRadiusMeters;
-    private readonly float maxCurvatureDegreesPerSecond;
-    private readonly float maxRotationDegreesPerSecond;
     private readonly float rotationGainMultiplier;
     private readonly float steeringDampening;
     private readonly float smoothingFactor;
@@ -26,8 +24,6 @@ public sealed class RdwContinuousSteeringController
         float movementThresholdMetersPerSecond = 0.2f,
         float rotationThresholdDegreesPerSecond = 1.5f,
         float curvatureRadiusMeters = 10f,
-        float maxCurvatureDegreesPerSecond = 15f,
-        float maxRotationDegreesPerSecond = 30f,
         float rotationGainMultiplier = 0.05f,
         float steeringDampening = 0.75f,
         float smoothingFactor = 0.125f)
@@ -35,8 +31,6 @@ public sealed class RdwContinuousSteeringController
         this.movementThresholdMetersPerSecond = Mathf.Max(0f, movementThresholdMetersPerSecond);
         this.rotationThresholdDegreesPerSecond = Mathf.Max(0f, rotationThresholdDegreesPerSecond);
         this.curvatureRadiusMeters = Mathf.Max(0.01f, curvatureRadiusMeters);
-        this.maxCurvatureDegreesPerSecond = Mathf.Max(0f, maxCurvatureDegreesPerSecond);
-        this.maxRotationDegreesPerSecond = Mathf.Max(0f, maxRotationDegreesPerSecond);
         this.rotationGainMultiplier = Mathf.Max(0f, rotationGainMultiplier);
         this.steeringDampening = Mathf.Clamp01(steeringDampening);
         this.smoothingFactor = Mathf.Clamp01(smoothingFactor);
@@ -71,11 +65,11 @@ public sealed class RdwContinuousSteeringController
             : 0f;
         var injectionSign = -steeringSide;
         var rawCurvature = speed >= movementThresholdMetersPerSecond && steeringSide != 0
-            ? Mathf.Min(maxCurvatureDegreesPerSecond, speed / curvatureRadiusMeters * Mathf.Rad2Deg) * deltaTime * injectionSign
+            ? speed / curvatureRadiusMeters * Mathf.Rad2Deg * deltaTime * injectionSign
             : 0f;
         var turningWithSteering = steeringSide != 0 && Mathf.Sign(pose.DeltaPhysicalYaw) == steeringSide;
         var rawRotation = rotationSpeed >= rotationThresholdDegreesPerSecond && steeringSide != 0
-            ? Mathf.Min(maxRotationDegreesPerSecond, rotationSpeed * rotationGainMultiplier * (turningWithSteering ? 1f : 1.5f)) * deltaTime * injectionSign
+            ? rotationSpeed * rotationGainMultiplier * (turningWithSteering ? 1f : 1.5f) * deltaTime * injectionSign
             : 0f;
         var bearingDampening = Mathf.Sin(Mathf.Clamp01(Mathf.Abs(steeringAngle) / 180f) * Mathf.PI);
         var dampening = Mathf.Lerp(1f, bearingDampening, steeringDampening);

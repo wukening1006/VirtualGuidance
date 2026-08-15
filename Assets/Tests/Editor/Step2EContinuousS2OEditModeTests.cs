@@ -110,8 +110,6 @@ public sealed class Step2EContinuousS2OEditModeTests
             movementThresholdMetersPerSecond: 0.2f,
             rotationThresholdDegreesPerSecond: 1.5f,
             curvatureRadiusMeters: 10f,
-            maxCurvatureDegreesPerSecond: 15f,
-            maxRotationDegreesPerSecond: 30f,
             rotationGainMultiplier: 0.1f,
             steeringDampening: 0f,
             smoothingFactor: 1f,

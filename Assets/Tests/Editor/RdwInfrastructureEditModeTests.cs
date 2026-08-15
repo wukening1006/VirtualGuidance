@@ -113,7 +113,12 @@ public sealed class RdwInfrastructureEditModeTests
     [Test]
     public void GainLimiter_AppliesCapsAndMovementThreshold()
     {
-        var limiter = new RdwGainLimiter(8f, 20f, 0.01f);
+        var limiter = new RdwGainLimiter(
+            8f,
+            20f,
+            0.01f,
+            maxContinuousRotationDegreesPerSecond: float.PositiveInfinity,
+            maxContinuousCurvatureDegreesPerSecond: float.PositiveInfinity);
         var moving = Context(
             RdwGainOwner.ContinuousRedirector, true, true, true, false, true, 0.1f);
         var stationary = Context(
