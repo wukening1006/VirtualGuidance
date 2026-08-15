@@ -31273,7 +31273,7 @@ MonoBehaviour:
   pauseResetController: {fileID: 1039273992}
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 1
-  continuousRedirectorMode: 1
+  continuousRedirectorMode: 2
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5
   s2cCurvatureRadiusMeters: 10
@@ -31285,8 +31285,18 @@ MonoBehaviour:
   s2cCenterToleranceMeters: 0.15
   s2cNearOppositeAngleDegrees: 160
   s2cOppositeTemporaryBearingDegrees: 90
+  s2oOrbitRadiusMeters: 1.5
+  s2oOrbitBoundarySafetyMarginMeters: 0.25
+  s2oSideSwitchHysteresisDegrees: 12
+  thomasApfBoundaryInfluenceRadiusMeters: 1.5
+  thomasApfObstacleInfluenceRadiusMeters: 1.5
+  thomasApfUserRadiusMeters: 0.25
+  thomasApfSafetyMarginMeters: 0.15
+  thomasApfBoundaryStrength: 1
+  thomasApfObstacleStrength: 1
+  thomasApfMaxForceMagnitude: 100
   rdwPlanningSettings:
-    mode: 1
+    mode: 0
     maximumGraphEdgeDistanceMeters: 12
     hardClearanceMeters: 1.2
     maximumGainCost: 1

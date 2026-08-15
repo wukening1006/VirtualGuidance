@@ -37,23 +37,23 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Header("Continuous RDW")]
     [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
     [SerializeField] private bool continuousRdwEnabled = true;
-    [Tooltip("Continuous Redirector 模式；None 为零行为，S2C 为中心导向。")]
+    [Tooltip("Continuous Redirector 模式；None、S2C、S2O 或 ThomasAPF 可用于同一实验配置切换。")]
     [SerializeField] private ContinuousRedirectorMode continuousRedirectorMode = ContinuousRedirectorMode.S2C;
     [Tooltip("触发曲率增益的最小物理移动速度，单位：米/秒。")]
     [SerializeField] private float s2cMovementThresholdMetersPerSecond = 0.2f;
     [Tooltip("触发旋转增益的最小物理转速，单位：度/秒。")]
     [SerializeField] private float s2cRotationThresholdDegreesPerSecond = 1.5f;
-    [Tooltip("S2C 曲率半径，单位：米。")]
+    [Tooltip("三种 Continuous steering 算法共享的曲率半径，单位：米。")]
     [SerializeField] private float s2cCurvatureRadiusMeters = 10f;
-    [Tooltip("S2C 最大曲率转速，单位：度/秒。")]
+    [Tooltip("三种 Continuous steering 算法共享的最大曲率转速，单位：度/秒。")]
     [SerializeField] private float s2cMaxCurvatureDegreesPerSecond = 15f;
-    [Tooltip("S2C 最大旋转增益转速，单位：度/秒。")]
+    [Tooltip("三种 Continuous steering 算法共享的最大旋转增益转速，单位：度/秒。")]
     [SerializeField] private float s2cMaxRotationDegreesPerSecond = 30f;
     [Tooltip("物理转动映射为额外虚拟 yaw 的比例。")]
     [SerializeField] private float s2cRotationGainMultiplier = 0.05f;
     [Tooltip("steering angle 对增益的衰减权重，范围 0-1。")]
     [Range(0f, 1f)] [SerializeField] private float s2cSteeringDampening = 0.75f;
-    [Tooltip("S2C 跨帧平滑系数，范围 0-1。")]
+    [Tooltip("三种 Continuous steering 算法共享的跨帧平滑系数，范围 0-1。")]
     [Range(0f, 1f)] [SerializeField] private float s2cSmoothingFactor = 0.125f;
     [Tooltip("距 Steering Center 小于该值时停止导向，单位：米。")]
     [SerializeField] private float s2cCenterToleranceMeters = 0.15f;
@@ -61,6 +61,26 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Range(90f, 179f)] [SerializeField] private float s2cNearOppositeAngleDegrees = 160f;
     [Tooltip("near-180 时临时 steering bearing，单位：度。")]
     [Range(1f, 90f)] [SerializeField] private float s2cOppositeTemporaryBearingDegrees = 90f;
+    [Tooltip("S2O 轨道半径，单位：米；会受 boundary safety margin 限制。")]
+    [SerializeField] private float s2oOrbitRadiusMeters = 1.5f;
+    [Tooltip("S2O 轨道距 Boundary 的最小安全余量，单位：米。")]
+    [SerializeField] private float s2oOrbitBoundarySafetyMarginMeters = 0.25f;
+    [Tooltip("S2O 切换 CW/CCW 的最小优势角，单位：度。")]
+    [SerializeField] private float s2oSideSwitchHysteresisDegrees = 12f;
+    [Tooltip("Thomas APF Boundary 产生斥力的影响半径，单位：米。")]
+    [SerializeField] private float thomasApfBoundaryInfluenceRadiusMeters = 1.5f;
+    [Tooltip("Thomas APF Obstacle 产生斥力的影响半径，单位：米。")]
+    [SerializeField] private float thomasApfObstacleInfluenceRadiusMeters = 1.5f;
+    [Tooltip("Thomas APF 估计的用户半径，单位：米。")]
+    [SerializeField] private float thomasApfUserRadiusMeters = 0.25f;
+    [Tooltip("Thomas APF 的额外几何安全余量，单位：米。")]
+    [SerializeField] private float thomasApfSafetyMarginMeters = 0.15f;
+    [Tooltip("Thomas APF Boundary 斥力权重。")]
+    [SerializeField] private float thomasApfBoundaryStrength = 1f;
+    [Tooltip("Thomas APF Obstacle 斥力权重。")]
+    [SerializeField] private float thomasApfObstacleStrength = 1f;
+    [Tooltip("Thomas APF 单帧最大合力，防止近边界数值爆炸。")]
+    [SerializeField] private float thomasApfMaxForceMagnitude = 100f;
 
     [Header("RDW 约束规划")]
     [Tooltip("独立 RDW 路线规划配置；第一轮必须保持 Shadow。")]
@@ -266,13 +286,13 @@ public sealed class SystemBootstrapper : MonoBehaviour
         var planningEstimator = new S2CPlanningCostEstimator(
             new PhysicalRiskPlanningDirectionEvaluator(riskEvaluator),
             s2cCurvatureRadiusMeters);
-        var s2cPlanningAvailable = continuousRdwEnabled &&
-                                   continuousRedirectorMode == ContinuousRedirectorMode.S2C;
+        var continuousPlanningAvailable = continuousRdwEnabled &&
+                                          continuousRedirectorMode != ContinuousRedirectorMode.None;
         var planningCapability = new RdwCapabilityProfile(
-            continuousRedirectorType: s2cPlanningAvailable ? "S2C" : "None",
+            continuousRedirectorType: continuousPlanningAvailable ? continuousRedirectorMode.ToString() : "None",
             resetterType: "SafeHeadingMapping",
-            rotationGainAllowed: s2cPlanningAvailable,
-            curvatureGainAllowed: s2cPlanningAvailable,
+            rotationGainAllowed: continuousPlanningAvailable,
+            curvatureGainAllowed: continuousPlanningAvailable,
             translationGainAllowed: false,
             gainLimitsVersion: "rdw-gain-limiter-v1",
             estimatorId: planningEstimator.EstimatorId,
@@ -312,8 +332,15 @@ public sealed class SystemBootstrapper : MonoBehaviour
     {
         return new CompositeContinuousRedirector(
             new ControllerSimulationLocomotionRedirector(xrTrackingAdapter),
-            continuousRedirectorMode == ContinuousRedirectorMode.S2C
-                ? new SteerToCenterRedirector(
+            CreateSteeringRedirector());
+    }
+
+    private IRdwRedirector CreateSteeringRedirector()
+    {
+        switch (continuousRedirectorMode)
+        {
+            case ContinuousRedirectorMode.S2C:
+                return new SteerToCenterRedirector(
                     s2cMovementThresholdMetersPerSecond,
                     s2cRotationThresholdDegreesPerSecond,
                     s2cCurvatureRadiusMeters,
@@ -324,8 +351,41 @@ public sealed class SystemBootstrapper : MonoBehaviour
                     s2cSmoothingFactor,
                     s2cCenterToleranceMeters,
                     s2cNearOppositeAngleDegrees,
-                    s2cOppositeTemporaryBearingDegrees)
-                : (IRdwRedirector)new NullRedirector());
+                    s2cOppositeTemporaryBearingDegrees);
+            case ContinuousRedirectorMode.S2O:
+                return new SteerToOrbitRedirector(
+                    s2cMovementThresholdMetersPerSecond,
+                    s2cRotationThresholdDegreesPerSecond,
+                    s2cCurvatureRadiusMeters,
+                    s2cMaxCurvatureDegreesPerSecond,
+                    s2cMaxRotationDegreesPerSecond,
+                    s2cRotationGainMultiplier,
+                    s2cSteeringDampening,
+                    s2cSmoothingFactor,
+                    s2oOrbitRadiusMeters,
+                    s2oOrbitBoundarySafetyMarginMeters,
+                    s2oSideSwitchHysteresisDegrees);
+            case ContinuousRedirectorMode.ThomasAPF:
+                return new ThomasApfRedirector(
+                    s2cMovementThresholdMetersPerSecond,
+                    s2cRotationThresholdDegreesPerSecond,
+                    s2cCurvatureRadiusMeters,
+                    s2cMaxCurvatureDegreesPerSecond,
+                    s2cMaxRotationDegreesPerSecond,
+                    s2cRotationGainMultiplier,
+                    s2cSteeringDampening,
+                    s2cSmoothingFactor,
+                    new ThomasApfForceSettings(
+                        thomasApfBoundaryInfluenceRadiusMeters,
+                        thomasApfObstacleInfluenceRadiusMeters,
+                        thomasApfUserRadiusMeters,
+                        thomasApfSafetyMarginMeters,
+                        thomasApfBoundaryStrength,
+                        thomasApfObstacleStrength,
+                        thomasApfMaxForceMagnitude));
+            default:
+                return new NullRedirector();
+        }
     }
 
     private void WireEvents()

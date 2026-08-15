@@ -351,7 +351,8 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             space.boundary,
             obstacleFacts,
             risk != null ? risk.risk_snapshot_id : string.Empty,
-            risk != null ? risk.risk_revision : 0);
+            risk != null ? risk.risk_revision : 0,
+            risk != null && risk.critical);
     }
 
     private bool IsImmediateHardStop()

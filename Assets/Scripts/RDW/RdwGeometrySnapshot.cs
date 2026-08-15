@@ -26,6 +26,8 @@ public readonly struct RdwGeometrySnapshot
     public string RiskSnapshotId { get; }
     /// <summary>关联的风险修订号；尚无风险快照时为零。</summary>
     public int RiskRevision { get; }
+    /// <summary>同源 PhysicalRiskEvaluator 是否报告 Critical；仅用于清理算法历史。</summary>
+    public bool IsCriticalRisk { get; }
     /// <summary>快照是否具备可供后续 Redirector 使用的最小边界事实。</summary>
     public bool IsValid => !string.IsNullOrWhiteSpace(PhysicalSpaceId) && Boundary.Count >= 3 && steeringCenterValid;
 
@@ -35,7 +37,8 @@ public readonly struct RdwGeometrySnapshot
         IEnumerable<Vector2> boundaryPoints,
         IEnumerable<PhysicalRiskObstacleSnapshot> obstacleFacts,
         string riskSnapshotId = "",
-        int riskRevision = 0)
+        int riskRevision = 0,
+        bool isCriticalRisk = false)
     {
         PhysicalSpaceId = physicalSpaceId ?? string.Empty;
         var boundaryCopy = new List<Vector2>(boundaryPoints ?? Array.Empty<Vector2>()).ToArray();
@@ -46,6 +49,7 @@ public readonly struct RdwGeometrySnapshot
         steeringCenterValid = centerValid;
         RiskSnapshotId = riskSnapshotId ?? string.Empty;
         RiskRevision = Math.Max(0, riskRevision);
+        IsCriticalRisk = isCriticalRisk;
     }
 
     private static Vector2 CalculateSteeringCenter(
