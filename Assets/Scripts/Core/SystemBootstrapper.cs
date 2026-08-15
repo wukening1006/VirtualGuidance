@@ -62,6 +62,10 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Tooltip("near-180 时临时 steering bearing，单位：度。")]
     [Range(1f, 90f)] [SerializeField] private float s2cOppositeTemporaryBearingDegrees = 90f;
 
+    [Header("RDW 约束规划")]
+    [Tooltip("独立 RDW 路线规划配置；第一轮必须保持 Shadow。")]
+    [SerializeField] private RdwPlanningSettings rdwPlanningSettings = new RdwPlanningSettings();
+
     [Header("实验与表现")]
     [SerializeField] private GuidanceExecutor guidanceExecutor;
     [SerializeField] private ExperimentDashboard experimentDashboard;
@@ -259,6 +263,30 @@ public sealed class SystemBootstrapper : MonoBehaviour
             CreateContinuousRedirector(),
             dashboard: experimentDashboard,
             continuousEnabled: continuousRdwEnabled);
+        var planningEstimator = new S2CPlanningCostEstimator(
+            new PhysicalRiskPlanningDirectionEvaluator(riskEvaluator),
+            s2cCurvatureRadiusMeters);
+        var s2cPlanningAvailable = continuousRdwEnabled &&
+                                   continuousRedirectorMode == ContinuousRedirectorMode.S2C;
+        var planningCapability = new RdwCapabilityProfile(
+            continuousRedirectorType: s2cPlanningAvailable ? "S2C" : "None",
+            resetterType: "SafeHeadingMapping",
+            rotationGainAllowed: s2cPlanningAvailable,
+            curvatureGainAllowed: s2cPlanningAvailable,
+            translationGainAllowed: false,
+            gainLimitsVersion: "rdw-gain-limiter-v1",
+            estimatorId: planningEstimator.EstimatorId,
+            estimatorVersion: planningEstimator.EstimatorVersion);
+        var rdwPlanningPipeline = new RdwPlanningPipeline(
+            planningEstimator,
+            planningCapability,
+            rdwPlanningSettings);
+        guidanceCoordinator.ConfigureRdwPlanning(
+            rdwPlanningSettings,
+            rdwPlanningPipeline,
+            rdwFrameCoordinator,
+            agentClient,
+            experimentLogger);
         motionDetector.SetExternallyDriven(true);
         rotationGainController.ConfigureRdwCommandSink(rdwFrameCoordinator);
         BindRdwPipeline();

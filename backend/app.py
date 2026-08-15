@@ -8,10 +8,13 @@ from fastapi import FastAPI
 
 from backend.agents.guide_llm import GuideDraftGenerator
 from backend.pipeline import GuidancePipeline
+from backend.route_selection import RouteSelectionGenerator, RouteSelectionPipeline
 from backend.schemas import (
     GuidanceRequest,
     GuidanceResponse,
     HealthResponse,
+    RouteSelectionRequest,
+    RouteSelectionResponse,
 )
 
 
@@ -25,6 +28,7 @@ def create_app(
     config_dir: Path = CONFIG_DIR,
     log_dir: Path = DEFAULT_LOG_DIR,
     draft_generator: GuideDraftGenerator | None = None,
+    route_selector: RouteSelectionGenerator | None = None,
 ) -> FastAPI:
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
     application.state.pipeline = GuidancePipeline(
@@ -32,6 +36,7 @@ def create_app(
         log_dir=log_dir,
         guide=draft_generator,
     )
+    application.state.route_selection_pipeline = RouteSelectionPipeline(route_selector)
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -46,6 +51,16 @@ def create_app(
     @application.post("/api/guidance", response_model=GuidanceResponse)
     async def guidance(request: GuidanceRequest) -> GuidanceResponse:
         pipeline: GuidancePipeline = application.state.pipeline
+        return await pipeline.handle(request)
+
+    @application.post(
+        "/api/planning/route-selection",
+        response_model=RouteSelectionResponse,
+    )
+    async def route_selection(
+        request: RouteSelectionRequest,
+    ) -> RouteSelectionResponse:
+        pipeline: RouteSelectionPipeline = application.state.route_selection_pipeline
         return await pipeline.handle(request)
 
     return application

@@ -28420,6 +28420,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   guidanceEndpoint: http://127.0.0.1:8000/api/guidance
+  routeSelectionEndpoint: http://127.0.0.1:8000/api/planning/route-selection
   requestTimeoutSeconds: 8
   healthEndpoint: http://127.0.0.1:8000/health
   healthCheckIntervalSeconds: 2
@@ -29460,7 +29461,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _outlineResources: {fileID: 11400000, guid: d28e70f030b1a634db9a6a6d5478ef19, type: 2}
-  _outlineLayers: {fileID: 0}
+  _outlineLayers: {fileID: 11400000, guid: 4626d15deed85854d9d1d0e6b6f045c3, type: 2}
   _cameraEvent: 15
 --- !u!1 &1472937072
 GameObject:
@@ -31284,6 +31285,28 @@ MonoBehaviour:
   s2cCenterToleranceMeters: 0.15
   s2cNearOppositeAngleDegrees: 160
   s2cOppositeTemporaryBearingDegrees: 90
+  rdwPlanningSettings:
+    mode: 1
+    maximumGraphEdgeDistanceMeters: 12
+    hardClearanceMeters: 1.2
+    maximumGainCost: 1
+    routeSearch:
+      maximumDepth: 3
+      beamWidth: 8
+      topK: 3
+      distanceNormalizationMeters: 12
+      clearanceNormalizationMeters: 3
+      depthDiscount: 0.9
+    utilityWeights:
+      semanticImportance: 1
+      taskRelevance: 1.2
+      safetyMargin: 1.5
+      rdwBenefit: 1
+      unvisitedCoverage: 0.6
+      gainCost: 1
+      distanceCost: 0.35
+      turnCost: 0.45
+      resetPressure: 0.8
   guidanceExecutor: {fileID: 1780042341}
   experimentDashboard: {fileID: 891366376}
   experimentLogger: {fileID: 891366375}
@@ -31622,12 +31645,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 80db09507722478c80a003eba94c170a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  narrationPlayer: {fileID: 0}
-  gazeCueController: {fileID: 0}
-  movementHintController: {fileID: 0}
-  exhibitHighlightManager: {fileID: 0}
-  rejectionPanel: {fileID: 0}
-  guidanceDebugPanel: {fileID: 0}
+  narrationPlayer: {fileID: 1780042340}
+  gazeCueController: {fileID: 1780042338}
+  movementHintController: {fileID: 1780042339}
+  exhibitHighlightManager: {fileID: 1780042336}
+  rejectionPanel: {fileID: 1780042335}
+  guidanceDebugPanel: {fileID: 1780042334}
 --- !u!1 &1788301825
 GameObject:
   m_ObjectHideFlags: 0

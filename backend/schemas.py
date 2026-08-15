@@ -384,6 +384,107 @@ class VerifierResult(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class PlanningRouteEdge(BaseModel):
+    """Unity 已完成 Exact Safety 后发布的单条通用路线边代价。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    from_node_id: str
+    to_node_id: str = Field(min_length=1)
+    relative_yaw_deg: float = Field(ge=-180.0, le=180.0)
+    clearance_m: float = Field(ge=0.0)
+    rdw_benefit: float = Field(ge=0.0, le=1.0)
+    gain_cost: float = Field(ge=0.0, le=1.0)
+    reset_pressure: float = Field(ge=0.0, le=1.0)
+
+
+class PlanningRouteCandidate(BaseModel):
+    """MLLM 只能按 route_id 选择的冻结路线候选。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    route_id: str = Field(min_length=1)
+    ordered_node_ids: list[str] = Field(min_length=1)
+    first_target_id: str = Field(min_length=1)
+    route_utility: float
+    intervention_level: Literal["low", "medium", "high"]
+    estimator_id: str = Field(min_length=1)
+    estimator_version: str = Field(min_length=1)
+    edges: list[PlanningRouteEdge] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_route_shape(self) -> "PlanningRouteCandidate":
+        if len(set(self.ordered_node_ids)) != len(self.ordered_node_ids):
+            raise ValueError("ordered_node_ids must not contain cycles.")
+        if self.first_target_id != self.ordered_node_ids[0]:
+            raise ValueError("first_target_id must match ordered_node_ids[0].")
+        if len(self.edges) != len(self.ordered_node_ids):
+            raise ValueError("edges must align one-to-one with ordered_node_ids.")
+        if any(edge.to_node_id != node_id for edge, node_id in zip(self.edges, self.ordered_node_ids)):
+            raise ValueError("each edge.to_node_id must align with ordered_node_ids.")
+        return self
+
+
+class RouteSelectionRequest(BaseModel):
+    """Unity Top-K 路线选择请求；不允许 Backend 重算 Physical Safety。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    planning_schema_version: Literal["rdw-route-selection-v1"]
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    plan_id: str = Field(min_length=1)
+    snapshot_id: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    task_state_version: int = Field(ge=0)
+    calibration_id: str = Field(min_length=1)
+    physical_space_id: str = Field(min_length=1)
+    risk_snapshot_id: str = Field(min_length=1)
+    risk_revision: int = Field(ge=1)
+    current_node_id: str = Field(min_length=1)
+    final_target_id: str = Field(min_length=1)
+    estimator_id: str = Field(min_length=1)
+    estimator_version: str = Field(min_length=1)
+    route_candidates: list[PlanningRouteCandidate] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def validate_candidate_identity(self) -> "RouteSelectionRequest":
+        route_ids = [candidate.route_id for candidate in self.route_candidates]
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("route_candidates route_id values must be unique.")
+        if any(
+            candidate.estimator_id != self.estimator_id
+            or candidate.estimator_version != self.estimator_version
+            for candidate in self.route_candidates
+        ):
+            raise ValueError("route candidate estimator identity must match the request.")
+        return self
+
+    def route_for(self, route_id: str) -> PlanningRouteCandidate | None:
+        """按冻结 route_id 查询候选。"""
+
+        return next(
+            (candidate for candidate in self.route_candidates if candidate.route_id == route_id),
+            None,
+        )
+
+
+class RouteSelectionResponse(BaseModel):
+    """后端只返回已有 route_id、narration 和 membership verifier。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    planning_schema_version: Literal["rdw-route-selection-v1"]
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    plan_id: str = Field(min_length=1)
+    snapshot_id: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    route_id: str = Field(min_length=1)
+    narration: str = Field(min_length=1, max_length=200)
+    verifier: VerifierResult
+
+
 class GuidanceResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 

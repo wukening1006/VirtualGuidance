@@ -23,6 +23,30 @@ public interface IGuidanceRequestClient
     void CancelPendingRequest();
 }
 
+/// <summary>
+/// 定义 RDW 路线选择使用的独立传输契约；后端只能从已有 route_id 中选择。
+/// </summary>
+public interface IRdwRouteSelectionClient
+{
+    /// <summary>当前是否有路线选择请求等待响应。</summary>
+    bool RouteSelectionRequestInFlight { get; }
+
+    /// <summary>组装本地提交链需要的 Guidance 请求身份，但不调用旧 guidance endpoint。</summary>
+    bool TryPrepareGuidanceRequest(GuidanceRequestContext context, out GuidanceRequest request);
+
+    /// <summary>发送一份冻结的 Top-K 路线选择请求。</summary>
+    void RequestRouteSelection(RdwRouteSelectionRequest request);
+
+    /// <summary>废弃当前路线选择请求，使旧 generation 永久失效。</summary>
+    void CancelPendingRouteSelection();
+
+    /// <summary>严格验证后的路线选择响应。</summary>
+    event Action<RdwRouteSelectionResponse> RouteSelectionReceived;
+
+    /// <summary>路线选择网络、HTTP 或协议失败。</summary>
+    event Action<string> RouteSelectionRequestFailed;
+}
+
 /// <summary>表示后端健康检查的容错状态。</summary>
 public enum BackendHealthStatus
 {
@@ -69,7 +93,7 @@ public sealed class BackendHealthStatusInfo
 /// <summary>
 /// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
-public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
+public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRouteSelectionClient
 {
     private static readonly HashSet<string> ResponseFieldNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -105,6 +129,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     [Header("后端接口")]
     [Tooltip("后端 guidance endpoint 地址。")]
     [SerializeField] private string guidanceEndpoint = "http://127.0.0.1:8000/api/guidance";
+    [Tooltip("后端 RDW route-selection endpoint 地址。")]
+    [SerializeField] private string routeSelectionEndpoint =
+        "http://127.0.0.1:8000/api/planning/route-selection";
     [Tooltip("请求超时时间，单位：秒。")]
     [SerializeField] private int requestTimeoutSeconds = 8;
     [Tooltip("后端健康检查地址。")]
@@ -162,6 +189,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     public event Action<GuidanceRequest> GuidanceRequestBuilt;
     /// <summary>后端健康状态发生变化时触发。</summary>
     public event Action<BackendHealthStatusInfo> BackendHealthChanged;
+    /// <summary>严格验证后的路线选择响应。</summary>
+    public event Action<RdwRouteSelectionResponse> RouteSelectionReceived;
+    /// <summary>路线选择网络、HTTP 或协议失败。</summary>
+    public event Action<string> RouteSelectionRequestFailed;
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
@@ -169,6 +200,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     private bool backendOnline;
     private int requestGeneration;
     private UnityWebRequest activeGuidanceRequest;
+    private bool routeSelectionRequestInFlight;
+    private int routeSelectionRequestGeneration;
+    private UnityWebRequest activeRouteSelectionRequest;
     private Coroutine healthLoop;
     private BackendHealthStatus backendHealthStatus = BackendHealthStatus.Unknown;
     private int consecutiveHealthCheckFailures;
@@ -179,6 +213,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
     /// 当前是否正在等待后端响应，用于避免重复请求造成状态乱序。
     /// </summary>
     public bool RequestInFlight => requestInFlight;
+    /// <summary>当前是否有路线选择请求等待响应。</summary>
+    public bool RouteSelectionRequestInFlight => routeSelectionRequestInFlight;
     /// <summary>后端是否已成功连接且尚未超过离线判定阈值。</summary>
     public bool BackendOnline => backendOnline;
     /// <summary>当前后端健康状态。</summary>
@@ -210,6 +246,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         }
 
         CancelPendingRequest();
+        CancelPendingRouteSelection();
         healthRequestInFlight = false;
         ResetHealthTracking();
     }
@@ -288,6 +325,56 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         {
             activeGuidanceRequest.Abort();
             activeGuidanceRequest = null;
+        }
+    }
+
+    /// <summary>
+    /// 组装本地 Guidance 提交链所需的身份快照；不会发送旧 guidance 请求。
+    /// </summary>
+    public bool TryPrepareGuidanceRequest(
+        GuidanceRequestContext context,
+        out GuidanceRequest request)
+    {
+        ResolveReferences();
+        request = BuildRequest(context ?? defaultContext);
+        if (request == null)
+        {
+            return false;
+        }
+
+        lastRequest = request;
+        GuidanceRequestBuilt?.Invoke(request);
+        return true;
+    }
+
+    /// <summary>发送冻结的 Top-K 路线；不与旧 guidance 在途状态互相覆盖。</summary>
+    public void RequestRouteSelection(RdwRouteSelectionRequest request)
+    {
+        if (request == null)
+        {
+            RouteSelectionRequestFailed?.Invoke("Route selection request is missing.");
+            return;
+        }
+        if (routeSelectionRequestInFlight)
+        {
+            RouteSelectionRequestFailed?.Invoke("Route selection request is already in progress.");
+            return;
+        }
+
+        var generation = ++routeSelectionRequestGeneration;
+        routeSelectionRequestInFlight = true;
+        StartCoroutine(SendRouteSelectionRequest(request, generation));
+    }
+
+    /// <summary>中止独立路线选择请求，并推进传输 generation。</summary>
+    public void CancelPendingRouteSelection()
+    {
+        routeSelectionRequestGeneration++;
+        routeSelectionRequestInFlight = false;
+        if (activeRouteSelectionRequest != null)
+        {
+            activeRouteSelectionRequest.Abort();
+            activeRouteSelectionRequest = null;
         }
     }
 
@@ -671,6 +758,57 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
         }
     }
 
+    private IEnumerator SendRouteSelectionRequest(
+        RdwRouteSelectionRequest request,
+        int transportGeneration)
+    {
+        var json = RdwRouteSelectionProtocol.SerializeRequest(request);
+        using (var webRequest = new UnityWebRequest(
+                   routeSelectionEndpoint,
+                   UnityWebRequest.kHttpVerbPOST))
+        {
+            activeRouteSelectionRequest = webRequest;
+            webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+            webRequest.downloadHandler = new DownloadHandlerBuffer();
+            webRequest.timeout = Mathf.Max(1, requestTimeoutSeconds);
+            webRequest.SetRequestHeader("Content-Type", "application/json");
+
+            yield return webRequest.SendWebRequest();
+            if (activeRouteSelectionRequest == webRequest)
+            {
+                activeRouteSelectionRequest = null;
+            }
+            if (transportGeneration != routeSelectionRequestGeneration)
+            {
+                yield break;
+            }
+
+            routeSelectionRequestInFlight = false;
+            var responseText = webRequest.downloadHandler != null
+                ? webRequest.downloadHandler.text
+                : string.Empty;
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                RouteSelectionRequestFailed?.Invoke(
+                    FormatRouteSelectionRequestFailure(webRequest.error, responseText));
+                yield break;
+            }
+
+            if (!RdwRouteSelectionProtocol.TryParseResponse(
+                    responseText,
+                    request,
+                    out var response,
+                    out var failureReason))
+            {
+                RouteSelectionRequestFailed?.Invoke(
+                    $"Route selection response rejected: {failureReason}.");
+                yield break;
+            }
+
+            RouteSelectionReceived?.Invoke(response);
+        }
+    }
+
     /// <summary>
     /// 使用支持嵌套数组的 JSON.NET 序列化正式请求，确保边界点不会退化为空对象。
     /// </summary>
@@ -717,6 +855,18 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient
             detail = detail.Substring(0, MaxDetailLength) + "...";
         }
         return $"{message}; backend detail: {detail}";
+    }
+
+    /// <summary>格式化路线选择请求的 HTTP 与 Backend 诊断。</summary>
+    public static string FormatRouteSelectionRequestFailure(
+        string transportError,
+        string responseBody)
+    {
+        var guidanceFailure = FormatGuidanceRequestFailure(transportError, responseBody);
+        return guidanceFailure.StartsWith("Guidance request failed", StringComparison.Ordinal)
+            ? "Route selection request failed" +
+              guidanceFailure.Substring("Guidance request failed".Length)
+            : guidanceFailure;
     }
 
     private IEnumerator HealthLoop()

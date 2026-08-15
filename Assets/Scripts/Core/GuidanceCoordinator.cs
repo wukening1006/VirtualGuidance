@@ -246,6 +246,19 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private bool planningRequestInProgress;
     private string lastDeterministicRejectionFingerprint = string.Empty;
     private bool replanHoldRequiresNewFacts;
+    private RdwPlanningSettings rdwPlanningSettings;
+    private RdwPlanningPipeline rdwPlanningPipeline;
+    private RdwFrameCoordinator rdwPlanningFrameCoordinator;
+    private IRdwRouteSelectionClient routeSelectionClient;
+    private ExperimentLogger rdwPlanningLogger;
+    private readonly PlanCache rdwPlanCache = new PlanCache();
+    private readonly PlanningCallGate rdwPlanningCallGate = new PlanningCallGate();
+    private RdwRoutePlanningResult pendingRdwPlanningResult;
+    private RdwRouteSelectionRequest pendingRdwRouteSelectionRequest;
+    private GuidanceRequest pendingRdwGuidanceRequest;
+    private PlanningCallIdentity pendingRdwCallIdentity;
+    private RdwRoutePlanningResult lastShadowPlanningResult;
+    private RdwRouteSelectionResponse lastShadowSelectionResponse;
 
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
@@ -313,6 +326,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public int ReplanRetryCount => replanRetryCount;
     /// <summary>当前重规划退避间隔，单位：秒。</summary>
     public float CurrentReplanRetryDelaySeconds => currentReplanRetryDelaySeconds;
+    /// <summary>当前 RDW 规划模式；未配置时保持既有链。</summary>
+    public RdwPlanningMode CurrentRdwPlanningMode => rdwPlanningSettings != null
+        ? rdwPlanningSettings.Mode
+        : RdwPlanningMode.Legacy;
+    /// <summary>当前已选择路线缓存；缓存本身不代表安全许可。</summary>
+    public PlanCache RdwPlanCache => rdwPlanCache;
+    /// <summary>当前路线选择调用门。</summary>
+    public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
 
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
 
@@ -348,6 +369,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindRuntimeSafety();
         BindRecoveryController();
         BindMotionDetector();
+        BindRdwPlanningClient();
         ConfigureTurnCueTracker();
     }
 
@@ -359,6 +381,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRuntimeSafety();
         UnbindRecoveryController();
         UnbindMotionDetector();
+        UnbindRdwPlanningClient();
     }
 
     /// <summary>
@@ -417,6 +440,25 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public void ConfigureRequestClient(IGuidanceRequestClient client)
     {
         requestClient = client;
+    }
+
+    /// <summary>
+    /// 注入独立 RDW 规划层；Coordinator 仍是唯一跨模块编排和正式提交入口。
+    /// </summary>
+    public void ConfigureRdwPlanning(
+        RdwPlanningSettings settings,
+        RdwPlanningPipeline pipeline,
+        RdwFrameCoordinator frameCoordinator,
+        IRdwRouteSelectionClient selectionClient,
+        ExperimentLogger logger)
+    {
+        UnbindRdwPlanningClient();
+        rdwPlanningSettings = settings ?? new RdwPlanningSettings();
+        rdwPlanningPipeline = pipeline;
+        rdwPlanningFrameCoordinator = frameCoordinator;
+        routeSelectionClient = selectionClient;
+        rdwPlanningLogger = logger;
+        BindRdwPlanningClient();
     }
 
     /// <summary>
@@ -484,6 +526,65 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        RdwRoutePlanningResult rdwPlanningResult = null;
+        RoutePlan cachedPlan = null;
+        var cachedTargetId = string.Empty;
+        if (CurrentRdwPlanningMode != RdwPlanningMode.Legacy)
+        {
+            if (!TryCreateRdwPlanningResult(
+                    riskState,
+                    candidateSet,
+                    out rdwPlanningResult,
+                    out var rdwPlanningFailure))
+            {
+                LogRdwPlanning(
+                    "planning_unavailable",
+                    null,
+                    null,
+                    null,
+                    rdwPlanningFailure);
+                if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
+                {
+                    EnterHoldAndReplan(
+                        riskState,
+                        planningFingerprint,
+                        rdwPlanningFailure,
+                        false);
+                    return;
+                }
+            }
+            else
+            {
+                LogRdwPlanning(
+                    "planning_routes_generated",
+                    rdwPlanningResult,
+                    null,
+                    null,
+                    rdwPlanningResult.HasRoutes
+                        ? "Top-K routes generated."
+                        : "No route passed the hard safety filter.");
+            }
+
+            if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
+            {
+                if (rdwPlanningResult == null || !rdwPlanningResult.HasRoutes)
+                {
+                    EnterHoldAndReplan(
+                        riskState,
+                        planningFingerprint,
+                        "RDW planning produced no hard-safe route.",
+                        true);
+                    return;
+                }
+
+                TryResolveCachedRdwStep(
+                    rdwPlanningResult,
+                    candidateSet,
+                    out cachedPlan,
+                    out cachedTargetId);
+            }
+        }
+
         if (!taskController.TryReserveCandidateSet(
                 candidateSet,
                 candidateSetId,
@@ -506,6 +607,41 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         ExitReplanHold("executable_candidate_reserved");
         SetRequestPhase(GuidanceRequestPhase.Requested);
+        if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
+        {
+            if (routeSelectionClient == null ||
+                !routeSelectionClient.TryPrepareGuidanceRequest(context, out var guidanceRequest))
+            {
+                taskController.AbandonCandidateSetReservation();
+                InvalidateRdwPlanning(
+                    RoutePlanInvalidationReason.GuidanceCancelled,
+                    "RDW constrained planning could not prepare the local guidance identity.");
+                HandleRequestFailed("RDW constrained planning could not prepare the local guidance identity.");
+                return;
+            }
+
+            if (cachedPlan != null && !string.IsNullOrWhiteSpace(cachedTargetId))
+            {
+                ExecuteCachedRdwStep(
+                    cachedPlan,
+                    cachedTargetId,
+                    guidanceRequest,
+                    rdwPlanningResult);
+                return;
+            }
+
+            if (!BeginRdwRouteSelection(rdwPlanningResult, guidanceRequest))
+            {
+                taskController.AbandonCandidateSetReservation();
+                HandleRequestFailed("RDW route selection request could not start.");
+            }
+            return;
+        }
+
+        if (CurrentRdwPlanningMode == RdwPlanningMode.Shadow && rdwPlanningResult != null && rdwPlanningResult.HasRoutes)
+        {
+            BeginRdwRouteSelection(rdwPlanningResult, null);
+        }
         requestClient.RequestGuidance(context);
     }
 
@@ -534,6 +670,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             // 旧响应不得改变当前请求阶段、取消新请求或触发重规划。
             return;
         }
+
+        CompareShadowRouteIfAvailable(response.selected_target);
 
         if (runtimeState == null || !runtimeState.IsNavigating)
         {
@@ -689,6 +827,504 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         SetRequestPhase(GuidanceRequestPhase.Requested);
     }
 
+    private bool TryCreateRdwPlanningResult(
+        PhysicalRiskState riskState,
+        NavigationCandidateSet candidateSet,
+        out RdwRoutePlanningResult result,
+        out string failureReason)
+    {
+        result = null;
+        failureReason = string.Empty;
+        var frame = rdwPlanningFrameCoordinator != null
+            ? rdwPlanningFrameCoordinator.LastFrame
+            : null;
+        if (rdwPlanningPipeline == null || frame == null || !frame.Pose.IsValid)
+        {
+            failureReason = "Fresh valid RDW pose frame is unavailable.";
+            return false;
+        }
+        if (riskState == null || taskController == null || navigationTargets == null)
+        {
+            failureReason = "RDW planning dependencies are incomplete.";
+            return false;
+        }
+
+        try
+        {
+            result = rdwPlanningPipeline.Plan(
+                frame.Pose,
+                riskState,
+                taskController.RuntimeState,
+                candidateSet,
+                navigationTargets);
+        }
+        catch (Exception exception)
+        {
+            failureReason = $"RDW planning failed: {exception.Message}";
+            return false;
+        }
+
+        if (result?.Snapshot == null || !result.Snapshot.IsValid)
+        {
+            failureReason = "Fresh RDW PlanningSnapshot is invalid.";
+            result = null;
+            return false;
+        }
+        return true;
+    }
+
+    private bool TryResolveCachedRdwStep(
+        RdwRoutePlanningResult result,
+        NavigationCandidateSet candidateSet,
+        out RoutePlan plan,
+        out string targetId)
+    {
+        plan = null;
+        targetId = string.Empty;
+        var state = taskController != null ? taskController.RuntimeState : null;
+        var previousPlan = rdwPlanCache.ActivePlan;
+        if (state == null ||
+            !rdwPlanCache.TryGet(result.Snapshot, state.stateVersion, out plan))
+        {
+            if (previousPlan != null)
+            {
+                LogRdwPlanning(
+                    "planning_plan_invalidated",
+                    result,
+                    null,
+                    previousPlan,
+                    rdwPlanCache.LastInvalidationReason.ToString());
+            }
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(plan.ActiveStepId))
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.GuidanceCancelled,
+                "Cached route still owns an uncompleted active step.");
+            plan = null;
+            return false;
+        }
+        if (!plan.HasRemainingSteps)
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.RouteExhausted,
+                "Cached route has no remaining step.");
+            plan = null;
+            return false;
+        }
+
+        targetId = plan.RemainingSteps[0];
+        if (!Contains(candidateSet.ModelCandidateIds, targetId) ||
+            !ContainsHardSafeFirstTarget(result, targetId))
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.FirstStepRejected,
+                "Cached next step is not a current hard-safe model candidate.");
+            plan = null;
+            targetId = string.Empty;
+            return false;
+        }
+        return true;
+    }
+
+    private static bool ContainsHardSafeFirstTarget(
+        RdwRoutePlanningResult result,
+        string targetId)
+    {
+        if (result == null) return false;
+        foreach (var route in result.Routes)
+        {
+            if (route != null &&
+                string.Equals(route.FirstTargetId, targetId, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void ConfirmCompletedRdwStep(string arrivedTargetId, int nextTaskStateVersion)
+    {
+        if (rdwPlanCache.ActivePlan == null) return;
+        if (!rdwPlanCache.ConfirmStepCompleted(arrivedTargetId, nextTaskStateVersion))
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.TaskStateChanged,
+                "Arrived target does not match the active cached route step.");
+            return;
+        }
+
+        LogRdwPlanning(
+            "planning_step_completed",
+            null,
+            null,
+            rdwPlanCache.ActivePlan,
+            "The active route step reached its reserved target.");
+    }
+
+    private bool BeginRdwRouteSelection(
+        RdwRoutePlanningResult result,
+        GuidanceRequest guidanceRequest)
+    {
+        if (result?.Snapshot == null || !result.HasRoutes || routeSelectionClient == null ||
+            routeSelectionClient.RouteSelectionRequestInFlight ||
+            rdwPlanningCallGate.RequestInFlight)
+        {
+            return false;
+        }
+
+        var identity = rdwPlanningCallGate.TryBegin(result.Snapshot);
+        if (identity == null)
+        {
+            return false;
+        }
+        var sessionId = guidanceRequest != null
+            ? guidanceRequest.session_id
+            : rdwPlanningLogger != null && rdwPlanningLogger.Session != null
+                ? rdwPlanningLogger.Session.sessionId
+                : string.Empty;
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            rdwPlanningCallGate.Invalidate();
+            return false;
+        }
+
+        var request = RdwRouteSelectionRequest.From(sessionId, identity, result);
+        if (request == null)
+        {
+            rdwPlanningCallGate.Invalidate();
+            return false;
+        }
+
+        pendingRdwPlanningResult = result;
+        pendingRdwRouteSelectionRequest = request;
+        pendingRdwGuidanceRequest = guidanceRequest;
+        pendingRdwCallIdentity = identity;
+        LogRdwPlanning(
+            "planning_route_selection_requested",
+            result,
+            null,
+            null,
+            "Top-K route_id selection requested.");
+        routeSelectionClient.RequestRouteSelection(request);
+        return true;
+    }
+
+    private void HandleRdwRouteSelectionReceived(RdwRouteSelectionResponse response)
+    {
+        var result = pendingRdwPlanningResult;
+        var guidanceRequest = pendingRdwGuidanceRequest;
+        var identity = pendingRdwCallIdentity;
+        if (response == null || result == null || identity == null ||
+            !rdwPlanningCallGate.Complete(
+                response.plan_id,
+                response.request_id,
+                response.snapshot_id,
+                response.generation))
+        {
+            return;
+        }
+
+        RouteCandidate selectedRoute = null;
+        foreach (var route in result.Routes)
+        {
+            if (route != null &&
+                string.Equals(route.RouteId, response.route_id, StringComparison.Ordinal))
+            {
+                selectedRoute = route;
+                break;
+            }
+        }
+        if (selectedRoute == null)
+        {
+            HandleRdwRouteSelectionFailed("Selected route_id is not in the frozen planning result.");
+            return;
+        }
+
+        LogRdwPlanning(
+            "planning_route_selected",
+            result,
+            response,
+            null,
+            "Backend selected an existing route_id.");
+        if (CurrentRdwPlanningMode == RdwPlanningMode.Shadow)
+        {
+            ClearPendingRdwPlanning();
+            lastShadowPlanningResult = result;
+            lastShadowSelectionResponse = response;
+            CompareShadowRouteIfAvailable(activeResponse != null
+                ? activeResponse.selected_target
+                : string.Empty);
+            return;
+        }
+        if (CurrentRdwPlanningMode != RdwPlanningMode.RdwConstrained || guidanceRequest == null)
+        {
+            ClearPendingRdwPlanning();
+            return;
+        }
+
+        var adapted = CreateRdwGuidanceResponse(
+            guidanceRequest,
+            selectedRoute.FirstTargetId,
+            response.narration,
+            selectedRoute.RouteId,
+            response.verifier);
+        if (adapted == null)
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.GuidanceCancelled,
+                "Selected route first step cannot be adapted to the active Candidate Reservation.");
+            HandleRequestFailed("RDW route first step adaptation failed.");
+            return;
+        }
+
+        HandleGuidanceResponse(adapted);
+        if (requestPhase == GuidanceRequestPhase.Executing &&
+            ReferenceEquals(activeResponse, adapted))
+        {
+            var plan = RoutePlan.FromSelection(
+                identity,
+                selectedRoute,
+                result.Snapshot,
+                taskController.RuntimeState.stateVersion,
+                response.narration);
+            rdwPlanCache.Store(plan);
+            LogRdwPlanning(
+                "planning_first_step_revalidated",
+                result,
+                response,
+                plan,
+                "Unity Exact Safety accepted the selected route first step.");
+        }
+        ClearPendingRdwPlanning();
+    }
+
+    private void ExecuteCachedRdwStep(
+        RoutePlan plan,
+        string targetId,
+        GuidanceRequest guidanceRequest,
+        RdwRoutePlanningResult freshResult)
+    {
+        var adapted = CreateRdwGuidanceResponse(
+            guidanceRequest,
+            targetId,
+            plan.Narration,
+            plan.SelectedRouteId,
+            new VerifierResult
+            {
+                approved = true,
+                reason = "Cached route membership retained; Unity must revalidate Exact Safety."
+            });
+        if (adapted == null)
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.FirstStepRejected,
+                "Cached route step cannot be adapted to the current Candidate Reservation.");
+            HandleRequestFailed("Cached RDW route step adaptation failed.");
+            return;
+        }
+
+        HandleGuidanceResponse(adapted);
+        if (requestPhase == GuidanceRequestPhase.Executing &&
+            ReferenceEquals(activeResponse, adapted))
+        {
+            if (!rdwPlanCache.CommitNextStep(
+                    targetId,
+                    taskController.RuntimeState.stateVersion))
+            {
+                InvalidateRdwPlanning(
+                    RoutePlanInvalidationReason.GuidanceCancelled,
+                    "Cached route step executed but the cache transition failed.");
+                return;
+            }
+            LogRdwPlanning(
+                "planning_cached_step_revalidated",
+                freshResult,
+                null,
+                rdwPlanCache.ActivePlan,
+                "Unity Exact Safety accepted the cached route next step.");
+        }
+    }
+
+    private static GuidanceResponse CreateRdwGuidanceResponse(
+        GuidanceRequest request,
+        string targetId,
+        string narration,
+        string routeId,
+        VerifierResult verifier)
+    {
+        if (request == null || request.semantic_candidates == null) return null;
+        GuidanceSemanticCandidate candidate = null;
+        foreach (var value in request.semantic_candidates)
+        {
+            if (value != null && string.Equals(value.id, targetId, StringComparison.Ordinal))
+            {
+                candidate = value;
+                break;
+            }
+        }
+        if (candidate == null) return null;
+
+        return new GuidanceResponse
+        {
+            task_definition_version = request.task_definition_version,
+            guidance_schema_version = request.guidance_schema_version,
+            candidate_policy_version = request.candidate_policy_version,
+            risk_policy_version = request.risk_policy_version,
+            session_id = request.session_id,
+            calibration_id = request.calibration_id,
+            request_id = request.request_id,
+            decision_id = request.decision_id,
+            candidate_set_id = request.candidate_set_id,
+            state_version = request.state_version,
+            risk_snapshot_id = request.risk_snapshot_id,
+            risk_revision = request.risk_snapshot != null ? request.risk_snapshot.risk_revision : 0,
+            target_role = candidate.target_role,
+            selected_target = candidate.id,
+            route_decision = $"rdw_constrained:{routeId}",
+            narration = string.IsNullOrWhiteSpace(narration)
+                ? "我们继续前往下一站。"
+                : narration,
+            gaze_cue = GazeCueForDisplayDirection(candidate.relative_direction),
+            gaze_target_id = candidate.id,
+            movement_instruction = candidate.suggested_movement_instruction,
+            physical_intent = "unity_exact_safety_revalidation",
+            verifier = verifier ?? new VerifierResult
+            {
+                approved = true,
+                reason = "route_id membership verified; physical safety remains Unity-owned."
+            }
+        };
+    }
+
+    private static string GazeCueForDisplayDirection(string relativeDirection)
+    {
+        switch (relativeDirection)
+        {
+            case "left": return "look_left";
+            case "right": return "look_right";
+            default: return "look_forward";
+        }
+    }
+
+    private void HandleRdwRouteSelectionFailed(string reason)
+    {
+        var result = pendingRdwPlanningResult;
+        var activeMode = CurrentRdwPlanningMode;
+        LogRdwPlanning(
+            "planning_route_selection_failed",
+            result,
+            null,
+            rdwPlanCache.ActivePlan,
+            reason);
+        rdwPlanningCallGate.Invalidate();
+        ClearPendingRdwPlanning();
+        if (activeMode == RdwPlanningMode.RdwConstrained)
+        {
+            rdwPlanCache.Invalidate(RoutePlanInvalidationReason.GuidanceCancelled);
+            HandleRequestFailed(reason);
+        }
+    }
+
+    private void CompareShadowRouteIfAvailable(string formalTargetId)
+    {
+        if (lastShadowPlanningResult == null || lastShadowSelectionResponse == null ||
+            string.IsNullOrWhiteSpace(formalTargetId))
+        {
+            return;
+        }
+
+        var shadowTargetId = string.Empty;
+        foreach (var route in lastShadowPlanningResult.Routes)
+        {
+            if (route != null && string.Equals(
+                    route.RouteId,
+                    lastShadowSelectionResponse.route_id,
+                    StringComparison.Ordinal))
+            {
+                shadowTargetId = route.FirstTargetId;
+                break;
+            }
+        }
+        LogRdwPlanning(
+            "planning_shadow_compared",
+            lastShadowPlanningResult,
+            lastShadowSelectionResponse,
+            null,
+            $"shadow_first_target={shadowTargetId}; formal_selected_target={formalTargetId}",
+            formalTargetId);
+        lastShadowPlanningResult = null;
+        lastShadowSelectionResponse = null;
+    }
+
+    private void ClearPendingRdwPlanning()
+    {
+        pendingRdwPlanningResult = null;
+        pendingRdwRouteSelectionRequest = null;
+        pendingRdwGuidanceRequest = null;
+        pendingRdwCallIdentity = null;
+    }
+
+    private void BindRdwPlanningClient()
+    {
+        if (routeSelectionClient == null) return;
+        routeSelectionClient.RouteSelectionReceived -= HandleRdwRouteSelectionReceived;
+        routeSelectionClient.RouteSelectionReceived += HandleRdwRouteSelectionReceived;
+        routeSelectionClient.RouteSelectionRequestFailed -= HandleRdwRouteSelectionFailed;
+        routeSelectionClient.RouteSelectionRequestFailed += HandleRdwRouteSelectionFailed;
+    }
+
+    private void UnbindRdwPlanningClient()
+    {
+        if (routeSelectionClient == null) return;
+        routeSelectionClient.RouteSelectionReceived -= HandleRdwRouteSelectionReceived;
+        routeSelectionClient.RouteSelectionRequestFailed -= HandleRdwRouteSelectionFailed;
+    }
+
+    private void InvalidateRdwPlanning(
+        RoutePlanInvalidationReason reason,
+        string message)
+    {
+        var result = pendingRdwPlanningResult;
+        var plan = rdwPlanCache.ActivePlan;
+        routeSelectionClient?.CancelPendingRouteSelection();
+        rdwPlanningCallGate.Invalidate();
+        rdwPlanCache.Invalidate(reason);
+        ClearPendingRdwPlanning();
+        lastShadowPlanningResult = null;
+        lastShadowSelectionResponse = null;
+        LogRdwPlanning(
+            "planning_plan_invalidated",
+            result,
+            null,
+            plan,
+            string.IsNullOrWhiteSpace(message) ? reason.ToString() : message);
+    }
+
+    private void LogRdwPlanning(
+        string eventType,
+        RdwRoutePlanningResult result,
+        RdwRouteSelectionResponse response,
+        RoutePlan plan,
+        string message,
+        string formalSelectedTargetId = "")
+    {
+        rdwPlanningLogger?.LogRdwPlanning(
+            eventType,
+            CurrentRdwPlanningMode,
+            result,
+            pendingRdwCallIdentity,
+            response,
+            plan,
+            rdwPlanCache.LastInvalidationReason,
+            taskController != null ? taskController.RuntimeState : null,
+            riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+            message,
+            formalSelectedTargetId);
+    }
+
     /// <summary>
     /// 处理当前路线目标到达：取消旧执行、推进任务，并在未完成时自动重新规划下一段 Guidance。
     /// </summary>
@@ -713,6 +1349,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
+            ConfirmCompletedRdwStep(reservation.TargetId, state.stateVersion);
+
             TargetReached?.Invoke(guidanceTarget);
             DetourCompleted?.Invoke(guidanceTarget);
             Replanning?.Invoke(state);
@@ -732,9 +1370,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        ConfirmCompletedRdwStep(reservation.TargetId, state.stateVersion);
+
         TargetReached?.Invoke(guidanceTarget);
         if (state.IsCompleted)
         {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.RouteExhausted,
+                "Task completed after the active route step arrived.");
             arrivalDetector?.WatchReservation(null);
             TaskCompleted?.Invoke(state);
             return;
@@ -773,6 +1416,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        ConfirmCompletedRdwStep(target.TargetId, state.stateVersion);
+
         Replanning?.Invoke(state);
         RequestNextGuidance();
     }
@@ -782,6 +1427,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// </summary>
     public void CancelActiveGuidance()
     {
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.GuidanceCancelled,
+            "Active guidance was cancelled.");
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_cancelled");
@@ -909,6 +1557,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ExitReplanHold("reset_recovery_completed");
         TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
         frozenRecoveryPlan = null;
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.ResetCompleted,
+            "Reset completed; the next request must capture a fresh PlanningSnapshot.");
         Replanning?.Invoke(state);
         RequestNextGuidance();
     }
@@ -960,6 +1611,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var resolvedReason = string.IsNullOrWhiteSpace(reason)
             ? "Hard Runtime Safety rejected unsafe guidance."
             : reason;
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.FirstStepRejected,
+            resolvedReason);
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         rotationGainController?.AbortGain("runtime_intervention");
@@ -982,6 +1636,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void ExpireAndReplan(GuidanceResponse response, string reason)
     {
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.FirstStepRejected,
+            reason);
         var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
         var rejectionFingerprint = BuildRejectionFingerprint(response, riskState, reason);
         if (!string.IsNullOrEmpty(rejectionFingerprint) &&
@@ -1182,8 +1839,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleResetStateChanged(ResetLifecycleState state)
     {
-        if (state == ResetLifecycleState.Completed)
+        if (state == ResetLifecycleState.Required ||
+            state == ResetLifecycleState.TurningToSafeHeading)
         {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.ResetStarted,
+                "Reset started; all previous route identities are stale.");
+        }
+        else if (state == ResetLifecycleState.Completed)
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.ResetCompleted,
+                "Reset completed; waiting for fresh post-reset planning facts.");
             recoveryRevalidationAt = Time.realtimeSinceStartup + Mathf.Max(0f, resetStabilizationSeconds);
             TransitionRecoveryTo(
                 GuidanceRecoveryState.Stabilizing,
@@ -1271,6 +1938,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var interruptedResponse = activeResponse;
         try
         {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.FirstStepRejected,
+                reason);
             requestClient?.CancelPendingRequest();
             guidanceExecutor?.Clear();
             rotationGainController?.AbortGain("soft_reroute");
@@ -1322,6 +1992,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance, resolvedReason);
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.ResetStarted,
+            resolvedReason);
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         handlingGainTermination = true;

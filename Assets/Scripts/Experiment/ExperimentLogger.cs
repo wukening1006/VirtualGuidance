@@ -514,6 +514,40 @@ public sealed class ExperimentLogger : MonoBehaviour
             rdwFrameInfo: frameInfo);
     }
 
+    /// <summary>
+    /// 记录 RDW 路线规划、Shadow 对比、调用身份和 PlanCache 生命周期。
+    /// </summary>
+    public void LogRdwPlanning(
+        string eventType,
+        RdwPlanningMode mode,
+        RdwRoutePlanningResult planningResult,
+        PlanningCallIdentity callIdentity,
+        RdwRouteSelectionResponse selectionResponse,
+        RoutePlan routePlan,
+        RoutePlanInvalidationReason invalidationReason,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string message,
+        string formalSelectedTargetId = "")
+    {
+        Write(
+            eventType,
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            message,
+            LogTraceContext.Empty,
+            selectedTargetOverride: formalSelectedTargetId,
+            rdwPlanningMode: mode,
+            rdwPlanningResult: planningResult,
+            rdwPlanningIdentity: callIdentity,
+            rdwRouteSelectionResponse: selectionResponse,
+            rdwRoutePlan: routePlan,
+            rdwPlanInvalidationReason: invalidationReason);
+    }
+
     /// <summary>记录重规划等待的规划指纹、风险修订与退避次数。</summary>
     public void LogReplanHold(
         ReplanHoldInfo holdInfo,
@@ -631,7 +665,13 @@ public sealed class ExperimentLogger : MonoBehaviour
         RotationGainEventInfo rotationGainEvent = null,
         ReplanHoldInfo replanHoldInfo = null,
         BackendHealthStatusInfo backendHealthInfo = null,
-        RdwFrameEventInfo rdwFrameInfo = null)
+        RdwFrameEventInfo rdwFrameInfo = null,
+        RdwPlanningMode? rdwPlanningMode = null,
+        RdwRoutePlanningResult rdwPlanningResult = null,
+        PlanningCallIdentity rdwPlanningIdentity = null,
+        RdwRouteSelectionResponse rdwRouteSelectionResponse = null,
+        RoutePlan rdwRoutePlan = null,
+        RoutePlanInvalidationReason rdwPlanInvalidationReason = RoutePlanInvalidationReason.None)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -885,6 +925,56 @@ public sealed class ExperimentLogger : MonoBehaviour
                     data["reset_mapping_reason"] = resetProgress.Reason;
                 }
             }
+            if (rdwPlanningMode.HasValue)
+            {
+                var planningSnapshot = rdwPlanningResult?.Snapshot;
+                data["planning_mode"] = rdwPlanningMode.Value.ToString().ToLowerInvariant();
+                data["snapshot_id"] = FirstNonEmpty(
+                    planningSnapshot?.SnapshotId,
+                    rdwPlanningIdentity?.SnapshotId,
+                    rdwRouteSelectionResponse?.snapshot_id,
+                    rdwRoutePlan?.PlanningSnapshotId);
+                data["plan_id"] = FirstNonEmpty(
+                    rdwPlanningIdentity?.PlanId,
+                    rdwRouteSelectionResponse?.plan_id,
+                    rdwRoutePlan?.PlanId);
+                data["planning_request_id"] = FirstNonEmpty(
+                    rdwPlanningIdentity?.RequestId,
+                    rdwRouteSelectionResponse?.request_id);
+                data["generation"] = rdwPlanningIdentity != null
+                    ? rdwPlanningIdentity.Generation
+                    : rdwRouteSelectionResponse != null
+                        ? rdwRouteSelectionResponse.generation
+                        : rdwRoutePlan?.Generation ?? 0L;
+                data["route_id"] = FirstNonEmpty(
+                    rdwRouteSelectionResponse?.route_id,
+                    rdwRoutePlan?.SelectedRouteId);
+                data["formal_selected_target"] = selectedTargetOverride;
+                data["planning_invalidation_reason"] =
+                    rdwPlanInvalidationReason.ToString().ToLowerInvariant();
+                if (planningSnapshot != null)
+                {
+                    data["planning_pose_sequence"] = planningSnapshot.PoseSequence;
+                    data["planning_task_state_version"] = planningSnapshot.TaskStateVersion;
+                    data["planning_risk_snapshot_id"] = planningSnapshot.RiskSnapshotId;
+                    data["planning_risk_revision"] = planningSnapshot.RiskRevision;
+                    data["planning_registry_revision"] = planningSnapshot.RegistryRevision;
+                    data["planning_calibration_id"] = planningSnapshot.CalibrationId;
+                    data["planning_physical_space_id"] = planningSnapshot.PhysicalSpaceId;
+                    data["planning_estimator_id"] = planningSnapshot.Capability?.EstimatorId ?? string.Empty;
+                    data["planning_estimator_version"] = planningSnapshot.Capability?.EstimatorVersion ?? string.Empty;
+                }
+                if (rdwPlanningResult != null)
+                {
+                    data["route_candidates"] = SerializeRdwRouteCandidates(rdwPlanningResult.Routes);
+                    data["planning_rejection_reasons"] = new JArray(rdwPlanningResult.RejectionReasons);
+                }
+                if (rdwRoutePlan != null)
+                {
+                    data["active_route_step_id"] = rdwRoutePlan.ActiveStepId;
+                    data["remaining_route_steps"] = new JArray(rdwRoutePlan.RemainingSteps);
+                }
+            }
 
             if (descriptor.Level == LogType.Error)
             {
@@ -1095,6 +1185,16 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "gain_cancelled": return new EventDescriptor("rdw.gain_cancelled", "RDW", level);
             case "gain_aborted": return new EventDescriptor("rdw.gain_aborted", "RDW", level);
             case "rdw_frame": return new EventDescriptor("rdw.frame", "RDW", level);
+            case "planning_routes_generated": return new EventDescriptor("rdw.planning.routes_generated", "RDW", level);
+            case "planning_route_selection_requested": return new EventDescriptor("rdw.planning.selection_requested", "RDW", level);
+            case "planning_route_selected": return new EventDescriptor("rdw.planning.route_selected", "RDW", level);
+            case "planning_shadow_compared": return new EventDescriptor("rdw.planning.shadow_compared", "RDW", level);
+            case "planning_first_step_revalidated": return new EventDescriptor("rdw.planning.first_step_revalidated", "RDW", level);
+            case "planning_cached_step_revalidated": return new EventDescriptor("rdw.planning.cached_step_revalidated", "RDW", level);
+            case "planning_step_completed": return new EventDescriptor("rdw.planning.step_completed", "RDW", level);
+            case "planning_plan_invalidated": return new EventDescriptor("rdw.planning.plan_invalidated", "RDW", level);
+            case "planning_route_selection_failed": return new EventDescriptor("rdw.planning.selection_failed", "Network", level);
+            case "planning_unavailable": return new EventDescriptor("rdw.planning.unavailable", "RDW", level);
             case "recovery_state_changed": return new EventDescriptor("rdw.recovery_state_changed", "RDW", level);
             case "recovery_search_completed": return new EventDescriptor("rdw.recovery_search_completed", "RDW", level);
             default:
@@ -1300,6 +1400,42 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["target_yaw_deg"] = assessment.SuggestedAction?.TargetYawDegrees ?? 0f,
                 ["execution_state"] = assessment.ExecutionState.ToString().ToLowerInvariant(),
                 ["execution_reason"] = assessment.Reason
+            });
+        }
+        return result;
+    }
+
+    private static JArray SerializeRdwRouteCandidates(IReadOnlyList<RouteCandidate> routes)
+    {
+        var result = new JArray();
+        if (routes == null) return result;
+        foreach (var route in routes)
+        {
+            if (route == null) continue;
+            var edges = new JArray();
+            foreach (var evaluation in route.EdgeEvaluations)
+            {
+                if (evaluation == null) continue;
+                edges.Add(new JObject
+                {
+                    ["relative_yaw_deg"] = evaluation.RelativeYawDegrees,
+                    ["clearance_m"] = evaluation.ClearanceMeters,
+                    ["safety"] = evaluation.SafetyLevel.ToString().ToLowerInvariant(),
+                    ["rdw_benefit"] = evaluation.RdwBenefit,
+                    ["gain_cost"] = evaluation.GainCost,
+                    ["reset_pressure"] = evaluation.ResetPressure
+                });
+            }
+            result.Add(new JObject
+            {
+                ["route_id"] = route.RouteId,
+                ["first_target_id"] = route.FirstTargetId,
+                ["ordered_node_ids"] = new JArray(route.OrderedNodeIds),
+                ["route_utility"] = route.RouteUtility,
+                ["intervention_level"] = route.InterventionLevel.ToString().ToLowerInvariant(),
+                ["estimator_id"] = route.EstimatorId,
+                ["estimator_version"] = route.EstimatorVersion,
+                ["edges"] = edges
             });
         }
         return result;
