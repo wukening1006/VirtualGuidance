@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 /// <summary>将 Thomas APF force direction 接入统一 Continuous steering/gain pipeline。</summary>
@@ -39,9 +40,12 @@ public sealed class ThomasApfRedirector : IRdwRedirector, IRdwRedirectorAvailabi
     /// <summary>基于当前冻结 Physical Geometry 计算 APF steering 与统一 gain。</summary>
     public RdwGainCommand Evaluate(in RdwPoseFrame pose, in RdwGeometrySnapshot geometry, in RdwNavigationIntent intent)
     {
-        if (!pose.IsValid || !geometry.IsValid || !intent.IsValid)
+        if (!pose.IsValid || !geometry.IsValid || !intent.IsValid || !MatchesGeometryIdentity(pose, geometry))
         {
-            return ReturnInvalid(pose.Sequence, geometry.SteeringCenterXZ, "thomas_apf_invalid_input");
+            var reason = pose.IsValid && geometry.IsValid && intent.IsValid
+                ? "thomas_apf_geometry_identity_mismatch"
+                : "thomas_apf_invalid_input";
+            return ReturnInvalid(pose.Sequence, geometry.SteeringCenterXZ, reason);
         }
 
         var geometrySignature = CalculateGeometrySignature(geometry);
@@ -113,6 +117,8 @@ public sealed class ThomasApfRedirector : IRdwRedirector, IRdwRedirectorAvailabi
         unchecked
         {
             var hash = 17;
+            hash = hash * 31 + (geometry.CalibrationId ?? string.Empty).GetHashCode();
+            hash = hash * 31 + geometry.UserRadiusMeters.GetHashCode();
             hash = hash * 31 + geometry.Boundary.Count;
             foreach (var point in geometry.Boundary)
             {
@@ -134,6 +140,17 @@ public sealed class ThomasApfRedirector : IRdwRedirector, IRdwRedirectorAvailabi
             }
             return hash;
         }
+    }
+
+    private static bool MatchesGeometryIdentity(
+        in RdwPoseFrame pose,
+        in RdwGeometrySnapshot geometry)
+    {
+        return (string.IsNullOrWhiteSpace(geometry.CalibrationId) ||
+                string.Equals(pose.CalibrationId, geometry.CalibrationId, StringComparison.Ordinal)) &&
+               (string.IsNullOrWhiteSpace(geometry.PhysicalSpaceId) ||
+                string.IsNullOrWhiteSpace(pose.PhysicalSpaceId) ||
+                string.Equals(pose.PhysicalSpaceId, geometry.PhysicalSpaceId, StringComparison.Ordinal));
     }
 
     private RdwGainCommand ReturnInvalid(long sequence, Vector2 center, string reason)

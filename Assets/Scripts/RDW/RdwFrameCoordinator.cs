@@ -342,17 +342,23 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             return default;
         }
 
-        var obstacleFacts = risk != null &&
-                            string.Equals(risk.physical_space, space.id, StringComparison.Ordinal)
+        var riskMatchesSpace = risk != null &&
+                               string.Equals(risk.physical_space, space.id, StringComparison.Ordinal);
+        var boundaryFacts = riskMatchesSpace ? risk.boundary_context : space.boundary;
+        var obstacleFacts = riskMatchesSpace
             ? risk.obstacle_context
             : Array.Empty<PhysicalRiskObstacleSnapshot>();
         return new RdwGeometrySnapshot(
             space.id,
-            space.boundary,
+            boundaryFacts,
             obstacleFacts,
             risk != null ? risk.risk_snapshot_id : string.Empty,
             risk != null ? risk.risk_revision : 0,
-            risk != null && risk.critical);
+            risk != null && risk.critical,
+            risk != null ? risk.calibration_id : (calibration != null ? calibration.CalibrationId : string.Empty),
+            riskMatchesSpace
+                ? risk.user_radius_meters
+                : (riskEvaluator != null ? riskEvaluator.UserRadiusMeters : 0f));
     }
 
     private bool IsImmediateHardStop()

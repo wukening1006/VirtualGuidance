@@ -11,8 +11,11 @@ public readonly struct ThomasApfForceSettings
     public float ObstacleInfluenceRadiusMeters { get; }
     /// <summary>用户半径估计，单位：米。</summary>
     public float UserRadiusMeters { get; }
-    /// <summary>额外 geometry 安全余量，单位：米。</summary>
-    public float SafetyMarginMeters { get; }
+    /// <summary>APF 边界/障碍物斥力的影响余量，单位：米；不参与 Safety 判定。</summary>
+    public float InfluenceMarginMeters { get; }
+    /// <summary>兼容旧调用的 APF 影响余量别名；不代表 Physical Safety 阈值。</summary>
+    [Obsolete("Use InfluenceMarginMeters; this value is APF tuning, not a Safety threshold.")]
+    public float SafetyMarginMeters => InfluenceMarginMeters;
     /// <summary>Boundary 斥力权重。</summary>
     public float BoundaryStrength { get; }
     /// <summary>Obstacle 斥力权重。</summary>
@@ -39,7 +42,7 @@ public readonly struct ThomasApfForceSettings
         BoundaryInfluenceRadiusMeters = Mathf.Max(0f, boundaryInfluenceRadiusMeters);
         ObstacleInfluenceRadiusMeters = Mathf.Max(0f, obstacleInfluenceRadiusMeters);
         UserRadiusMeters = Mathf.Max(0f, userRadiusMeters);
-        SafetyMarginMeters = Mathf.Max(0f, safetyMarginMeters);
+        InfluenceMarginMeters = Mathf.Max(0f, safetyMarginMeters);
         BoundaryStrength = Mathf.Max(0f, boundaryStrength);
         ObstacleStrength = Mathf.Max(0f, obstacleStrength);
         MaxForceMagnitude = Mathf.Max(0f, maxForceMagnitude);
@@ -49,6 +52,21 @@ public readonly struct ThomasApfForceSettings
     
     /// <summary>返回默认 Thomas APF 参数。</summary>
     public static ThomasApfForceSettings Default => new ThomasApfForceSettings();
+
+    /// <summary>以冻结 Physical Fact 覆盖参与者半径，不改变任何 APF tuning。</summary>
+    public ThomasApfForceSettings WithUserRadiusMeters(float userRadiusMeters)
+    {
+        return new ThomasApfForceSettings(
+            BoundaryInfluenceRadiusMeters,
+            ObstacleInfluenceRadiusMeters,
+            userRadiusMeters,
+            InfluenceMarginMeters,
+            BoundaryStrength,
+            ObstacleStrength,
+            MaxForceMagnitude,
+            NeutralForceEpsilon,
+            DistanceEpsilonMeters);
+    }
 }
 
 /// <summary>Thomas APF 的可记录纯计算结果。</summary>
@@ -249,7 +267,7 @@ public sealed class ThomasApfForceEvaluator
             var direction = distance > settings.DistanceEpsilonMeters
                 ? offset / distance
                 : InwardNormal(end - start, signedArea);
-            var effectiveDistance = Mathf.Max(distance - settings.SafetyMarginMeters, settings.DistanceEpsilonMeters);
+            var effectiveDistance = Mathf.Max(distance - settings.InfluenceMarginMeters, settings.DistanceEpsilonMeters);
             var falloff = 1f - Mathf.Clamp01(distance / settings.BoundaryInfluenceRadiusMeters);
             var magnitude = settings.BoundaryStrength * falloff / (effectiveDistance * effectiveDistance);
             var contribution = direction * magnitude;
@@ -294,7 +312,7 @@ public sealed class ThomasApfForceEvaluator
                 isFinite = false;
                 return Vector2.zero;
             }
-            var clearance = centerDistance - Mathf.Max(0f, obstacle.radius) - settings.UserRadiusMeters - settings.SafetyMarginMeters;
+            var clearance = centerDistance - Mathf.Max(0f, obstacle.radius) - settings.UserRadiusMeters - settings.InfluenceMarginMeters;
             if (clearance >= settings.ObstacleInfluenceRadiusMeters)
             {
                 continue;

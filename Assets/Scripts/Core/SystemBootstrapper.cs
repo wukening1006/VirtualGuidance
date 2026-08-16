@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 /// <summary>
 /// MainScene 的唯一组合根，负责校验显式引用、配置系统并连接跨模块事件。
@@ -34,52 +35,81 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Header("RDW 与安全")]
     [SerializeField] private PauseResetController pauseResetController;
     [SerializeField] private RotationGainController rotationGainController;
-    [Header("Continuous RDW")]
+    [Header("Continuous RDW - 基础设置")]
     [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
+    [InspectorName("启用 Continuous RDW")]
     [SerializeField] private bool continuousRdwEnabled = true;
     [Tooltip("Continuous Redirector 模式；None、S2C、S2O 或 ThomasAPF 可用于同一实验配置切换。")]
+    [InspectorName("重定向算法")]
     [SerializeField] private ContinuousRedirectorMode continuousRedirectorMode = ContinuousRedirectorMode.S2C;
+
+    [Header("Continuous RDW - 通用增益参数")]
     [Tooltip("触发曲率增益的最小物理移动速度，单位：米/秒。")]
+    [InspectorName("移动触发阈值 (m/s)")]
     [SerializeField] private float s2cMovementThresholdMetersPerSecond = 0.2f;
     [Tooltip("触发旋转增益的最小物理转速，单位：度/秒。")]
+    [InspectorName("旋转触发阈值 (°/s)")]
     [SerializeField] private float s2cRotationThresholdDegreesPerSecond = 1.5f;
     [Tooltip("三种 Continuous steering 算法共享的曲率半径，单位：米。")]
+    [InspectorName("曲率半径 (m)")]
     [SerializeField] private float s2cCurvatureRadiusMeters = 10f;
     [Tooltip("统一 GainLimiter 对三种 Continuous steering 算法执行的最大曲率转速，单位：度/秒。")]
+    [InspectorName("最大曲率转速 (°/s)")]
     [SerializeField] private float s2cMaxCurvatureDegreesPerSecond = 15f;
     [Tooltip("统一 GainLimiter 对三种 Continuous steering 算法执行的最大旋转增益转速，单位：度/秒。")]
+    [InspectorName("最大旋转增益转速 (°/s)")]
     [SerializeField] private float s2cMaxRotationDegreesPerSecond = 30f;
     [Tooltip("物理转动映射为额外虚拟 yaw 的比例。")]
+    [InspectorName("旋转增益倍率")]
     [SerializeField] private float s2cRotationGainMultiplier = 0.05f;
     [Tooltip("steering angle 对增益的衰减权重，范围 0-1。")]
+    [InspectorName("导向衰减")]
     [Range(0f, 1f)] [SerializeField] private float s2cSteeringDampening = 0.75f;
     [Tooltip("三种 Continuous steering 算法共享的跨帧平滑系数，范围 0-1。")]
+    [InspectorName("跨帧平滑系数")]
     [Range(0f, 1f)] [SerializeField] private float s2cSmoothingFactor = 0.125f;
+
+    [Header("Steer-to-Center (S2C)")]
     [Tooltip("距 Steering Center 小于该值时停止导向，单位：米。")]
+    [InspectorName("中心停止容差 (m)")]
     [SerializeField] private float s2cCenterToleranceMeters = 0.15f;
     [Tooltip("进入 near-180 临时目标处理的角度阈值，单位：度。")]
+    [InspectorName("近反向角度阈值 (°)")]
     [Range(90f, 179f)] [SerializeField] private float s2cNearOppositeAngleDegrees = 160f;
     [Tooltip("near-180 时临时 steering bearing，单位：度。")]
+    [InspectorName("近反向临时导向角 (°)")]
     [Range(1f, 90f)] [SerializeField] private float s2cOppositeTemporaryBearingDegrees = 90f;
+
+    [Header("Steer-to-Orbit (S2O)")]
     [Tooltip("S2O 轨道半径，单位：米；会受 boundary safety margin 限制。")]
+    [InspectorName("轨道半径 (m)")]
     [SerializeField] private float s2oOrbitRadiusMeters = 1.5f;
     [Tooltip("S2O 轨道距 Boundary 的最小安全余量，单位：米。")]
+    [InspectorName("边界安全余量 (m)")]
     [SerializeField] private float s2oOrbitBoundarySafetyMarginMeters = 0.25f;
     [Tooltip("S2O 切换 CW/CCW 的最小优势角，单位：度。")]
+    [InspectorName("方向切换滞回角 (°)")]
     [SerializeField] private float s2oSideSwitchHysteresisDegrees = 12f;
+
+    [Header("Thomas Artificial Potential Field (APF)")]
     [Tooltip("Thomas APF Boundary 产生斥力的影响半径，单位：米。")]
+    [InspectorName("边界影响半径 (m)")]
     [SerializeField] private float thomasApfBoundaryInfluenceRadiusMeters = 1.5f;
     [Tooltip("Thomas APF Obstacle 产生斥力的影响半径，单位：米。")]
+    [InspectorName("障碍物影响半径 (m)")]
     [SerializeField] private float thomasApfObstacleInfluenceRadiusMeters = 1.5f;
-    [Tooltip("Thomas APF 估计的用户半径，单位：米。")]
-    [SerializeField] private float thomasApfUserRadiusMeters = 0.25f;
-    [Tooltip("Thomas APF 的额外几何安全余量，单位：米。")]
-    [SerializeField] private float thomasApfSafetyMarginMeters = 0.15f;
+    [Tooltip("Thomas APF 的额外影响余量，单位：米；这是 APF 斥力 tuning，不是 Physical Safety 阈值。")]
+    [InspectorName("APF 影响余量 (m)")]
+    [FormerlySerializedAs("thomasApfSafetyMarginMeters")]
+    [SerializeField] private float thomasApfInfluenceMarginMeters = 0.15f;
     [Tooltip("Thomas APF Boundary 斥力权重。")]
+    [InspectorName("边界斥力权重")]
     [SerializeField] private float thomasApfBoundaryStrength = 1f;
     [Tooltip("Thomas APF Obstacle 斥力权重。")]
+    [InspectorName("障碍物斥力权重")]
     [SerializeField] private float thomasApfObstacleStrength = 1f;
     [Tooltip("Thomas APF 单帧最大合力，防止近边界数值爆炸。")]
+    [InspectorName("单帧最大合力")]
     [SerializeField] private float thomasApfMaxForceMagnitude = 100f;
 
     [Header("RDW 约束规划")]
@@ -287,13 +317,21 @@ public sealed class SystemBootstrapper : MonoBehaviour
             limiter: rdwGainLimiter,
             dashboard: experimentDashboard,
             continuousEnabled: continuousRdwEnabled);
-        var planningEstimator = new S2CPlanningCostEstimator(
-            new PhysicalRiskPlanningDirectionEvaluator(riskEvaluator),
-            s2cCurvatureRadiusMeters);
         var continuousPlanningAvailable = continuousRdwEnabled &&
                                           continuousRedirectorMode != ContinuousRedirectorMode.None;
+        var planningEstimator = RdwPlanningCostEstimatorFactory.Create(
+            continuousRedirectorMode,
+            continuousPlanningAvailable,
+            new PhysicalRiskPlanningDirectionEvaluator(riskEvaluator),
+            s2cCurvatureRadiusMeters,
+            s2oOrbitRadiusMeters,
+            s2oOrbitBoundarySafetyMarginMeters,
+            s2oSideSwitchHysteresisDegrees,
+            CreateThomasApfSettings());
         var planningCapability = new RdwCapabilityProfile(
-            continuousRedirectorType: continuousPlanningAvailable ? continuousRedirectorMode.ToString() : "None",
+            continuousRedirectorType: RdwPlanningCostEstimatorFactory.RedirectorType(
+                continuousRedirectorMode,
+                continuousPlanningAvailable),
             resetterType: "SafeHeadingMapping",
             rotationGainAllowed: continuousPlanningAvailable,
             curvatureGainAllowed: continuousPlanningAvailable,
@@ -373,17 +411,22 @@ public sealed class SystemBootstrapper : MonoBehaviour
                     s2cRotationGainMultiplier,
                     s2cSteeringDampening,
                     s2cSmoothingFactor,
-                    new ThomasApfForceSettings(
-                        thomasApfBoundaryInfluenceRadiusMeters,
-                        thomasApfObstacleInfluenceRadiusMeters,
-                        thomasApfUserRadiusMeters,
-                        thomasApfSafetyMarginMeters,
-                        thomasApfBoundaryStrength,
-                        thomasApfObstacleStrength,
-                        thomasApfMaxForceMagnitude));
+                    CreateThomasApfSettings());
             default:
                 return new NullRedirector();
         }
+    }
+
+    private ThomasApfForceSettings CreateThomasApfSettings()
+    {
+        return new ThomasApfForceSettings(
+            thomasApfBoundaryInfluenceRadiusMeters,
+            thomasApfObstacleInfluenceRadiusMeters,
+            riskEvaluator != null ? riskEvaluator.UserRadiusMeters : 0f,
+            thomasApfInfluenceMarginMeters,
+            thomasApfBoundaryStrength,
+            thomasApfObstacleStrength,
+            thomasApfMaxForceMagnitude);
     }
 
     private void WireEvents()

@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -129,7 +130,10 @@ internal static class RdwPlanningTestFactory
         string estimatorVersion,
         bool poseValid = true,
         int taskStateVersion = 3,
-        string snapshotId = "snapshot-test")
+        string snapshotId = "snapshot-test",
+        Vector2 physicalPosition = default(Vector2),
+        Vector2 physicalForward = default(Vector2),
+        IEnumerable<PhysicalRiskObstacleSnapshot> obstacles = null)
     {
         var boundary = new[]
         {
@@ -146,20 +150,26 @@ internal static class RdwPlanningTestFactory
             riskPolicyVersion: GuidanceProtocolVersions.RiskPolicy,
             snapshotSource: "unity",
             physicalSpace: "space-test",
-            physicalPosition: Vector2.zero,
-            physicalForward: Vector2.up,
+            physicalPosition: physicalPosition,
+            physicalForward: physicalForward.sqrMagnitude > 0.000001f ? physicalForward : Vector2.up,
             boundaryContext: boundary,
+            obstacleContext: obstacles,
             boundaryRisk: "low",
             resetRisk: "low",
-            currentHeading: new HeadingSample(0f, Vector2.up, 4f, HeadingSafety.Safe));
+            currentHeading: new HeadingSample(0f, physicalForward.sqrMagnitude > 0.000001f ? physicalForward : Vector2.up, 4f, HeadingSafety.Safe),
+            userRadiusMeters: 0.22f);
         var geometry = new RdwGeometrySnapshot(
             "space-test",
             boundary,
-            null,
+            obstacles,
             "risk-test",
-            7);
+            7,
+            false,
+            "calibration-test",
+            0.22f);
+        var redirectorType = RedirectorTypeForEstimator(estimatorId);
         var capability = new RdwCapabilityProfile(
-            continuousRedirectorType: "S2C",
+            continuousRedirectorType: redirectorType,
             resetterType: "SafeHeadingMapping",
             rotationGainAllowed: true,
             curvatureGainAllowed: true,
@@ -171,8 +181,8 @@ internal static class RdwPlanningTestFactory
             snapshotId,
             12,
             4.2d,
-            Vector2.zero,
-            Vector2.up,
+            physicalPosition,
+            physicalForward.sqrMagnitude > 0.000001f ? physicalForward : Vector2.up,
             Vector2.zero,
             Vector2.up,
             "calibration-test",
@@ -188,6 +198,14 @@ internal static class RdwPlanningTestFactory
             risk,
             capability,
             poseValid);
+    }
+
+    private static string RedirectorTypeForEstimator(string estimatorId)
+    {
+        if (string.Equals(estimatorId, "s2o-planning", System.StringComparison.Ordinal)) return "S2O";
+        if (string.Equals(estimatorId, "thomas-apf-planning", System.StringComparison.Ordinal)) return "ThomasAPF";
+        if (string.Equals(estimatorId, "neutral-planning", System.StringComparison.Ordinal)) return "None";
+        return "S2C";
     }
 
     /// <summary>创建规划测试节点。</summary>

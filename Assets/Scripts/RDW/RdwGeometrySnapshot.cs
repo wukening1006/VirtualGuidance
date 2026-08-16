@@ -13,6 +13,8 @@ public readonly struct RdwGeometrySnapshot
 
     /// <summary>该几何快照所属的 Physical Space ID。</summary>
     public string PhysicalSpaceId { get; }
+    /// <summary>生成该几何快照的 Calibration ID。</summary>
+    public string CalibrationId { get; }
     /// <summary>边界顶点的只读副本，单位：米。</summary>
     public IReadOnlyList<Vector2> Boundary => boundary ?? Array.Empty<Vector2>();
     /// <summary>障碍物事实的只读副本。</summary>
@@ -28,6 +30,8 @@ public readonly struct RdwGeometrySnapshot
     public int RiskRevision { get; }
     /// <summary>同源 PhysicalRiskEvaluator 是否报告 Critical；仅用于清理算法历史。</summary>
     public bool IsCriticalRisk { get; }
+    /// <summary>PhysicalRiskEvaluator 使用的参与者半径事实，单位：米。</summary>
+    public float UserRadiusMeters { get; }
     /// <summary>快照是否具备可供后续 Redirector 使用的最小边界事实。</summary>
     public bool IsValid => !string.IsNullOrWhiteSpace(PhysicalSpaceId) && Boundary.Count >= 3 && steeringCenterValid;
 
@@ -38,9 +42,12 @@ public readonly struct RdwGeometrySnapshot
         IEnumerable<PhysicalRiskObstacleSnapshot> obstacleFacts,
         string riskSnapshotId = "",
         int riskRevision = 0,
-        bool isCriticalRisk = false)
+        bool isCriticalRisk = false,
+        string calibrationId = "",
+        float userRadiusMeters = 0f)
     {
         PhysicalSpaceId = physicalSpaceId ?? string.Empty;
+        CalibrationId = calibrationId ?? string.Empty;
         var boundaryCopy = new List<Vector2>(boundaryPoints ?? Array.Empty<Vector2>()).ToArray();
         boundary = Array.AsReadOnly(boundaryCopy);
         obstacles = Array.AsReadOnly(new List<PhysicalRiskObstacleSnapshot>(
@@ -50,6 +57,7 @@ public readonly struct RdwGeometrySnapshot
         RiskSnapshotId = riskSnapshotId ?? string.Empty;
         RiskRevision = Math.Max(0, riskRevision);
         IsCriticalRisk = isCriticalRisk;
+        UserRadiusMeters = Mathf.Max(0f, userRadiusMeters);
     }
 
     private static Vector2 CalculateSteeringCenter(

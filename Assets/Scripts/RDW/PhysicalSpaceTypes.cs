@@ -137,6 +137,8 @@ public sealed class PhysicalRiskState
     public string source { get; }
     /// <summary>当前 Physical Tracking Space ID。</summary>
     public string physical_space { get; }
+    /// <summary>PhysicalRiskEvaluator 使用的参与者半径事实，单位：米。</summary>
+    public float user_radius_meters { get; }
     /// <summary>用户在 Physical XZ 平面中的位置，单位：米。</summary>
     public Vector2 user_physical_position { get; }
     /// <summary>用户在 Physical XZ 平面中的单位前向方向。</summary>
@@ -173,7 +175,8 @@ public sealed class PhysicalRiskState
         string resetRisk = "",
         bool isCritical = false,
         bool resetRequired = false,
-        HeadingSample currentHeading = default(HeadingSample))
+        HeadingSample currentHeading = default(HeadingSample),
+        float userRadiusMeters = 0f)
     {
         risk_snapshot_id = riskSnapshotId ?? string.Empty;
         risk_revision = Math.Max(0, riskRevision);
@@ -182,6 +185,7 @@ public sealed class PhysicalRiskState
         risk_policy_version = riskPolicyVersion ?? string.Empty;
         source = snapshotSource ?? string.Empty;
         physical_space = physicalSpace ?? string.Empty;
+        user_radius_meters = Math.Max(0f, userRadiusMeters);
         user_physical_position = physicalPosition;
         user_physical_forward = physicalForward;
         boundary_context = Array.AsReadOnly(new List<Vector2>(boundaryContext ?? Array.Empty<Vector2>()).ToArray());

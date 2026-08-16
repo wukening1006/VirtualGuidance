@@ -60,7 +60,10 @@ public sealed class RdwPlanningSnapshotFactory
                 riskState.boundary_context,
                 riskState.obstacle_context,
                 riskState.risk_snapshot_id,
-                riskState.risk_revision)
+                riskState.risk_revision,
+                riskState.critical,
+                riskState.calibration_id,
+                riskState.user_radius_meters)
             : default;
         var visited = runtimeState != null
             ? runtimeState.visitedDetourIds
