@@ -16,6 +16,235 @@ CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
 
 
+class SceneLayoutSize(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    width: float
+    length: float
+
+
+class SceneLayoutBounds(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    x_min: float
+    x_max: float
+    z_min: float
+    z_max: float
+
+
+class SceneLayout(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    units: str = Field(min_length=1)
+    floor_origin: list[float]
+    floor_center: list[float]
+    floor_size_m: SceneLayoutSize
+    floor_bounds: SceneLayoutBounds
+    entrance_side: str = Field(min_length=1)
+
+    @field_validator("floor_origin", "floor_center")
+    @classmethod
+    def validate_layout_vectors(cls, value: list[float]) -> list[float]:
+        if len(value) != 3 or any(not math.isfinite(item) for item in value):
+            raise ValueError("Layout vectors must be finite 3D arrays.")
+        return value
+
+
+class SceneTheme(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class SceneBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    scene_path: str = Field(min_length=1)
+    position: list[float]
+    viewpoint: list[float]
+    gaze_target: list[float]
+
+    @field_validator("position", "viewpoint", "gaze_target")
+    @classmethod
+    def validate_binding_vectors(cls, value: list[float]) -> list[float]:
+        if len(value) != 3 or any(not math.isfinite(item) for item in value):
+            raise ValueError("Scene binding vectors must be finite 3D arrays.")
+        return value
+
+
+class SceneInterpretationNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    note: str | None = None
+
+
+class SceneKnowledge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    material: list[str] | None
+    culture: str = Field(min_length=1)
+    chronology: str = Field(min_length=1)
+    archaeological_context: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_features: list[str] = Field(min_length=1)
+    cultural_significance: list[str] = Field(min_length=1)
+    key_concepts: list[str] = Field(min_length=1)
+    themes: list[str] = Field(min_length=1)
+    interpretation_notes: list[SceneInterpretationNote]
+
+    @field_validator("material", "visual_features", "cultural_significance", "key_concepts", "themes")
+    @classmethod
+    def validate_knowledge_lists(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(not item.strip() for item in value):
+            raise ValueError("Knowledge list entries must be non-empty.")
+        return value
+
+
+class SceneExhibit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    aliases: list[str]
+    scene_binding: SceneBinding
+    knowledge: SceneKnowledge
+
+
+class SceneSemanticEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    relation_type: Literal[
+        "context_of",
+        "same_category",
+        "variant_of",
+        "compare_with",
+        "thematic_association",
+        "synthesis_into",
+    ]
+    directed: bool
+    description: str = Field(min_length=1)
+    evidence_status: Literal["direct", "supported", "contextual", "interpretive"]
+
+
+class SceneSpatialEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    relation_type: Literal[
+        "adjacent_central_axis",
+        "adjacent_diagonal",
+        "adjacent_branch",
+        "same_row",
+    ]
+    bidirectional: bool
+    virtual_distance_m: float = Field(gt=0)
+    relative_direction_from_source: str = Field(min_length=1)
+
+
+class SceneSemanticsDocument(BaseModel):
+    """scene_semantics.json schema_version=3 的唯一 Backend DTO。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    schema_version: Literal[3]
+    scene_id: str = Field(min_length=1)
+    scene_name: str = Field(min_length=1)
+    coordinate_system: str = Field(min_length=1)
+    layout: SceneLayout
+    themes: list[SceneTheme]
+    exhibits: list[SceneExhibit]
+    semantic_edges: list[SceneSemanticEdge]
+    spatial_edges: list[SceneSpatialEdge]
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> "SceneSemanticsDocument":
+        theme_ids = [theme.id for theme in self.themes]
+        exhibit_ids = [exhibit.id for exhibit in self.exhibits]
+        if len(theme_ids) != len(set(theme_ids)):
+            raise ValueError("duplicate_theme_id")
+        if len(exhibit_ids) != len(set(exhibit_ids)):
+            raise ValueError("duplicate_exhibit_id")
+        theme_set = set(theme_ids)
+        exhibit_set = set(exhibit_ids)
+        for exhibit in self.exhibits:
+            unknown = set(exhibit.knowledge.themes) - theme_set
+            if unknown:
+                raise ValueError(f"unknown_theme_reference:{sorted(unknown)[0]}")
+
+        semantic_ids: set[str] = set()
+        semantic_logical: set[tuple[str, str, str]] = set()
+        for edge in self.semantic_edges:
+            if edge.id in semantic_ids:
+                raise ValueError(f"duplicate_semantic_edge_id:{edge.id}")
+            semantic_ids.add(edge.id)
+            if edge.source not in exhibit_set or edge.target not in exhibit_set:
+                raise ValueError(f"broken_semantic_edge:{edge.id}")
+            if edge.source == edge.target:
+                raise ValueError(f"semantic_edge_self_loop:{edge.id}")
+            source, target = (edge.source, edge.target) if edge.directed or edge.source < edge.target else (edge.target, edge.source)
+            key = (source, target, edge.relation_type)
+            if key in semantic_logical:
+                raise ValueError(f"duplicate_semantic_logical_edge:{edge.relation_type}")
+            semantic_logical.add(key)
+
+        positions = {exhibit.id: exhibit.scene_binding.position for exhibit in self.exhibits}
+        spatial_ids: set[str] = set()
+        spatial_logical: set[tuple[str, str, str]] = set()
+        for edge in self.spatial_edges:
+            if edge.id in spatial_ids:
+                raise ValueError(f"duplicate_spatial_edge_id:{edge.id}")
+            spatial_ids.add(edge.id)
+            if edge.source not in exhibit_set or edge.target not in exhibit_set:
+                raise ValueError(f"broken_spatial_edge:{edge.id}")
+            if edge.source == edge.target:
+                raise ValueError(f"spatial_edge_self_loop:{edge.id}")
+            source, target = (edge.source, edge.target) if edge.source < edge.target else (edge.target, edge.source)
+            key = (source, target, edge.relation_type) if edge.bidirectional else (edge.source, edge.target, edge.relation_type)
+            if key in spatial_logical:
+                raise ValueError(f"duplicate_spatial_logical_edge:{edge.relation_type}")
+            spatial_logical.add(key)
+            dx = positions[edge.source][0] - positions[edge.target][0]
+            dz = positions[edge.source][2] - positions[edge.target][2]
+            computed = math.sqrt(dx * dx + dz * dz)
+            if abs(computed - edge.virtual_distance_m) > 0.05:
+                raise ValueError(f"spatial_distance_mismatch:{edge.id}")
+
+        if self.scene_id == "sanxingdui_gallery":
+            if (len(self.themes), len(self.exhibits), len(self.semantic_edges), len(self.spatial_edges)) != (7, 8, 14, 14):
+                raise ValueError("sanxingdui_graph_counts_invalid")
+            if self._counts(self.semantic_edges) != {
+                "context_of": 3, "same_category": 1, "variant_of": 1,
+                "compare_with": 3, "thematic_association": 3, "synthesis_into": 3,
+            }:
+                raise ValueError("sanxingdui_semantic_relation_counts_invalid")
+            if self._counts(self.spatial_edges) != {
+                "adjacent_central_axis": 3, "adjacent_diagonal": 8,
+                "adjacent_branch": 2, "same_row": 1,
+            }:
+                raise ValueError("sanxingdui_spatial_relation_counts_invalid")
+            if any(not edge.bidirectional for edge in self.spatial_edges):
+                raise ValueError("sanxingdui_spatial_edges_must_be_bidirectional")
+        return self
+
+    @staticmethod
+    def _counts(edges: list[Any]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for edge in edges:
+            counts[edge.relation_type] = counts.get(edge.relation_type, 0) + 1
+        return counts
+
+
 class Condition(str, Enum):
     """实验条件枚举，需要在 Unity、后端日志和分析脚本之间保持稳定。"""
 
@@ -114,8 +343,45 @@ class RouteDecision(str, Enum):
     REGUIDANCE_SAME_TARGET = "reguidance_same_target"
 
 
+class CandidateInterpretationNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    note: str | None = None
+
+
+class CandidateSemanticEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    relation_type: Literal[
+        "context_of", "same_category", "variant_of", "compare_with",
+        "thematic_association", "synthesis_into",
+    ]
+    directed: bool
+    description: str = Field(min_length=1)
+    evidence_status: Literal["direct", "supported", "contextual", "interpretive"]
+
+
+class CandidateSpatialEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    relation_type: Literal[
+        "adjacent_central_axis", "adjacent_diagonal", "adjacent_branch", "same_row",
+    ]
+    bidirectional: bool
+    virtual_distance_m: float = Field(gt=0)
+    relative_direction_from_source: str = Field(min_length=1)
+
+
 class SemanticCandidate(BaseModel):
-    """Unity 冻结并提供给模型的候选语义元数据。"""
+    """Unity 冻结并提供给模型的 v3 候选知识上下文。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -128,18 +394,19 @@ class SemanticCandidate(BaseModel):
         "turn_left_slowly",
         "turn_right_slowly",
     ] = Field(exclude=True)
-    name: str = ""
-    description: str = ""
-    semantic_role: str = ""
-    tags: list[str] = Field(default_factory=list)
-    related_exhibits: list[str] = Field(default_factory=list)
-
-    @field_validator("tags", "related_exhibits")
-    @classmethod
-    def validate_unique_metadata(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("Candidate metadata values must be unique.")
-        return value
+    name: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    culture: str = Field(min_length=1)
+    chronology: str = Field(min_length=1)
+    archaeological_context: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_features: list[str]
+    cultural_significance: list[str]
+    key_concepts: list[str]
+    themes: list[str]
+    interpretation_notes: list[CandidateInterpretationNote]
+    semantic_edges: list[CandidateSemanticEdge]
+    spatial_edges: list[CandidateSpatialEdge]
 
 
 class MovementInstruction(str, Enum):
@@ -592,10 +859,17 @@ class GuidanceLogRecord(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
     status: str
     version: str
     physical_spaces: list[str]
+    scene_id: str
+    schema_version: int
     exhibit_count: int
+    semantic_edge_count: int
+    spatial_edge_count: int
+    semantic_ready: bool
 
 
 def project_to_xz(value: list[float]) -> tuple[float, float]:

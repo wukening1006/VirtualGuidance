@@ -117,7 +117,7 @@ public sealed class GuidanceRiskSnapshot
     }
 }
 
-/// <summary>发送给 Backend/MLLM 的候选语义元数据，不参与 Unity Candidate Membership 判定。</summary>
+/// <summary>发送给 Backend/MLLM 的 v3 场景知识上下文，不参与 Unity Candidate Membership 判定。</summary>
 [Serializable]
 public sealed class GuidanceSemanticCandidate
 {
@@ -135,14 +135,30 @@ public sealed class GuidanceSemanticCandidate
     public string suggested_movement_instruction;
     /// <summary>面向参与者的展品名称。</summary>
     public string name;
+    /// <summary>知识分类。</summary>
+    public string category;
+    /// <summary>文化归属。</summary>
+    public string culture;
+    /// <summary>年代信息。</summary>
+    public string chronology;
+    /// <summary>考古语境。</summary>
+    public string archaeological_context;
     /// <summary>展品语义描述。</summary>
     public string description;
-    /// <summary>场景定义的语义角色。</summary>
-    public string semantic_role;
-    /// <summary>供模型理解语义的标签，不参与候选资格判定。</summary>
-    public string[] tags = Array.Empty<string>();
-    /// <summary>供模型理解语义的关联展品，不参与 Candidate Membership。</summary>
-    public string[] related_exhibits = Array.Empty<string>();
+    /// <summary>可观察视觉特征。</summary>
+    public string[] visual_features = Array.Empty<string>();
+    /// <summary>文化意义。</summary>
+    public string[] cultural_significance = Array.Empty<string>();
+    /// <summary>关键概念。</summary>
+    public string[] key_concepts = Array.Empty<string>();
+    /// <summary>主题 ID。</summary>
+    public string[] themes = Array.Empty<string>();
+    /// <summary>知识解释边界。</summary>
+    public GuidanceInterpretationNote[] interpretation_notes = Array.Empty<GuidanceInterpretationNote>();
+    /// <summary>当前节点与候选节点之间的原始语义关系。</summary>
+    public GuidanceSemanticRelation[] semantic_edges = Array.Empty<GuidanceSemanticRelation>();
+    /// <summary>当前节点与候选节点之间的原始空间关系。</summary>
+    public GuidanceSpatialRelation[] spatial_edges = Array.Empty<GuidanceSpatialRelation>();
 
     /// <summary>从不可变导航候选创建独立协议副本。</summary>
     public static GuidanceSemanticCandidate From(NavigationCandidate candidate)
@@ -163,10 +179,27 @@ public sealed class GuidanceSemanticCandidate
                         candidate.DisplayLabel,
                         candidate.PoseRevision))),
                 name = candidate.Name,
+                category = candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.category : string.Empty,
+                culture = candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.culture : string.Empty,
+                chronology = candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.chronology : string.Empty,
+                archaeological_context = candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.archaeological_context : string.Empty,
                 description = candidate.Description,
-                semantic_role = candidate.SemanticRole,
-                tags = Copy(candidate.Tags),
-                related_exhibits = Copy(candidate.RelatedExhibits)
+                visual_features = Copy(candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.visual_features : null),
+                cultural_significance = Copy(candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.cultural_significance : null),
+                key_concepts = Copy(candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.key_concepts : null),
+                themes = Copy(candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.themes : null),
+                interpretation_notes = CopyNotes(candidate.Definition != null && candidate.Definition.knowledge != null
+                    ? candidate.Definition.knowledge.interpretation_notes : null),
+                semantic_edges = CopySemanticEdges(candidate.SemanticEdges),
+                spatial_edges = CopySpatialEdges(candidate.SpatialEdges)
             };
     }
 
@@ -176,6 +209,116 @@ public sealed class GuidanceSemanticCandidate
         for (var i = 0; i < result.Length; i++) result[i] = values[i];
         return result;
     }
+
+    private static GuidanceInterpretationNote[] CopyNotes(InterpretationNote[] values)
+    {
+        if (values == null) return Array.Empty<GuidanceInterpretationNote>();
+        var result = new GuidanceInterpretationNote[values.Length];
+        for (var i = 0; i < result.Length; i++)
+        {
+            result[i] = values[i] == null ? null : new GuidanceInterpretationNote
+            {
+                statement = values[i].statement,
+                status = values[i].status,
+                note = values[i].note
+            };
+        }
+        return result;
+    }
+
+    private static GuidanceSemanticRelation[] CopySemanticEdges(System.Collections.Generic.IReadOnlyList<SemanticEdgeDefinition> values)
+    {
+        if (values == null) return Array.Empty<GuidanceSemanticRelation>();
+        var result = new GuidanceSemanticRelation[values.Count];
+        for (var i = 0; i < result.Length; i++)
+        {
+            var edge = values[i];
+            result[i] = new GuidanceSemanticRelation
+            {
+                id = edge.id,
+                source = edge.source,
+                target = edge.target,
+                relation_type = edge.relation_type,
+                directed = edge.directed.GetValueOrDefault(),
+                description = edge.description,
+                evidence_status = edge.evidence_status
+            };
+        }
+        return result;
+    }
+
+    private static GuidanceSpatialRelation[] CopySpatialEdges(System.Collections.Generic.IReadOnlyList<SpatialEdgeDefinition> values)
+    {
+        if (values == null) return Array.Empty<GuidanceSpatialRelation>();
+        var result = new GuidanceSpatialRelation[values.Count];
+        for (var i = 0; i < result.Length; i++)
+        {
+            var edge = values[i];
+            result[i] = new GuidanceSpatialRelation
+            {
+                id = edge.id,
+                source = edge.source,
+                target = edge.target,
+                relation_type = edge.relation_type,
+                bidirectional = edge.bidirectional.GetValueOrDefault(),
+                virtual_distance_m = edge.virtual_distance_m,
+                relative_direction_from_source = edge.relative_direction_from_source
+            };
+        }
+        return result;
+    }
+}
+
+/// <summary>模型可见的解释边界。</summary>
+[Serializable]
+public sealed class GuidanceInterpretationNote
+{
+    /// <summary>知识解释陈述。</summary>
+    public string statement;
+    /// <summary>原始知识可信度或解释边界状态。</summary>
+    public string status;
+    /// <summary>可选补充说明。</summary>
+    public string note;
+}
+
+/// <summary>模型可见的语义关系。</summary>
+[Serializable]
+public sealed class GuidanceSemanticRelation
+{
+    /// <summary>语义边 ID。</summary>
+    public string id;
+    /// <summary>语义边源展品 ID。</summary>
+    public string source;
+    /// <summary>语义边目标展品 ID。</summary>
+    public string target;
+    /// <summary>原始语义关系类型。</summary>
+    public string relation_type;
+    /// <summary>该关系是否有向。</summary>
+    public bool directed;
+    /// <summary>关系的知识描述。</summary>
+    public string description;
+    /// <summary>原始证据状态，不映射为导航权重。</summary>
+    public string evidence_status;
+}
+
+/// <summary>模型可见的空间关系。</summary>
+[Serializable]
+public sealed class GuidanceSpatialRelation
+{
+    /// <summary>空间边 ID。</summary>
+    public string id;
+    /// <summary>空间边源展品 ID。</summary>
+    public string source;
+    /// <summary>空间边目标展品 ID。</summary>
+    public string target;
+    /// <summary>原始虚拟空间关系类型。</summary>
+    public string relation_type;
+    /// <summary>该空间边是否双向可达。</summary>
+    public bool bidirectional;
+    /// <summary>虚拟空间距离，单位：米。</summary>
+    public float virtual_distance_m;
+    /// <summary>从源节点观察目标节点的相对方向。</summary>
+    public string relative_direction_from_source;
 }
 
 /// <summary>

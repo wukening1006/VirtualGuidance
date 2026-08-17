@@ -106,17 +106,19 @@ public sealed class RdwPlanningSnapshotFactory
 /// </summary>
 public sealed class RdwPlanningNodeFactory
 {
-    /// <summary>把现有 Candidate Set 转换为静态语义节点集合。</summary>
+    /// <summary>把 Candidate Set 与静态空间图转换为规划节点集合。</summary>
     public IReadOnlyList<PlanningNode> Capture(
-        RdwPlanningSnapshot snapshot,
-        NavigationCandidateSet candidateSet,
-        NavigationTargetManager navigationTargets)
+            RdwPlanningSnapshot snapshot,
+            NavigationCandidateSet candidateSet,
+            NavigationTargetManager navigationTargets)
     {
         var result = new List<PlanningNode>();
         if (snapshot == null || candidateSet == null || navigationTargets == null)
         {
             return result.AsReadOnly();
         }
+
+        var graph = navigationTargets.SemanticGraph;
 
         foreach (var candidate in candidateSet.Candidates)
         {
@@ -136,8 +138,25 @@ public sealed class RdwPlanningNodeFactory
                 ResolveSemanticImportance(candidate),
                 ResolveTaskRelevance(snapshot, candidate),
                 IsVisited(snapshot.VisitedNodeIds, candidate.TargetId),
-                candidate.Tags,
-                candidate.RelatedExhibits));
+                graph != null ? graph.GetSpatialNeighbors(candidate.TargetId) : Array.Empty<string>()));
+        }
+        if (!string.IsNullOrWhiteSpace(snapshot.CurrentNodeId) &&
+            !ContainsNode(result, snapshot.CurrentNodeId))
+        {
+            var currentAnchor = navigationTargets.TryGetTarget(snapshot.CurrentNodeId, out var currentMetadata)
+                ? (currentMetadata.ViewPoint != null ? currentMetadata.ViewPoint : currentMetadata.transform)
+                : null;
+            var currentPosition = currentAnchor != null
+                ? new Vector2(currentAnchor.position.x, currentAnchor.position.z)
+                : snapshot.VirtualPositionXZ;
+            result.Add(new PlanningNode(
+                snapshot.CurrentNodeId,
+                currentPosition,
+                NavigationTargetRole.RouteSubgoal,
+                0f,
+                0f,
+                true,
+                graph != null ? graph.GetSpatialNeighbors(snapshot.CurrentNodeId) : Array.Empty<string>()));
         }
         return result.AsReadOnly();
     }
@@ -155,8 +174,16 @@ public sealed class RdwPlanningNodeFactory
         NavigationCandidate candidate)
     {
         if (string.Equals(candidate.TargetId, snapshot.FinalTargetId, StringComparison.Ordinal)) return 1f;
-        if (Contains(candidate.RelatedExhibits, snapshot.FinalTargetId)) return 0.75f;
         return candidate.TargetRole == NavigationTargetRole.RouteSubgoal ? 0.65f : 0.35f;
+    }
+
+    private static bool ContainsNode(IReadOnlyList<PlanningNode> nodes, string id)
+    {
+        foreach (var node in nodes)
+        {
+            if (node != null && string.Equals(node.NodeId, id, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static bool IsVisited(IReadOnlyList<string> values, string expected)

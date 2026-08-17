@@ -357,17 +357,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E1
-  exhibitName: Introduction
-  tags:
-  - intro
-  - overview
-  - start
-  description: An introductory exhibit that gives visitors an overview of the gallery.
-  semanticRole: introduction
-  relatedExhibits:
-  - E2
-  - E3
-  - E4
   viewPoint: {fileID: 8542390914493358288}
   gazeTarget: {fileID: 762348744991818982}
 --- !u!1 &1442388602658540543

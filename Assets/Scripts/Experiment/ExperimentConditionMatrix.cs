@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -131,6 +132,38 @@ public static class ExperimentConditionMatrix
         return spec;
     }
 
+    /// <summary>
+    /// 校验矩阵内所有正式任务的展品引用是否存在于唯一静态语义图。
+    /// 此方法不改变矩阵内容，也不推导或补充路线。
+    /// </summary>
+    public static void ValidateSemanticReferences(StaticSceneSemanticGraph graph, IList<string> errors)
+    {
+        if (graph == null)
+        {
+            errors?.Add("experiment_matrix_graph_missing");
+            return;
+        }
+
+        for (var taskIndex = 0; taskIndex < TaskIds.Length; taskIndex++)
+        {
+            var spec = Build(0, taskIndex, 0, "semantic_validation");
+            ValidateExhibitReference(graph, errors, spec.startExhibitId, spec.taskId, "start_exhibit_id");
+            ValidateExhibitReference(graph, errors, spec.semanticNextTargetId, spec.taskId, "semantic_next_target_id");
+            ValidateExhibitReference(graph, errors, spec.finalTargetId, spec.taskId, "final_target_id");
+
+            if (spec.routeTargetIds == null || spec.routeTargetIds.Length == 0)
+            {
+                errors?.Add("experiment_matrix_route_missing:" + spec.taskId);
+                continue;
+            }
+
+            foreach (var exhibitId in spec.routeTargetIds)
+            {
+                ValidateExhibitReference(graph, errors, exhibitId, spec.taskId, "route_target_id");
+            }
+        }
+    }
+
     /// <summary>条件、任务与 physical space 的组合总数。</summary>
     public static int TotalCombinations => Conditions.Length * TaskIds.Length * PhysicalSpaces.Length;
 
@@ -196,6 +229,21 @@ public static class ExperimentConditionMatrix
     public static bool IsFormalTaskSupported(string taskId)
     {
         return string.Equals(taskId, "T2_main_target", StringComparison.Ordinal);
+    }
+
+    private static void ValidateExhibitReference(
+        StaticSceneSemanticGraph graph,
+        IList<string> errors,
+        string exhibitId,
+        string taskId,
+        string field)
+    {
+        if (string.IsNullOrWhiteSpace(exhibitId) || !graph.TryGetExhibit(exhibitId, out _))
+        {
+            errors?.Add(
+                "unknown_exhibit_reference:experiment_matrix." + taskId + "." + field + ":" +
+                (exhibitId ?? string.Empty));
+        }
     }
 
     private static Vector2 PoseFor(string physicalSpaceId)

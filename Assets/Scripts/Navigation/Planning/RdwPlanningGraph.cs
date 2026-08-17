@@ -3,12 +3,11 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 保存局部导航图中的静态语义节点事实。
+/// 保存局部导航图中的运行时节点事实与静态空间邻接。
 /// </summary>
 public sealed class PlanningNode
 {
-    private readonly IReadOnlyList<string> tags;
-    private readonly IReadOnlyList<string> relatedNodeIds;
+    private readonly IReadOnlyList<string> spatialNeighborIds;
 
     /// <summary>节点唯一 ID。</summary>
     public string NodeId { get; }
@@ -22,10 +21,8 @@ public sealed class PlanningNode
     public float TaskRelevance { get; }
     /// <summary>创建快照时该节点是否已访问。</summary>
     public bool Visited { get; }
-    /// <summary>节点语义标签的只读副本。</summary>
-    public IReadOnlyList<string> Tags => tags;
-    /// <summary>显式相关节点 ID 的只读副本。</summary>
-    public IReadOnlyList<string> RelatedNodeIds => relatedNodeIds;
+    /// <summary>静态虚拟空间拓扑邻居的只读副本。</summary>
+    public IReadOnlyList<string> SpatialNeighborIds => spatialNeighborIds;
 
     /// <summary>创建不可变的规划节点。</summary>
     public PlanningNode(
@@ -35,8 +32,7 @@ public sealed class PlanningNode
         float semanticImportance,
         float taskRelevance,
         bool visited,
-        IEnumerable<string> semanticTags = null,
-        IEnumerable<string> relatedIds = null)
+        IEnumerable<string> spatialNeighbors = null)
     {
         NodeId = nodeId ?? string.Empty;
         VirtualPositionXZ = virtualPositionXZ;
@@ -44,8 +40,7 @@ public sealed class PlanningNode
         SemanticImportance = Mathf.Clamp01(semanticImportance);
         TaskRelevance = Mathf.Clamp01(taskRelevance);
         Visited = visited;
-        tags = Array.AsReadOnly(new List<string>(semanticTags ?? Array.Empty<string>()).ToArray());
-        relatedNodeIds = Array.AsReadOnly(new List<string>(relatedIds ?? Array.Empty<string>()).ToArray());
+        spatialNeighborIds = Array.AsReadOnly(new List<string>(spatialNeighbors ?? Array.Empty<string>()).ToArray());
     }
 }
 
@@ -60,7 +55,7 @@ public sealed class PlanningEdge
     public string ToNodeId { get; }
     /// <summary>Virtual XZ 距离，单位：米。</summary>
     public float DistanceMeters { get; }
-    /// <summary>静态空间与语义关系是否允许连接。</summary>
+    /// <summary>静态空间拓扑是否允许连接。</summary>
     public bool Reachable { get; }
     /// <summary>静态不可达原因码。</summary>
     public string ReachabilityReason { get; }
@@ -190,7 +185,7 @@ public sealed class RdwLocalGraphBuilder
     }
 
     /// <summary>
-    /// 构建 Local Graph；显式 related 关系允许跨越普通距离限制。
+    /// 构建 Local Graph；唯一静态连接来源是 spatial_edges，距离只作为边事实。
     /// </summary>
     public LocalNavigationGraph Build(
         RdwPlanningSnapshot snapshot,
@@ -233,8 +228,7 @@ public sealed class RdwLocalGraphBuilder
                 }
 
                 var distance = Vector2.Distance(from.VirtualPositionXZ, to.VirtualPositionXZ);
-                var explicitlyRelated = Contains(from.RelatedNodeIds, to.NodeId);
-                var reachable = explicitlyRelated || distance <= maximumEdgeDistanceMeters;
+                var reachable = Contains(from.SpatialNeighborIds, to.NodeId);
                 edges.Add(new PlanningEdge(
                     from.NodeId,
                     to.NodeId,

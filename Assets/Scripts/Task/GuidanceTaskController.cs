@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
@@ -21,6 +22,41 @@ public sealed class GuidanceTaskController : MonoBehaviour
     public GuidanceRuntimeState RuntimeState => runtimeState;
     /// <summary>当前任务使用的实验 Condition ID。</summary>
     public string CurrentCondition => defaultTask.condition;
+
+    /// <summary>校验当前任务的所有展品 ID 是否存在于唯一静态语义图。</summary>
+    public void ValidateSemanticReferences(StaticSceneSemanticGraph graph, IList<string> errors)
+    {
+        if (graph == null)
+        {
+            errors?.Add("task_references_graph_missing");
+            return;
+        }
+
+        ValidateExhibitReference(graph, errors, defaultTask.startExhibitId, "task.start_exhibit_id");
+        ValidateExhibitReference(graph, errors, defaultTask.finalTargetId, "task.final_target_id");
+        if (defaultTask.routeTargetIds == null || defaultTask.routeTargetIds.Length == 0)
+        {
+            errors?.Add("task.route_target_ids_missing");
+            return;
+        }
+
+        foreach (var targetId in defaultTask.routeTargetIds)
+        {
+            ValidateExhibitReference(graph, errors, targetId, "task.route_target_id");
+        }
+    }
+
+    private static void ValidateExhibitReference(
+        StaticSceneSemanticGraph graph,
+        IList<string> errors,
+        string exhibitId,
+        string field)
+    {
+        if (string.IsNullOrWhiteSpace(exhibitId) || !graph.TryGetExhibit(exhibitId, out _))
+        {
+            errors?.Add("unknown_exhibit_reference:" + field + ":" + (exhibitId ?? string.Empty));
+        }
+    }
 
     /// <summary>
     /// 从配置路线的首个展品开始任务，并将第二个展品设为下一目标。

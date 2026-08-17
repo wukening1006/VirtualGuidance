@@ -23,6 +23,12 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Tooltip("XR 头显 Tracking 适配器。")]
     [SerializeField] private XRTrackingAdapter xrTrackingAdapter;
 
+    [Header("静态场景语义")]
+    [Tooltip("Build-safe 的 schema_version=3 场景语义配置；缺失时禁止启动正式会话。")]
+    [SerializeField] private TextAsset sceneSemanticsJson;
+    [Tooltip("JSON 场景位置与 MainScene Anchor 的校验容差，单位：米。")]
+    [SerializeField, Min(0f)] private float semanticBindingToleranceMeters = 0.05f;
+
     [Header("任务与导览")]
     [SerializeField] private AgentClient agentClient;
     [SerializeField] private GuidanceCoordinator guidanceCoordinator;
@@ -141,6 +147,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
     private bool initialized;
     private RdwGainApplier rdwGainApplier;
     private RdwFrameCoordinator rdwFrameCoordinator;
+    private StaticSceneSemanticGraph semanticGraph;
 
     /// <summary>
     /// 当前组合根是否已完成一次成功初始化。
@@ -153,6 +160,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
     public SceneReadinessReport Readiness { get; private set; } = SceneReadinessReport.NotEvaluated;
     /// <summary>Step 2A 当前使用的统一 RDW 帧事务入口。</summary>
     public RdwFrameCoordinator RdwFrameCoordinator => rdwFrameCoordinator;
+    /// <summary>启动时加载的唯一静态场景语义图。</summary>
+    public StaticSceneSemanticGraph SemanticGraph => semanticGraph;
 
     private void Awake()
     {
@@ -178,6 +187,13 @@ public sealed class SystemBootstrapper : MonoBehaviour
             return false;
         }
 
+        Debug.Log(
+            $"scene_semantics_loaded schema_version={semanticGraph.SchemaVersion} " +
+            $"scene_id={semanticGraph.SceneId} exhibits={semanticGraph.Exhibits.Count} " +
+            $"themes={semanticGraph.Themes.Count} semantic_edges={semanticGraph.SemanticEdges.Count} " +
+            $"spatial_edges={semanticGraph.SpatialEdges.Count} scene_bindings={semanticGraph.Exhibits.Count} " +
+            $"semantic_ready={(Readiness.SemanticReady ? "true" : "false")}",
+            this);
         ConfigureSystems();
         WireEvents();
         EvaluateInitialState();
@@ -191,6 +207,47 @@ public sealed class SystemBootstrapper : MonoBehaviour
     public SceneReadinessReport ValidateReferences()
     {
         var missing = new List<string>();
+        var semanticConfigLoaded = false;
+        var semanticSchemaValid = false;
+        var semanticGraphValid = false;
+        var sceneBindingValid = false;
+        var taskReferencesValid = false;
+        semanticGraph = null;
+        if (sceneSemanticsJson == null)
+        {
+            missing.Add("semantic_config_text_asset");
+        }
+        else if (!SceneSemanticsLoader.TryLoadJson(sceneSemanticsJson.text, out semanticGraph, out var semanticError))
+        {
+            missing.Add("semantic_config_invalid:" + semanticError);
+        }
+        else
+        {
+            semanticConfigLoaded = true;
+            semanticSchemaValid = semanticGraph.SchemaVersion == 3;
+            semanticGraphValid = semanticSchemaValid && semanticGraph.Exhibits.Count > 0;
+            if (!semanticSchemaValid) missing.Add("semantic_schema_invalid");
+
+            var binding = SceneSemanticBindingValidator.ValidateLoadedScene(
+                semanticGraph,
+                semanticBindingToleranceMeters,
+                semanticBindingToleranceMeters,
+                semanticBindingToleranceMeters);
+            sceneBindingValid = binding.IsValid;
+            if (!sceneBindingValid)
+            {
+                foreach (var error in binding.Errors) missing.Add(error);
+            }
+
+            if (taskController != null)
+            {
+                var taskErrors = new List<string>();
+                taskController.ValidateSemanticReferences(semanticGraph, taskErrors);
+                ExperimentConditionMatrix.ValidateSemanticReferences(semanticGraph, taskErrors);
+                taskReferencesValid = taskErrors.Count == 0;
+                missing.AddRange(taskErrors);
+            }
+        }
         AddIfMissing(missing, physicalSpaceManager, nameof(physicalSpaceManager));
         AddIfMissing(missing, userPoseTracker, nameof(userPoseTracker));
         AddIfMissing(missing, physicalSpaceCalibration, nameof(physicalSpaceCalibration));
@@ -229,7 +286,13 @@ public sealed class SystemBootstrapper : MonoBehaviour
                 missing.Add("userPoseTracker.virtualPoseHierarchy");
             }
         }
-        return new SceneReadinessReport(missing);
+        return new SceneReadinessReport(
+            missing,
+            semanticConfigLoaded,
+            semanticSchemaValid,
+            semanticGraphValid,
+            sceneBindingValid,
+            taskReferencesValid);
     }
 
     private void ConfigureSystems()
@@ -246,7 +309,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
         motionDetector.Configure(userPoseTracker);
         xrTrackingAdapter.Configure(userPoseTracker, physicalSpaceCalibration);
         boundaryVisualizer.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, physicalSpaceCalibration);
-        navigationTargetManager.Configure(userPoseTracker);
+        navigationTargetManager.Configure(userPoseTracker, semanticGraph);
         navigationTargetManager.RebuildIndex();
         semanticTargetSelector.Configure(navigationTargetManager, riskEvaluator);
         arrivalDetector.Configure(userPoseTracker, navigationTargetManager);

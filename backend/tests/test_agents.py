@@ -20,6 +20,56 @@ from backend.schemas import (
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
 
 
+def semantic_candidate(target_id: str) -> dict:
+    names = {"E5": "青铜神树", "E3": "青铜纵目面具", "E4": "青铜大立人像"}
+    return {
+        "id": target_id,
+        "target_role": "final_target" if target_id == "E5" else "navigable_detour",
+        "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
+        "relative_yaw_deg": {"E5": 0.0, "E3": -90.0, "E4": 90.0}[target_id],
+        "suggested_movement_instruction": {
+            "E5": "move_forward_slowly",
+            "E3": "turn_left_slowly",
+            "E4": "turn_right_slowly",
+        }[target_id],
+        "name": names[target_id],
+        "category": "三星堆青铜器",
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "中国青铜时代",
+        "archaeological_context": "三星堆遗址祭祀区出土器物。",
+        "description": "用于验证 v3 MLLM 候选知识上下文。",
+        "visual_features": ["青铜造型"],
+        "cultural_significance": ["古蜀文明"],
+        "key_concepts": ["祭祀", "宇宙观"],
+        "themes": ["TH_RITUAL"],
+        "interpretation_notes": [
+            {"statement": "具体用途仍需结合考古语境解释。", "status": "interpretive"}
+        ],
+        "semantic_edges": [] if target_id == "E5" else [
+            {
+                "id": f"SE_TEST_{target_id}",
+                "source": "E1",
+                "target": target_id,
+                "relation_type": "context_of",
+                "directed": True,
+                "description": "从古蜀文明背景进入具体展品。",
+                "evidence_status": "supported",
+            }
+        ],
+        "spatial_edges": [] if target_id == "E5" else [
+            {
+                "id": f"SP_TEST_{target_id}",
+                "source": "E1",
+                "target": target_id,
+                "relation_type": "adjacent_diagonal",
+                "bidirectional": True,
+                "virtual_distance_m": 4.63,
+                "relative_direction_from_source": "diagonal",
+            }
+        ],
+    }
+
+
 def risk_snapshot(risk_id: str, calibration_id: str, position: list[float]) -> dict:
     return {
         "source": "unity",
@@ -70,17 +120,7 @@ def request_for(condition: str = Condition.OURS_FULL.value) -> GuidanceRequest:
         model_candidate_ids=model_candidates,
         allowed_candidate_ids=["E3", "E4"],
         semantic_candidates=[
-            {
-                "id": target_id,
-                "target_role": "final_target" if target_id == "E5" else "navigable_detour",
-                "relative_direction": {"E5": "forward", "E3": "left", "E4": "right"}[target_id],
-                "relative_yaw_deg": {"E5": 0.0, "E3": -90.0, "E4": 90.0}[target_id],
-                "suggested_movement_instruction": {
-                    "E5": "move_forward_slowly",
-                    "E3": "turn_left_slowly",
-                    "E4": "turn_right_slowly",
-                }[target_id],
-            }
+            semantic_candidate(target_id)
             for target_id in model_candidates
         ],
     )

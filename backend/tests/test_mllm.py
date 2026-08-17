@@ -134,11 +134,41 @@ def request_for(
                         "E3": "turn_left_slowly",
                         "E4": "turn_right_slowly",
                     }[target_id],
-                    "name": f"展品 {target_id}",
-                    "description": "候选展品说明",
-                    "semantic_role": "route_candidate",
-                    "tags": ["museum"],
-                    "related_exhibits": ["E1", "E5"],
+                        "name": f"展品 {target_id}",
+                        "category": "三星堆展品",
+                        "culture": "三星堆文化 / 古蜀文明",
+                        "chronology": "中国青铜时代",
+                        "archaeological_context": "三星堆遗址出土器物。",
+                        "description": "候选展品说明",
+                        "visual_features": ["青铜造型"],
+                        "cultural_significance": ["古蜀文明"],
+                        "key_concepts": ["祭祀", "宇宙观"],
+                        "themes": ["TH_RITUAL"],
+                        "interpretation_notes": [
+                            {"statement": "具体身份尚未确定。", "status": "not_established"}
+                        ],
+                        "semantic_edges": [] if target_id == "E5" else [
+                            {
+                                "id": "SE_TEST",
+                                "source": "E1",
+                                "target": target_id,
+                                "relation_type": "context_of",
+                                "directed": True,
+                                "description": "文明背景进入展品主题。",
+                                "evidence_status": "supported",
+                            }
+                        ],
+                        "spatial_edges": [] if target_id == "E5" else [
+                            {
+                                "id": "SP_TEST",
+                                "source": "E1",
+                                "target": target_id,
+                                "relation_type": "adjacent_diagonal",
+                                "bidirectional": True,
+                                "virtual_distance_m": 4.63,
+                                "relative_direction_from_source": "diagonal",
+                            }
+                        ],
                 }
                 for target_id in model_candidate_ids
             ],
@@ -241,7 +271,11 @@ def test_condition_context_snapshots_freeze_six_information_boundaries() -> None
     assert "physical_position" not in b1_json
     assert "risk_level" not in b1_json
     assert "allowed_candidate_ids" not in b1_json
-    assert "related_exhibits" in b1_json
+    assert "evidence_status" in b1_json
+    assert "interpretation_notes" in b1_json
+    assert "related_exhibits" not in b1_json
+    assert "semantic_role" not in b1_json
+    assert "tags" not in b1_json
 
     raw = contexts[Condition.B2_RAW_PHYSICAL_DATA.value]["raw_physical_data"]
     assert raw["position"] == [1.8, 4.3]
@@ -252,6 +286,32 @@ def test_condition_context_snapshots_freeze_six_information_boundaries() -> None
     labels = contexts[Condition.B3_RISK_LABELS.value]["risk_labels"]
     assert labels == {"risk_level": "high", "critical": False, "reset_required": False}
     assert "allowed_candidate_ids" not in contexts[Condition.B3_RISK_LABELS.value]
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "name",
+        "category",
+        "culture",
+        "chronology",
+        "archaeological_context",
+        "description",
+        "visual_features",
+        "cultural_significance",
+        "key_concepts",
+        "themes",
+        "interpretation_notes",
+        "semantic_edges",
+        "spatial_edges",
+    ],
+)
+def test_semantic_candidate_requires_complete_v3_context(missing_field: str) -> None:
+    payload = request_payload(request_for(Condition.OURS_FULL.value))
+    payload["semantic_candidates"][0].pop(missing_field)
+
+    with pytest.raises(ValueError):
+        GuidanceRequest.model_validate(payload)
 
 
 def test_mllm_output_schema_contains_only_three_control_fields() -> None:

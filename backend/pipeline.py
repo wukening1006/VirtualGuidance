@@ -18,6 +18,7 @@ from backend.schemas import (
     MovementInstruction,
     PhysicalRiskState,
     RouteDecision,
+    SceneSemanticsDocument,
     response_from_draft,
 )
 from backend.services.guidance_logger import GuidanceLogger
@@ -54,7 +55,27 @@ class GuidancePipeline:
 
     @property
     def exhibit_count(self) -> int:
-        return len(self.scene_semantics.get("exhibits", []))
+        return len(self.scene_semantics.exhibits)
+
+    @property
+    def scene_id(self) -> str:
+        return self.scene_semantics.scene_id
+
+    @property
+    def schema_version(self) -> int:
+        return self.scene_semantics.schema_version
+
+    @property
+    def semantic_edge_count(self) -> int:
+        return len(self.scene_semantics.semantic_edges)
+
+    @property
+    def spatial_edge_count(self) -> int:
+        return len(self.scene_semantics.spatial_edges)
+
+    @property
+    def semantic_ready(self) -> bool:
+        return True
 
     async def handle(self, request: GuidanceRequest) -> GuidanceResponse:
         # 在线风险事实完全来自 Unity；Backend 不根据 boundary/obstacle 重新计算或覆盖结论。
@@ -148,12 +169,15 @@ def scripted_reset_draft(request: GuidanceRequest) -> GuideDraft:
     )
 
 
-def load_scene_semantics(config_dir: Path) -> dict:
-    """Load optional exhibit semantics for health checks and demo self-checks."""
+def load_scene_semantics(config_dir: Path) -> SceneSemanticsDocument:
+    """严格加载唯一 v3 场景语义配置；缺失或旧 schema 直接失败。"""
 
     path = config_dir / "scene_semantics.json"
     if not path.exists():
-        return {"exhibits": []}
+        raise FileNotFoundError(f"scene_semantics.json not found: {path}")
     # utf-8-sig 同时兼容带 BOM 和不带 BOM 的 UTF-8 配置文件。
     with path.open("r", encoding="utf-8-sig") as handle:
-        return json.load(handle)
+        try:
+            return SceneSemanticsDocument.model_validate(json.load(handle))
+        except ValueError as exc:
+            raise ValueError(f"scene_semantics.json failed strict v3 validation: {exc}") from exc

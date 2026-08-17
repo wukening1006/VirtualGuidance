@@ -16,8 +16,8 @@ public enum CandidateSafetyState
 }
 
 /// <summary>
-/// 按 T2 Candidate Policy 从任务、Target Registry、角色和访问历史构建候选集合。
-/// related_exhibits 只附加为模型语义元数据，不参与候选资格判定。
+/// 按 T2 Candidate Policy 从任务、虚拟空间拓扑、角色和访问历史构建候选集合。
+/// 静态候选拓扑只来自 scene_semantics.json 的 spatial_edges。
 /// </summary>
 public sealed class SemanticTargetSelector : MonoBehaviour
 {
@@ -113,17 +113,21 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             riskState,
             runtimeState.finalTargetId,
             NavigationTargetRole.FinalTarget);
-        foreach (var safetyTargetId in navigationTargets.GetSafetyPlanningTargetIds())
+        var graph = navigationTargets.SemanticGraph;
+        if (graph != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
         {
-            if (!string.Equals(safetyTargetId, runtimeState.finalTargetId, StringComparison.Ordinal))
+            foreach (var neighborId in graph.GetSpatialNeighbors(runtimeState.currentExhibitId))
             {
-                TryAddCandidate(
-                    candidates,
-                    assessments,
-                    runtimeState,
-                    riskState,
-                    safetyTargetId,
-                    navigationTargets.GetSafetyTargetRole(safetyTargetId));
+                if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
+                {
+                    TryAddCandidate(
+                        candidates,
+                        assessments,
+                        runtimeState,
+                        riskState,
+                        neighborId,
+                        NavigationTargetRole.NavigableDetour);
+                }
             }
         }
 
@@ -262,7 +266,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             return CandidateSafetyState.Unknown;
         }
 
-        if (!TryBuildCandidate(targetId, NavigationTargetRole.FinalTarget, out var candidate))
+        if (!TryBuildCandidate(targetId, NavigationTargetRole.FinalTarget, null, out var candidate))
         {
             return CandidateSafetyState.Unknown;
         }
@@ -285,7 +289,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         out CandidateAssessment assessment)
     {
         assessment = null;
-        return TryBuildCandidate(targetId, role, out var candidate) &&
+        return TryBuildCandidate(targetId, role, null, out var candidate) &&
                (assessment = AssessCandidate(candidate, riskState)) != null;
     }
 
@@ -309,7 +313,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         string targetId,
         NavigationTargetRole role)
     {
-        if (!TryBuildCandidate(targetId, role, out var candidate))
+        if (!TryBuildCandidate(targetId, role, runtimeState != null ? runtimeState.currentExhibitId : null, out var candidate))
         {
             return;
         }
@@ -336,13 +340,15 @@ public sealed class SemanticTargetSelector : MonoBehaviour
     private bool TryBuildCandidate(
         string targetId,
         NavigationTargetRole role,
+        string contextNodeId,
         out NavigationCandidate candidate)
     {
         candidate = null;
         if (string.IsNullOrWhiteSpace(targetId) ||
             !navigationTargets.TryGetTarget(targetId, out var metadata) ||
             metadata == null ||
-            !navigationTargets.TryGetTargetBearing(targetId, out var bearing))
+            !navigationTargets.TryGetTargetBearing(targetId, out var bearing) ||
+            !navigationTargets.TryGetDefinition(targetId, out var definition))
         {
             return false;
         }
@@ -351,16 +357,40 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             targetId,
             role,
             BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel),
-            metadata.ExhibitName,
-            metadata.Description,
-            metadata.SemanticRole,
-            metadata.Tags,
-            metadata.RelatedExhibits,
+            definition,
+            GetSemanticEdges(contextNodeId, targetId),
+            GetSpatialEdges(contextNodeId, targetId),
             bearing.RelativeYawDegrees,
             bearing.DistanceMeters,
             bearing.DisplayLabel,
             bearing.PoseRevision);
         return true;
+    }
+
+    private IReadOnlyList<SemanticEdgeDefinition> GetSemanticEdges(string contextNodeId, string targetId)
+    {
+        var graph = navigationTargets != null ? navigationTargets.SemanticGraph : null;
+        if (graph == null || string.IsNullOrWhiteSpace(contextNodeId)) return Array.Empty<SemanticEdgeDefinition>();
+        var result = new List<SemanticEdgeDefinition>();
+        foreach (var edge in graph.GetOutgoingSemanticEdges(contextNodeId))
+        {
+            if (string.Equals(edge.source, targetId, StringComparison.Ordinal) ||
+                string.Equals(edge.target, targetId, StringComparison.Ordinal)) result.Add(edge);
+        }
+        return result;
+    }
+
+    private IReadOnlyList<SpatialEdgeDefinition> GetSpatialEdges(string contextNodeId, string targetId)
+    {
+        var graph = navigationTargets != null ? navigationTargets.SemanticGraph : null;
+        if (graph == null || string.IsNullOrWhiteSpace(contextNodeId)) return Array.Empty<SpatialEdgeDefinition>();
+        var result = new List<SpatialEdgeDefinition>();
+        foreach (var edge in graph.GetSpatialEdges(contextNodeId))
+        {
+            if (string.Equals(edge.source, targetId, StringComparison.Ordinal) ||
+                string.Equals(edge.target, targetId, StringComparison.Ordinal)) result.Add(edge);
+        }
+        return result;
     }
 
     private CandidateAssessment AssessCandidate(

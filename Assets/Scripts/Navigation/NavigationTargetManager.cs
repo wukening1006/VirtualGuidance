@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 将场景中的 ExhibitMetadata 按 ID 建立索引，为语义选点、到达检测和本地安全校验提供查询。
+/// 将静态语义图与 MainScene Exhibit Anchor 按 ID 组合，为导航和本地安全校验提供查询。
 /// 目标方向基于用户当前 Virtual Position/Forward 计算，不依赖世界坐标 X。
 /// </summary>
 public sealed class NavigationTargetManager : MonoBehaviour
@@ -21,6 +21,7 @@ public sealed class NavigationTargetManager : MonoBehaviour
     [SerializeField, Range(91f, 179f)] private float behindThresholdDegrees = 150f;
 
     private readonly Dictionary<string, ExhibitMetadata> targetsById = new Dictionary<string, ExhibitMetadata>();
+    private StaticSceneSemanticGraph semanticGraph;
     private readonly Dictionary<string, BearingLabel> displayLabelsByTarget = new Dictionary<string, BearingLabel>();
     private string registrySignature = string.Empty;
     private int registryRevision;
@@ -42,16 +43,29 @@ public sealed class NavigationTargetManager : MonoBehaviour
     }
 
     /// <summary>注入用户虚拟位姿来源，供所有目标方向查询共享。</summary>
-    public void Configure(UserPoseTracker poseTracker)
+    public void Configure(UserPoseTracker poseTracker, StaticSceneSemanticGraph graph = null)
     {
         if (poseTracker != null)
         {
             userPoseTracker = poseTracker;
         }
+        if (graph != null)
+        {
+            semanticGraph = graph;
+        }
     }
 
+    /// <summary>注入唯一静态语义图；不从 Anchor Inspector 读取内容语义。</summary>
+    public void ConfigureSemanticGraph(StaticSceneSemanticGraph graph)
+    {
+        semanticGraph = graph;
+    }
+
+    /// <summary>当前使用的静态语义图。</summary>
+    public StaticSceneSemanticGraph SemanticGraph => semanticGraph;
+
     /// <summary>
-    /// 重新扫描当前已加载场景中的展品元数据；重复 ID 以后扫描到的对象为准。
+    /// 重新扫描当前已加载场景中的 Exhibit Anchor；重复 ID 会被启动校验报告。
     /// </summary>
     public void RebuildIndex()
     {
@@ -91,13 +105,12 @@ public sealed class NavigationTargetManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 获取展品配置的相关目标 ID；目标不存在或未配置时返回空数组。
+    /// 从唯一静态语义图获取展品定义。
     /// </summary>
-    public string[] GetRelatedTargetIds(string targetId)
+    public bool TryGetDefinition(string targetId, out SceneExhibitDefinition definition)
     {
-        return TryGetTarget(targetId, out var target) && target.RelatedExhibits != null
-            ? target.RelatedExhibits
-            : Array.Empty<string>();
+        definition = null;
+        return semanticGraph != null && semanticGraph.TryGetExhibit(targetId, out definition);
     }
 
     /// <summary>
@@ -234,31 +247,10 @@ public sealed class NavigationTargetManager : MonoBehaviour
         return relativeYawDegrees < 0f ? BearingLabel.Left : BearingLabel.Right;
     }
 
-    /// <summary>返回安全候选在场景元数据中声明的 TargetRole。</summary>
+    /// <summary>返回运行时调用方提供的默认目标职责；静态图不声明导航角色。</summary>
     public NavigationTargetRole GetSafetyTargetRole(string targetId)
     {
-        return TryGetTarget(targetId, out var target) && target != null
-            ? target.SafetyTargetRole
-            : NavigationTargetRole.NavigableDetour;
-    }
-
-    /// <summary>
-    /// 返回 Target Registry 中由语义角色或标签显式声明的安全规划目标 ID。
-    /// </summary>
-    public string[] GetSafetyPlanningTargetIds()
-    {
-        EnsureIndex();
-        var ids = new List<string>();
-        foreach (var pair in targetsById)
-        {
-            if (pair.Value != null && pair.Value.IsSafetyPlanningTarget)
-            {
-                ids.Add(pair.Key);
-            }
-        }
-
-        ids.Sort(StringComparer.Ordinal);
-        return ids.ToArray();
+        return HasTarget(targetId) ? NavigationTargetRole.RouteSubgoal : NavigationTargetRole.NavigableDetour;
     }
 
     private string BuildRegistrySignature()
@@ -269,11 +261,7 @@ public sealed class NavigationTargetManager : MonoBehaviour
         foreach (var id in ids)
         {
             var target = targetsById[id];
-            entries.Add(string.Join(
-                "~",
-                id,
-                target != null ? target.SafetyTargetRole.ToString() : string.Empty,
-                target != null && target.IsSafetyPlanningTarget ? "planning" : "ordinary"));
+            entries.Add(string.Join("~", id, target != null ? target.HierarchyPath : string.Empty));
         }
         return string.Join("|", entries);
     }

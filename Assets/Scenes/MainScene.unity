@@ -31265,6 +31265,8 @@ MonoBehaviour:
   riskEvaluator: {fileID: 2100100012}
   motionDetector: {fileID: 2100100006}
   xrTrackingAdapter: {fileID: 2100100005}
+  sceneSemanticsJson: {fileID: 4900000, guid: 80142bc7eafdeea4888a07891e0a8ecf, type: 3}
+  semanticBindingToleranceMeters: 0.05
   agentClient: {fileID: 1189476495}
   guidanceCoordinator: {fileID: 1761135463}
   taskController: {fileID: 19950179}
@@ -38981,18 +38983,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E3
-  exhibitName: "\u9752\u94DC\u7EB5\u76EE\u9762\u5177"
-  tags:
-  - transmission
-  - control
-  - mechanism
-  - left_redirect
-  description: "\u9752\u94DC\u7EB5\u76EE\u9762\u5177\u4EE5\u7A81\u51FA\u7684\u53CC\u773C\u3001\u5BBD\u5927\u7684\u8033\u90E8\u548C\u6781\u5177\u5F20\u529B\u7684\u9762\u90E8\u9020\u578B\u8457\u79F0\u3002\u5B83\u4F53\u73B0\u4E86\u4E09\u661F\u5806\u4E0D\u540C\u4E8E\u65E5\u5E38\u4EBA\u7269\u5F62\u8C61\u7684\u795E\u79D8\u89C6\u89C9\u8BED\u8A00\uFF0C\u4E5F\u4E3A\u7406\u89E3\u53E4\u8700\u4EBA\u7684\u795E\u7075\u89C2\u5FF5\u63D0\u4F9B\u4E86\u91CD\u8981\u7EBF\u7D22\u3002"
-  semanticRole: left_related_anchor
-  relatedExhibits:
-  - E2
-  - E4
-  - E5
   viewPoint: {fileID: 1566281794}
   gazeTarget: {fileID: 488525053}
 --- !u!102 &1048877140671804356
@@ -39036,8 +39026,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!4 &1056024512213342680
 Transform:
   m_ObjectHideFlags: 0
@@ -40404,7 +40394,7 @@ Transform:
   m_GameObject: {fileID: 279758154438462779}
   serializedVersion: 2
   m_LocalRotation: {x: -0.5000059, y: -0.49999416, z: -0.49999416, w: 0.5000059}
-  m_LocalPosition: {x: -0, y: -0.4979806, z: 0}
+  m_LocalPosition: {x: -0, y: -0.475, z: 0}
   m_LocalScale: {x: 0.89489126, y: 0.8948914, z: 0.8948914}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -42845,8 +42835,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!23 &2077995458748863283
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -48959,8 +48949,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!4 &3973215690183098204
 Transform:
   m_ObjectHideFlags: 0
@@ -49139,8 +49129,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!65 &4012456930432064308
 BoxCollider:
   m_ObjectHideFlags: 0
@@ -51579,7 +51569,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &4815944755265729042
 Transform:
   m_ObjectHideFlags: 0
@@ -53535,20 +53525,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E8
-  exhibitName: "\u53E4\u8700\u796D\u7940\u4E16\u754C"
-  tags:
-  - integration
-  - smart_factory
-  - system
-  - summary
-  - ending
-  description: "\u4ECE\u9752\u94DC\u4EBA\u50CF\u3001\u7EB5\u76EE\u9762\u5177\u5230\u795E\u6811\u3001\u91D1\u5668\u548C\u7279\u6B8A\u8C61\u5F81\u7269\uFF0C\u4E09\u661F\u5806\u6587\u7269\u5171\u540C\u5448\u73B0\u51FA\u53E4\u8700\u6587\u660E\u590D\u6742\u7684\u796D\u7940\u6D3B\u52A8\u3001\u4FE1\u4EF0\u89C2\u5FF5\u4E0E\u9AD8\u8D85\u5DE5\u827A\uFF0C\u4E5F\u7559\u4E0B\u4E86\u8BB8\u591A\u4ECD\u5F85\u7814\u7A76\u7684\u5386\u53F2\u8C1C\u9898\u3002"
-  semanticRole: summary
-  relatedExhibits:
-  - E4
-  - E5
-  - E6
-  - E7
   viewPoint: {fileID: 609818505}
   gazeTarget: {fileID: 1282800261}
 --- !u!23 &5336823288755446156
@@ -53948,8 +53924,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!102 &5408967614032917941
 TextMesh:
   serializedVersion: 3
@@ -55433,18 +55409,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E7
-  exhibitName: "\u9752\u94DC\u592A\u9633\u5F62\u5668"
-  tags:
-  - material_handling
-  - comparison
-  - forklift
-  - turn
-  description: "\u9752\u94DC\u592A\u9633\u5F62\u5668\u5177\u6709\u9C9C\u660E\u7684\u653E\u5C04\u72B6\u7ED3\u6784\uFF0C\u662F\u4E09\u661F\u5806\u6781\u5177\u8FA8\u8BC6\u5EA6\u7684\u5668\u7269\u4E4B\u4E00\u3002\u5B83\u7684\u5177\u4F53\u7528\u9014\u548C\u8C61\u5F81\u610F\u4E49\u4ECD\u5B58\u5728\u8BA8\u8BBA\uFF0C\u4E5F\u5C55\u73B0\u4E86\u53E4\u8700\u6587\u660E\u4E30\u5BCC\u800C\u72EC\u7279\u7684\u56FE\u50CF\u8868\u8FBE\u3002"
-  semanticRole: comparison_object
-  relatedExhibits:
-  - E5
-  - E6
-  - E8
   viewPoint: {fileID: 1824388448}
   gazeTarget: {fileID: 704819616}
 --- !u!23 &5772637451976700830
@@ -57567,8 +57531,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!4 &6371794300030589031
 Transform:
   m_ObjectHideFlags: 0
@@ -60515,7 +60479,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!1 &7160414064841440105
 GameObject:
   m_ObjectHideFlags: 0
@@ -60748,18 +60712,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E6
-  exhibitName: "\u91D1\u9762\u7F69\u9752\u94DC\u4EBA\u5934\u50CF"
-  tags:
-  - storage
-  - logistics
-  - transport
-  - reset_camouflage
-  description: "\u90E8\u5206\u4E09\u661F\u5806\u9752\u94DC\u4EBA\u5934\u50CF\u8868\u9762\u8986\u6709\u91D1\u9762\u7F69\uFF0C\u4F7F\u9752\u94DC\u4E0E\u9EC4\u91D1\u5F62\u6210\u9C9C\u660E\u7684\u6750\u8D28\u5BF9\u6BD4\u3002\u8FD9\u79CD\u7EC4\u5408\u8FDB\u4E00\u6B65\u5F3A\u5316\u4E86\u4EBA\u7269\u5F62\u8C61\u7684\u7279\u6B8A\u8EAB\u4EFD\u611F\uFF0C\u4E5F\u5C55\u73B0\u4E86\u53E4\u8700\u5DE5\u5320\u5BF9\u4E0D\u540C\u6750\u6599\u7684\u7EFC\u5408\u8FD0\u7528\u3002"
-  semanticRole: side_context
-  relatedExhibits:
-  - E5
-  - E7
-  - E8
   viewPoint: {fileID: 1677074615}
   gazeTarget: {fileID: 268403607}
 --- !u!23 &7188315170461846399
@@ -61479,18 +61431,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E1
-  exhibitName: "\u53E4\u8700\u6587\u660E\u5E8F\u7AE0"
-  tags:
-  - introduction
-  - overview
-  - smart_manufacturing
-  - start
-  description: "\u4E09\u661F\u5806\u9057\u5740\u5C55\u73B0\u4E86\u53E4\u8700\u6587\u660E\u72EC\u7279\u7684\u9752\u94DC\u827A\u672F\u4E0E\u796D\u7940\u6587\u5316\u3002\u9752\u94DC\u4EBA\u50CF\u3001\u9762\u5177\u3001\u795E\u6811\u548C\u91D1\u5668\u5171\u540C\u6784\u6210\u4E86\u4E00\u4E2A\u5145\u6EE1\u795E\u79D8\u8272\u5F69\u7684\u53E4\u8700\u4E16\u754C\u3002"
-  semanticRole: introduction
-  relatedExhibits:
-  - E2
-  - E3
-  - E4
   viewPoint: {fileID: 1792580926}
   gazeTarget: {fileID: 1803604373}
 --- !u!33 &7297511284721261974
@@ -61964,19 +61904,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E4
-  exhibitName: "\u9752\u94DC\u5927\u7ACB\u4EBA\u50CF"
-  tags:
-  - digitalization
-  - computer_control
-  - programmable
-  - right_redirect
-  description: "\u9752\u94DC\u5927\u7ACB\u4EBA\u50CF\u4EE5\u9AD8\u5927\u7684\u8EAB\u59FF\u3001\u590D\u6742\u670D\u9970\u548C\u72EC\u7279\u7684\u6301\u7269\u59FF\u6001\u6210\u4E3A\u4E09\u661F\u5806\u6700\u5177\u4EE3\u8868\u6027\u7684\u4EBA\u7269\u96D5\u50CF\u4E4B\u4E00\uFF0C\u662F\u7406\u89E3\u53E4\u8700\u796D\u7940\u6D3B\u52A8\u3001\u4EBA\u7269\u8EAB\u4EFD\u4E0E\u6743\u529B\u8C61\u5F81\u7684\u91CD\u8981\u6587\u7269\u3002"
-  semanticRole: right_alternative_anchor
-  relatedExhibits:
-  - E2
-  - E3
-  - E5
-  - E8
   viewPoint: {fileID: 2120369974}
   gazeTarget: {fileID: 742601116}
 --- !u!4 &7499805683054044321
@@ -62917,19 +62844,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E2
-  exhibitName: "\u9752\u94DC\u4EBA\u5934\u50CF"
-  tags:
-  - mechanization
-  - early_industry
-  - production
-  - timeline
-  description: "\u4E09\u661F\u5806\u51FA\u571F\u4E86\u5927\u91CF\u9020\u578B\u9C9C\u660E\u7684\u9752\u94DC\u4EBA\u5934\u50CF\u3002\u5938\u5F20\u800C\u7EDF\u4E00\u7684\u4EBA\u7269\u5F62\u8C61\u4E3A\u7406\u89E3\u53E4\u8700\u4EBA\u7684\u8EAB\u4EFD\u89C2\u5FF5\u3001\u796D\u7940\u6D3B\u52A8\u548C\u795E\u4EBA\u4E16\u754C\u63D0\u4F9B\u4E86\u91CD\u8981\u7EBF\u7D22\u3002"
-  semanticRole: forward_next
-  relatedExhibits:
-  - E1
-  - E3
-  - E4
-  - E5
   viewPoint: {fileID: 68555847}
   gazeTarget: {fileID: 1747041689}
 --- !u!114 &7803255951067672640
@@ -63313,8 +63227,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!23 &7903570249283527911
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -64083,7 +63997,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!1 &8085761441831641139
 GameObject:
   m_ObjectHideFlags: 0
@@ -64372,8 +64286,8 @@ BoxCollider:
   m_ProvidesContacts: 0
   m_Enabled: 1
   serializedVersion: 3
-  m_Size: {x: 1.0960858, y: 1.0960858, z: 2.77}
-  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.47426102}
+  m_Size: {x: 1, y: 1, z: 1.8}
+  m_Center: {x: -0.000000056536376, y: -0.000000056535047, z: 0.82}
 --- !u!23 &8165000953989666559
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -69360,21 +69274,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   id: E5
-  exhibitName: "\u9752\u94DC\u795E\u6811"
-  tags:
-  - robotics
-  - perception
-  - automation
-  - collaboration
-  - main
-  description: "\u9752\u94DC\u795E\u6811\u4EE5\u5DE8\u5927\u7684\u6811\u5F62\u7ED3\u6784\u3001\u679D\u5E72\u548C\u9E1F\u5F62\u88C5\u9970\u6784\u6210\u590D\u6742\u7684\u795E\u5723\u610F\u8C61\u3002\u5B83\u96C6\u4E2D\u4F53\u73B0\u4E86\u4E09\u661F\u5806\u9AD8\u5EA6\u72EC\u7279\u7684\u9752\u94DC\u94F8\u9020\u827A\u672F\uFF0C\u4E5F\u4E3A\u7406\u89E3\u53E4\u8700\u4EBA\u7684\u5929\u5730\u89C2\u5FF5\u4E0E\u796D\u7940\u4E16\u754C\u63D0\u4F9B\u4E86\u91CD\u8981\u7EBF\u7D22\u3002"
-  semanticRole: main_target
-  relatedExhibits:
-  - E3
-  - E4
-  - E6
-  - E7
-  - E8
   viewPoint: {fileID: 1607727813}
   gazeTarget: {fileID: 1548217119}
 --- !u!23 &9149294286307352925
