@@ -157,6 +157,57 @@ public sealed class ReplanHoldInfo
 }
 
 /// <summary>
+/// 标识一次语义重规划的业务触发原因。
+/// </summary>
+public enum SemanticReplanReason
+{
+    /// <summary>任务刚开始。</summary>
+    TaskStarted,
+    /// <summary>当前目标已到达。</summary>
+    TargetArrived,
+    /// <summary>当前目标或规划方向已不可达。</summary>
+    TargetUnreachable,
+    /// <summary>当前 Guidance 已过期。</summary>
+    GuidanceExpired,
+    /// <summary>用户或研究员意图发生变化。</summary>
+    UserIntentChanged,
+    /// <summary>Reset 已完成并通过复验。</summary>
+    ResetCompleted,
+    /// <summary>用户未按当前转向动作继续执行。</summary>
+    UserDeviated,
+    /// <summary>后端服务已恢复。</summary>
+    BackendRecovered,
+    /// <summary>位姿、风险或其他运行期事实已更新。</summary>
+    RuntimeFactsChanged
+}
+
+/// <summary>
+/// 保存语义重规划触发时的原因与目标锁快照。
+/// </summary>
+public sealed class SemanticReplanInfo
+{
+    /// <summary>本次重规划的业务原因。</summary>
+    public SemanticReplanReason Reason { get; }
+    /// <summary>触发时的任务状态版本。</summary>
+    public int StateVersion { get; }
+    /// <summary>触发时仍锁定的语义目标 ID；没有锁时为空。</summary>
+    public string LockedTargetId { get; }
+    /// <summary>触发时的任务运行状态。</summary>
+    public GuidanceRuntimeState State { get; }
+
+    /// <summary>创建不可变的语义重规划诊断信息。</summary>
+    public SemanticReplanInfo(SemanticReplanReason reason, GuidanceRuntimeState state)
+    {
+        Reason = reason;
+        State = state;
+        StateVersion = state != null ? state.stateVersion : 0;
+        LockedTargetId = state != null && state.HasLockedSemanticGoal
+            ? state.guidanceTargetId ?? string.Empty
+            : string.Empty;
+    }
+}
+
+/// <summary>
 /// 协调任务状态、物理风险与后端 guidance 请求，并将通过本地安全校验的响应交给表现层执行。
 /// 输入来自任务、导航和 RDW 模块，执行结果提供给导览表现、到达检测与旋转增益控制器。
 /// </summary>
@@ -174,6 +225,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private MotionDetector motionDetector;
     [SerializeField] private RejectionPanel rejectionPanel;
+
+    [Header("运行期安全策略")]
+    [Tooltip("是否允许在当前目标不安全但存在安全语义候选时执行 SoftReroute；默认关闭，关闭后回退到 Reset 或 HardStop。")]
+    [SerializeField] private bool enableSoftRerouteSafetyPolicy = false;
 
     [Header("TurnCue 物理完成")]
     [Tooltip("目标相对偏航不超过该角度时不创建 TurnCue，单位：度。")]
@@ -285,6 +340,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<string> GuidanceRejected;
     /// <summary>到达中间路线目标并准备请求下一段 Guidance 时触发。</summary>
     public event Action<GuidanceRuntimeState> Replanning;
+    /// <summary>语义重规划实际开始时发布原因与目标锁快照。</summary>
+    public event Action<SemanticReplanInfo> SemanticReplanning;
     /// <summary>到达最终目标、任务进入 Completed 时触发。</summary>
     public event Action<GuidanceRuntimeState> TaskCompleted;
     /// <summary>Guidance 请求生命周期发生变化时触发。</summary>
@@ -368,6 +425,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public PlanCache RdwPlanCache => rdwPlanCache;
     /// <summary>当前路线选择调用门。</summary>
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
+    /// <summary>当前是否允许运行期 SoftReroute 安全策略。</summary>
+    public bool SoftRerouteSafetyPolicyEnabled => enableSoftRerouteSafetyPolicy;
 
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
 
@@ -401,7 +460,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     GuidanceRecoveryState.NavigationRecovery,
                     "recovery_hold_woken");
             }
-            RequestNextGuidance();
+            RequestNextGuidance(SemanticReplanReason.RuntimeFactsChanged);
         }
     }
 
@@ -514,6 +573,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// </summary>
     public void RequestNextGuidance()
     {
+        RequestNextGuidance(SemanticReplanReason.RuntimeFactsChanged);
+    }
+
+    /// <summary>
+    /// 根据明确的业务原因请求下一段 Guidance；目标锁或在途规划存在时保持当前语义目标。
+    /// </summary>
+    public void RequestNextGuidance(SemanticReplanReason reason)
+    {
         if (planningRequestInProgress)
         {
             return;
@@ -522,7 +589,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         planningRequestInProgress = true;
         try
         {
-            RequestNextGuidanceInternal();
+            RequestNextGuidanceInternal(reason);
         }
         finally
         {
@@ -530,7 +597,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
-    private void RequestNextGuidanceInternal()
+    private void RequestNextGuidanceInternal(SemanticReplanReason reason)
     {
         if (requestClient == null)
         {
@@ -547,6 +614,16 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         {
             return;
         }
+
+        // 当前语义目标锁定期间只允许物理层连续执行，禁止重复创建新的语义规划。
+        if (taskController.RuntimeState.HasLockedSemanticGoal ||
+            taskController.RuntimeState.HasActiveSemanticPlanning)
+        {
+            return;
+        }
+
+        var replanInfo = new SemanticReplanInfo(reason, taskController.RuntimeState);
+        SemanticReplanning?.Invoke(replanInfo);
 
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
@@ -1418,7 +1495,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             TargetReached?.Invoke(guidanceTarget);
             DetourCompleted?.Invoke(guidanceTarget);
             Replanning?.Invoke(state);
-            RequestNextGuidance();
+            RequestNextGuidance(SemanticReplanReason.TargetArrived);
             return;
         }
 
@@ -1448,7 +1525,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         Replanning?.Invoke(state);
-        RequestNextGuidance();
+        RequestNextGuidance(SemanticReplanReason.TargetArrived);
     }
 
     /// <summary>测试与研究工具入口：仅把当前活动预留对应的目标视为有效到达。</summary>
@@ -1483,7 +1560,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ConfirmCompletedRdwStep(target.TargetId, state.stateVersion);
 
         Replanning?.Invoke(state);
-        RequestNextGuidance();
+        RequestNextGuidance(SemanticReplanReason.TargetArrived);
     }
 
     /// <summary>
@@ -1623,13 +1700,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         automaticResetAttempts = 0;
         resetAbandonedTargetId = string.Empty;
-        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
-            null,
-            "Physical heading recovery completed; replanning with the latest facts.",
-            RuntimeGuidanceSafetyDecision.SoftReroute,
-            false,
-            0,
-            false));
         ExitReplanHold("reset_recovery_completed");
         TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
         frozenRecoveryPlan = null;
@@ -1637,7 +1707,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             RoutePlanInvalidationReason.ResetCompleted,
             "Reset completed; the next request must capture a fresh PlanningSnapshot.");
         Replanning?.Invoke(state);
-        RequestNextGuidance();
+        RequestNextGuidance(SemanticReplanReason.ResetCompleted);
     }
 
     private void TriggerRecoveryHardStop(string reason)
@@ -1742,7 +1812,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Expired);
         GuidanceExpired?.Invoke(reason);
-        RequestNextGuidance();
+        RequestNextGuidance(SemanticReplanReason.GuidanceExpired);
     }
 
     private void BindRuntimeSafety()
@@ -1796,7 +1866,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     GuidanceRecoveryState.NavigationRecovery,
                     "recovery_hold_woken_by_risk");
             }
-            RequestNextGuidance();
+            RequestNextGuidance(SemanticReplanReason.RuntimeFactsChanged);
             return;
         }
 
@@ -1867,6 +1937,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        runtimeSafetyPolicy.SoftRerouteEnabled = enableSoftRerouteSafetyPolicy;
         var decision = runtimeSafetyPolicy.Evaluate(input);
         if (decision == RuntimeGuidanceSafetyDecision.SoftReroute)
         {
@@ -2012,9 +2083,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void TriggerSoftReroute(
         GuidanceTarget safeCandidate,
-        string reason = "Active planned direction remained unsafe for two consecutive risk samples.")
+        string reason = "Active planned direction remained unsafe for two consecutive risk samples.",
+        SemanticReplanReason replanReason = SemanticReplanReason.TargetUnreachable)
     {
-        if (runtimeReplanPending || safeCandidate == null)
+        if (!enableSoftRerouteSafetyPolicy || runtimeReplanPending || safeCandidate == null)
         {
             return;
         }
@@ -2044,7 +2116,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 0,
                 true));
             Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
-            RequestNextGuidance();
+            RequestNextGuidance(replanReason);
         }
         finally
         {
@@ -2726,13 +2798,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ReplanHoldChanged?.Invoke(CreateReplanHoldInfo(true));
         if (firstEntry)
         {
-            RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
-                null,
-                reason,
-                RuntimeGuidanceSafetyDecision.SoftReroute,
-                false,
-                0,
-                false));
             Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
         }
     }
@@ -3176,7 +3241,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        if (safeCandidate != null)
+        if (enableSoftRerouteSafetyPolicy && safeCandidate != null)
         {
             TriggerSoftReroute(
                 safeCandidate,
@@ -3184,7 +3249,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return true;
         }
 
-        // 单次搜索未找到 Safe 只允许进入 Recovery Hold；不能因当前预算结果直接 HardStop。
+        // SoftReroute 关闭或没有安全候选时，优先进入可信的物理朝向恢复。
         if (HasTrustedRecoveryFacts(riskState))
         {
             TriggerPauseReset(
@@ -3525,9 +3590,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         var activeTargetId = activeResponse != null ? activeResponse.selected_target : string.Empty;
         var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeTargetId);
-        if (safeCandidate != null)
+        if (safeCandidate != null && enableSoftRerouteSafetyPolicy)
         {
-            TriggerSoftReroute(safeCandidate, reason);
+            TriggerSoftReroute(safeCandidate, reason, SemanticReplanReason.UserDeviated);
+            return;
+        }
+
+        if (safeCandidate != null && HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerPauseReset(
+                activeResponse,
+                riskState,
+                $"{reason}: SoftReroute is disabled; starting trusted heading recovery.");
             return;
         }
 

@@ -60,6 +60,15 @@ public sealed class GuidanceRuntimeState
         : new GuidanceTarget(guidanceTargetId, guidanceTargetRole);
     /// <summary>当前有效的 Guidance Target Reservation。</summary>
     public TargetReservation ActiveReservation => activeReservation;
+    /// <summary>当前是否存在尚未完成的语义目标锁。</summary>
+    public bool HasLockedSemanticGoal => activeReservation != null &&
+                                         activeReservation.Phase != TargetReservationPhase.Abandoned &&
+                                         activeReservation.Phase != TargetReservationPhase.Completed &&
+                                         !string.IsNullOrWhiteSpace(guidanceTargetId);
+    /// <summary>当前是否存在尚未提交的语义候选集规划。</summary>
+    public bool HasActiveSemanticPlanning => activeCandidateSetReservation != null &&
+                                             (activeCandidateSetReservation.Phase == CandidateSetReservationPhase.Reserved ||
+                                              activeCandidateSetReservation.Phase == CandidateSetReservationPhase.Validated);
     /// <summary>最近一次 Candidate-Set Reservation 及其不可变生命周期实例。</summary>
     public CandidateSetReservation ActiveCandidateSetReservation => activeCandidateSetReservation;
 
@@ -153,6 +162,19 @@ public sealed class GuidanceRuntimeState
             return false;
         }
 
+        if (activeReservation != null &&
+            string.Equals(guidanceTargetId, target.TargetId, StringComparison.Ordinal) &&
+            guidanceTargetRole == target.TargetRole &&
+            string.Equals(activeReservation.DecisionId, decisionId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (HasLockedSemanticGoal || HasActiveSemanticPlanning)
+        {
+            return false;
+        }
+
         if (target.TargetRole == NavigationTargetRole.NavigableDetour)
         {
             var sameActiveDetour = string.Equals(activeDetourId, target.TargetId, StringComparison.Ordinal);
@@ -173,14 +195,6 @@ public sealed class GuidanceRuntimeState
                  HasCompletedTurnCue(target.TargetId))
         {
             return false;
-        }
-
-        if (activeReservation != null &&
-            string.Equals(guidanceTargetId, target.TargetId, StringComparison.Ordinal) &&
-            guidanceTargetRole == target.TargetRole &&
-            string.Equals(activeReservation.DecisionId, decisionId, StringComparison.Ordinal))
-        {
-            return true;
         }
 
         guidanceTargetId = target.TargetId;
@@ -208,7 +222,8 @@ public sealed class GuidanceRuntimeState
         out CandidateSetReservation reservation)
     {
         reservation = null;
-        if (!IsNavigating || candidateSet == null || !candidateSet.HasModelCandidates || riskState == null ||
+        if (HasLockedSemanticGoal || HasActiveSemanticPlanning ||
+            !IsNavigating || candidateSet == null || !candidateSet.HasModelCandidates || riskState == null ||
             string.IsNullOrWhiteSpace(candidateSetId) || string.IsNullOrWhiteSpace(requestId) ||
             string.IsNullOrWhiteSpace(decisionId) || string.IsNullOrWhiteSpace(condition) ||
             string.IsNullOrWhiteSpace(riskState.calibration_id) ||
@@ -375,6 +390,7 @@ public sealed class GuidanceRuntimeState
 
         activeReservation.Abandon();
         activeReservation = null;
+        AbandonActiveCandidateSetReservation();
         StartActiveDetourCooldown();
         guidanceTargetId = string.Empty;
         activeDetourId = string.Empty;
@@ -518,15 +534,22 @@ public sealed class GuidanceRuntimeState
     {
         activeReservation?.Abandon();
         activeReservation = null;
+        AbandonActiveCandidateSetReservation();
         StartActiveDetourCooldown();
-        if (activeCandidateSetReservation != null &&
-            activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Committed)
-        {
-            activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
-                CandidateSetReservationPhase.Abandoned);
-        }
         guidanceTargetId = string.Empty;
         activeDetourId = string.Empty;
+    }
+
+    private void AbandonActiveCandidateSetReservation()
+    {
+        if (activeCandidateSetReservation == null ||
+            activeCandidateSetReservation.Phase == CandidateSetReservationPhase.Abandoned)
+        {
+            return;
+        }
+
+        activeCandidateSetReservation = activeCandidateSetReservation.WithPhase(
+            CandidateSetReservationPhase.Abandoned);
     }
 
     private void ClearRedirectionHistory()

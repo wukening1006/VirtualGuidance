@@ -164,6 +164,12 @@ public sealed class RuntimeGuidanceSafetyInput
 public sealed class RuntimeGuidanceSafetyPolicy
 {
     /// <summary>
+    /// 是否允许在当前目标方向不安全且存在安全语义候选时执行 SoftReroute。
+    /// 默认关闭，关闭后回退到 Reset 或 HardStop 安全路径。
+    /// </summary>
+    public bool SoftRerouteEnabled { get; set; }
+
+    /// <summary>
     /// 对一份运行期安全输入做无副作用判定。
     /// </summary>
     public RuntimeGuidanceSafetyDecision Evaluate(RuntimeGuidanceSafetyInput input)
@@ -192,7 +198,7 @@ public sealed class RuntimeGuidanceSafetyPolicy
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
-        if (input.HasSafeSemanticCandidate)
+        if (input.HasSafeSemanticCandidate && SoftRerouteEnabled)
         {
             return RuntimeGuidanceSafetyDecision.SoftReroute;
         }

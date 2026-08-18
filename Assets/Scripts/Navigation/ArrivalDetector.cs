@@ -2,8 +2,8 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// 监测用户虚拟位置与当前展品观看点的距离，并将单次到达结果提供给任务控制器。
-/// 用户位姿来自 UserPoseTracker，目标位置来自 NavigationTargetManager。
+/// 监测用户虚拟位置与当前展品实体边界的水平距离，并将单次到达结果提供给任务控制器。
+/// 用户位姿来自 UserPoseTracker，目标实体来自 NavigationTargetManager。
 /// </summary>
 public sealed class ArrivalDetector : MonoBehaviour
 {
@@ -12,10 +12,12 @@ public sealed class ArrivalDetector : MonoBehaviour
     [SerializeField] private float arrivalDistanceMeters = 0.75f;
 
     private TargetReservation watchedReservation;
+    private ExhibitMetadata watchedTarget;
+    private Collider[] watchedTargetColliders = Array.Empty<Collider>();
 
     /// <summary>
-    /// 用户首次进入当前目标到达半径时触发一次；参数为到达的展品 ID。
-    /// WatchTarget 再次设置目标后，后续到达可再次触发。
+    /// 用户首次进入当前目标实体边界外扩的到达半径时触发一次。
+    /// WatchReservation 再次设置目标后，后续到达可再次触发。
     /// </summary>
     public event Action<TargetReservation> TargetArrived;
 
@@ -26,7 +28,10 @@ public sealed class ArrivalDetector : MonoBehaviour
 
     private void Update()
     {
-        if (watchedReservation == null || userPoseTracker == null || navigationTargets == null)
+        if (watchedReservation == null ||
+            watchedReservation.TargetRole == NavigationTargetRole.TurnCueAnchor ||
+            userPoseTracker == null ||
+            navigationTargets == null)
         {
             return;
         }
@@ -36,14 +41,16 @@ public sealed class ArrivalDetector : MonoBehaviour
             return;
         }
 
-        var anchor = target.ViewPoint != null ? target.ViewPoint : target.transform;
+        if (watchedTarget != target)
+        {
+            CacheTargetColliders(target);
+        }
+
         // Room-scale 到达只比较水平面；HMD/Camera 高度不应阻塞展品到达。
         var userPosition = userPoseTracker.UserVirtualPosition;
-        var userXZ = new Vector2(userPosition.x, userPosition.z);
-        var targetPosition = anchor.position;
-        var targetXZ = new Vector2(targetPosition.x, targetPosition.z);
-        var distance = Vector2.Distance(userXZ, targetXZ);
-        if (distance <= Mathf.Max(0.05f, arrivalDistanceMeters))
+        var distanceSquared = CalculateHorizontalDistanceSquared(target, userPosition);
+        var arrivalRadius = Mathf.Max(0.05f, arrivalDistanceMeters);
+        if (distanceSquared <= arrivalRadius * arrivalRadius)
         {
             var arrived = watchedReservation;
             // 触发前清空监测目标，避免用户停留在半径内时每帧重复推进任务。
@@ -65,6 +72,63 @@ public sealed class ArrivalDetector : MonoBehaviour
     public void WatchReservation(TargetReservation reservation)
     {
         watchedReservation = reservation;
+        if (reservation == null)
+        {
+            ClearTargetCache();
+        }
+    }
+
+    private void CacheTargetColliders(ExhibitMetadata target)
+    {
+        watchedTarget = target;
+        watchedTargetColliders = target != null
+            ? target.GetComponentsInChildren<Collider>(true)
+            : Array.Empty<Collider>();
+    }
+
+    private void ClearTargetCache()
+    {
+        watchedTarget = null;
+        watchedTargetColliders = Array.Empty<Collider>();
+    }
+
+    private float CalculateHorizontalDistanceSquared(ExhibitMetadata target, Vector3 userPosition)
+    {
+        var hasValidCollider = false;
+        var closestDistanceSquared = float.PositiveInfinity;
+        var viewPoint = target.ViewPoint;
+
+        foreach (var collider in watchedTargetColliders)
+        {
+            if (collider == null ||
+                !collider.enabled ||
+                !collider.gameObject.activeInHierarchy ||
+                (viewPoint != null &&
+                 (collider.transform == viewPoint || collider.transform.IsChildOf(viewPoint))))
+            {
+                continue;
+            }
+
+            hasValidCollider = true;
+            var bounds = collider.bounds;
+            var deltaX = Mathf.Max(Mathf.Max(bounds.min.x - userPosition.x, 0f), userPosition.x - bounds.max.x);
+            var deltaZ = Mathf.Max(Mathf.Max(bounds.min.z - userPosition.z, 0f), userPosition.z - bounds.max.z);
+            var distanceSquared = deltaX * deltaX + deltaZ * deltaZ;
+            if (distanceSquared < closestDistanceSquared)
+            {
+                closestDistanceSquared = distanceSquared;
+            }
+        }
+
+        if (hasValidCollider)
+        {
+            return closestDistanceSquared;
+        }
+
+        var targetPosition = target.transform.position;
+        var fallbackDeltaX = userPosition.x - targetPosition.x;
+        var fallbackDeltaZ = userPosition.z - targetPosition.z;
+        return fallbackDeltaX * fallbackDeltaX + fallbackDeltaZ * fallbackDeltaZ;
     }
 
     private void ResolveReferences()

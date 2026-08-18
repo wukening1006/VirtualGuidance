@@ -320,7 +320,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         participantUiController?.ShowGuidance();
-        guidanceCoordinator.RequestNextGuidance();
+        guidanceCoordinator.RequestNextGuidance(SemanticReplanReason.TaskStarted);
     }
 
     public void PauseSession()
@@ -438,7 +438,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         participantUiController?.ShowGuidance();
         arrivalDetector?.WatchReservation(taskController != null ? taskController.RuntimeState.ActiveReservation : null);
         if (!requestedDuringResetRecovery)
-            guidanceCoordinator?.RequestNextGuidance();
+            guidanceCoordinator?.RequestNextGuidance(SemanticReplanReason.UserIntentChanged);
     }
 
     public void TogglePauseSession()
@@ -840,7 +840,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         TransitionTo(ExperimentRunState.Running, "Backend recovered; replanning");
         participantUiController?.ShowReplanningHold();
-        guidanceCoordinator?.RequestNextGuidance();
+        guidanceCoordinator?.RequestNextGuidance(SemanticReplanReason.BackendRecovered);
     }
 
     private IEnumerator BackendHoldTimeoutRoutine()
@@ -1043,14 +1043,18 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
     }
 
-    private void HandleReplanning(GuidanceRuntimeState state)
+    private void HandleSemanticReplanning(SemanticReplanInfo info)
     {
+        var state = info != null ? info.State : taskController?.RuntimeState;
+        var reason = info != null ? info.Reason.ToString() : SemanticReplanReason.RuntimeFactsChanged.ToString();
+        var targetId = info != null ? info.LockedTargetId : string.Empty;
+        var stateVersion = info != null ? info.StateVersion : state != null ? state.stateVersion : 0;
         experimentLogger?.LogStatus(
-            "replanning_started",
+            "semantic_replan_triggered",
             activeGuidanceTrace,
             state,
             riskEvaluator?.CurrentRiskState,
-            "replanning requested");
+            $"reason={reason}; locked_target={targetId}; state_version={stateVersion}");
     }
 
     private void HandleReplanHoldChanged(ReplanHoldInfo info)
@@ -1252,7 +1256,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         participantUiController?.ShowRecoveryReplanning();
-        guidanceCoordinator?.RequestNextGuidance();
+        guidanceCoordinator?.RequestNextGuidance(SemanticReplanReason.RuntimeFactsChanged);
     }
 
     private IEnumerator RuntimePrerequisiteRecoveryTimeoutRoutine()
@@ -1518,8 +1522,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceExpired += HandleGuidanceExpired;
             guidanceCoordinator.RequestPhaseChanged -= HandleRequestPhaseChanged;
             guidanceCoordinator.RequestPhaseChanged += HandleRequestPhaseChanged;
-            guidanceCoordinator.Replanning -= HandleReplanning;
-            guidanceCoordinator.Replanning += HandleReplanning;
+            guidanceCoordinator.SemanticReplanning -= HandleSemanticReplanning;
+            guidanceCoordinator.SemanticReplanning += HandleSemanticReplanning;
             guidanceCoordinator.TaskCompleted -= HandleTaskCompleted;
             guidanceCoordinator.TaskCompleted += HandleTaskCompleted;
             guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
@@ -1590,7 +1594,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
             guidanceCoordinator.RequestPhaseChanged -= HandleRequestPhaseChanged;
-            guidanceCoordinator.Replanning -= HandleReplanning;
+            guidanceCoordinator.SemanticReplanning -= HandleSemanticReplanning;
             guidanceCoordinator.TaskCompleted -= HandleTaskCompleted;
             guidanceCoordinator.GuidanceTargetSelected -= HandleGuidanceTargetSelected;
             guidanceCoordinator.TargetReached -= HandleTargetReached;
