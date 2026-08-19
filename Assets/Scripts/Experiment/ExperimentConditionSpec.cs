@@ -20,16 +20,14 @@ public sealed class ExperimentConditionSpec
     public string startExhibitId = "E1";
     /// <summary>初次请求建议使用的语义目标 ID。</summary>
     public string semanticNextTargetId = string.Empty;
-    /// <summary>兼容旧路线字段；正式三条件不固定最终展品。</summary>
-    public string finalTargetId = string.Empty;
+    /// <summary>任务不可变的最终目标展品 ID。</summary>
+    public string finalTargetId = "E5";
     /// <summary>提供给后端的自然语言任务描述。</summary>
     public string userTask;
-    /// <summary>静态语义图中的主题目标 ID。</summary>
-    public string themeGoalId = "TH_RITUAL";
-    /// <summary>完成主题目标所需的最小覆盖比例。</summary>
-    [Range(0f, 1f)] public float themeCoverageThreshold = 0.6f;
-    /// <summary>主题导览允许执行的最大展品步数。</summary>
-    [Min(1)] public int maxThemeSteps = 8;
+    /// <summary>最终目标解锁前至少需要到达的中间展品数量。</summary>
+    [Min(0)] public int minimumIntermediateVisits = 3;
+    /// <summary>达到后必须前往最终目标的中间展品数量上限。</summary>
+    [Min(1)] public int maximumIntermediateVisits = 4;
     /// <summary>包含起点在内的有序路线展品 ID。</summary>
     public string[] routeTargetIds = { "E1" };
     /// <summary>模拟用户在 physical XZ 平面的位置，单位：米。</summary>
@@ -49,11 +47,10 @@ public sealed class ExperimentConditionSpec
             participantId = participantId,
             condition = condition,
             userTask = userTask,
-            themeGoalId = themeGoalId,
-            themeCoverageThreshold = themeCoverageThreshold,
-            maxThemeSteps = maxThemeSteps,
             startExhibitId = startExhibitId,
             finalTargetId = finalTargetId,
+            minimumIntermediateVisits = minimumIntermediateVisits,
+            maximumIntermediateVisits = maximumIntermediateVisits,
             maxConsecutiveDetours = 2,
             routeTargetIds = routeTargetIds != null ? (string[])routeTargetIds.Clone() : Array.Empty<string>()
         };

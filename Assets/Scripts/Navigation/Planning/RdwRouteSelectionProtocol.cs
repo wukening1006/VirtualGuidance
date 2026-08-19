@@ -9,7 +9,7 @@ using Newtonsoft.Json.Linq;
 public static class RdwPlanningProtocolVersions
 {
     /// <summary>规划路线选择协议版本。</summary>
-    public const string RouteSelectionSchema = "rdw-route-selection-v2";
+    public const string RouteSelectionSchema = "rdw-route-selection-v3";
 }
 
 /// <summary>
@@ -48,7 +48,7 @@ public sealed class RdwRouteCandidateDto
     public string first_target_id;
     /// <summary>路线 Utility。</summary>
     public float route_utility;
-    /// <summary>路线带来的主题语义覆盖增量，范围 0-1。</summary>
+    /// <summary>路线带来的任务语义进展，范围 0-1。</summary>
     public float semantic_progress;
     /// <summary>叙事介入等级。</summary>
     public string intervention_level;
@@ -133,21 +133,18 @@ public sealed class RdwRouteSelectionRequest
     public string estimator_version;
     /// <summary>可供模型选择的 Top-K 路线。</summary>
     public RdwRouteCandidateDto[] route_candidates = Array.Empty<RdwRouteCandidateDto>();
-    /// <summary>当前主题目标上下文。</summary>
-    public ThemeGoal theme_goal;
-    /// <summary>已访问展品 ID。</summary>
-    public string[] visited_exhibit_ids = Array.Empty<string>();
-    /// <summary>主题覆盖进度。</summary>
-    public Dictionary<string, float> theme_progress = new Dictionary<string, float>();
+    /// <summary>三个正式条件共享的自然语言任务契约。</summary>
+    public NaturalLanguageTaskContract task;
+    /// <summary>当前任务进度快照。</summary>
+    public NaturalLanguageTaskState task_state;
 
     /// <summary>从 Planning result 与 Call identity 创建严格请求。</summary>
     public static RdwRouteSelectionRequest From(
         string sessionId,
         PlanningCallIdentity identity,
         RdwRoutePlanningResult result,
-        ThemeGoal themeGoal = null,
-        IEnumerable<string> visitedExhibitIds = null,
-        IDictionary<string, float> themeProgress = null)
+        NaturalLanguageTaskContract task,
+        NaturalLanguageTaskState taskState)
     {
         if (identity == null || result?.Snapshot == null) return null;
         var routes = new RdwRouteCandidateDto[result.Routes.Count];
@@ -173,11 +170,8 @@ public sealed class RdwRouteSelectionRequest
             estimator_id = snapshot.Capability.EstimatorId,
             estimator_version = snapshot.Capability.EstimatorVersion,
             route_candidates = routes,
-            theme_goal = themeGoal,
-            visited_exhibit_ids = new List<string>(visitedExhibitIds ?? Array.Empty<string>()).ToArray(),
-            theme_progress = themeProgress != null
-                ? new Dictionary<string, float>(themeProgress, StringComparer.Ordinal)
-                : new Dictionary<string, float>(StringComparer.Ordinal)
+            task = task,
+            task_state = taskState
         };
     }
 

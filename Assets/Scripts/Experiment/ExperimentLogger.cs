@@ -814,7 +814,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             };
             var data = new JObject
             {
-                ["log_schema_version"] = "theme-driven-experiment-v2",
+                ["log_schema_version"] = "natural-language-task-experiment-v3",
                 ["participant_id"] = participantId,
                 ["condition"] = condition,
                 ["policy_version"] = ExperimentConditionPolicy.CurrentVersion,
@@ -844,8 +844,14 @@ public sealed class ExperimentLogger : MonoBehaviour
             data["planner_mode"] = profile != null ? profile.plannerMode.ToString() : string.Empty;
             data["continuous_rdw_enabled"] = profile != null && profile.continuousRdwEnabled;
             data["reset_mode"] = profile != null ? profile.resetMode.ToString() : string.Empty;
-            data["theme_goal_id"] = runtimeState != null ? runtimeState.themeGoalId : string.Empty;
-            data["theme_progress"] = runtimeState != null ? runtimeState.themeCoverage : 0f;
+            data["user_task"] = runtimeState != null ? runtimeState.userTask : string.Empty;
+            data["final_goal_id"] = runtimeState != null ? runtimeState.finalTargetId : string.Empty;
+            data["task_stage"] = runtimeState != null
+                ? runtimeState.taskStage.ToString().ToLowerInvariant()
+                : string.Empty;
+            data["intermediate_visit_count"] = runtimeState != null
+                ? runtimeState.intermediateVisitCount
+                : 0;
             data["visited_exhibit_ids"] = new JArray(runtimeState?.visitedExhibitIds ?? Array.Empty<string>());
             data["plan_id"] = runtimeState != null ? runtimeState.activePlanId : string.Empty;
             data["plan_generation"] = runtimeState != null ? runtimeState.planGeneration : 0;
@@ -860,10 +866,8 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["semantic_plan_request"] = JToken.FromObject(semanticPlanRequest);
                 data["planner_input_hash"] = ComputeStableJsonHash(new
                 {
-                    semanticPlanRequest.theme_goal,
-                    semanticPlanRequest.current_exhibit_id,
-                    semanticPlanRequest.visited_exhibit_ids,
-                    semanticPlanRequest.theme_progress,
+                    semanticPlanRequest.task,
+                    semanticPlanRequest.task_state,
                     semanticPlanRequest.local_semantic_nodes,
                     semanticPlanRequest.local_spatial_edges,
                     semanticPlanRequest.local_semantic_edges

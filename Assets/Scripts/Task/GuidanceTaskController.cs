@@ -24,7 +24,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// <summary>当前任务使用的实验 Condition ID。</summary>
     public string CurrentCondition => defaultTask.condition;
 
-    /// <summary>注入唯一静态语义图，供主题覆盖和 Semantic-only 路线推进使用。</summary>
+    /// <summary>注入唯一静态语义图，供任务引用校验和规划协议构建使用。</summary>
     public void ConfigureSemanticGraph(StaticSceneSemanticGraph graph)
     {
         semanticGraph = graph;
@@ -39,18 +39,17 @@ public sealed class GuidanceTaskController : MonoBehaviour
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(defaultTask.themeGoalId) ||
-            graph.GetTheme(defaultTask.themeGoalId) == null)
+        if (string.IsNullOrWhiteSpace(defaultTask.userTask))
         {
-            errors?.Add(
-                "unknown_theme_reference:task.theme_goal_id:" +
-                (defaultTask.themeGoalId ?? string.Empty));
+            errors?.Add("task.user_task_missing");
+        }
+        if (defaultTask.minimumIntermediateVisits < 0 ||
+            defaultTask.maximumIntermediateVisits < defaultTask.minimumIntermediateVisits)
+        {
+            errors?.Add("task.intermediate_visit_policy_invalid");
         }
         ValidateExhibitReference(graph, errors, defaultTask.startExhibitId, "task.start_exhibit_id");
-        if (!string.IsNullOrWhiteSpace(defaultTask.finalTargetId))
-        {
-            ValidateExhibitReference(graph, errors, defaultTask.finalTargetId, "task.final_target_id");
-        }
+        ValidateExhibitReference(graph, errors, defaultTask.finalTargetId, "task.final_target_id");
         if (defaultTask.routeTargetIds == null || defaultTask.routeTargetIds.Length == 0)
         {
             errors?.Add("task.route_target_ids_missing");
@@ -92,12 +91,10 @@ public sealed class GuidanceTaskController : MonoBehaviour
             GetRouteTarget(1),
             defaultTask.finalTargetId,
             defaultTask.maxConsecutiveDetours);
-        runtimeState.ConfigureTheme(
-            defaultTask.themeGoalId,
-            0f,
-            defaultTask.themeCoverageThreshold,
-            defaultTask.maxThemeSteps);
-        runtimeState.UpdateThemeCoverage(GetThemeExhibitIds(runtimeState.themeGoalId));
+        runtimeState.ConfigureIntermediateVisitPolicy(
+            defaultTask.userTask,
+            defaultTask.minimumIntermediateVisits,
+            defaultTask.maximumIntermediateVisits);
         StateChanged?.Invoke(runtimeState);
     }
 
@@ -194,7 +191,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
                 return;
             }
 
-            HandleThemeTargetArrived(targetId);
+            HandlePlannedTargetArrived(targetId);
             return;
         }
 
@@ -205,16 +202,16 @@ public sealed class GuidanceTaskController : MonoBehaviour
 
         routeIndex = Mathf.Min(routeIndex + 1, defaultTask.routeTargetIds.Length - 1);
         runtimeState.AdvanceTo(targetId, GetRouteTarget(routeIndex + 1));
-        runtimeState.UpdateThemeCoverage(defaultTask.routeTargetIds.Length);
         StateChanged?.Invoke(runtimeState);
     }
 
     /// <summary>将任务置为等待物理 reset，并发布一次状态变化。</summary>
     public void PauseForReset()
     {
+        var previousPhase = runtimeState.phase;
         var previousVersion = runtimeState.stateVersion;
         runtimeState.PauseForReset();
-        if (runtimeState.stateVersion != previousVersion)
+        if (runtimeState.stateVersion != previousVersion || runtimeState.phase != previousPhase)
         {
             StateChanged?.Invoke(runtimeState);
         }
@@ -223,9 +220,10 @@ public sealed class GuidanceTaskController : MonoBehaviour
     /// <summary>尝试从 reset 暂停恢复，并发布恢复后的任务状态。</summary>
     public void ResumeAfterReset()
     {
+        var previousPhase = runtimeState.phase;
         var previousVersion = runtimeState.stateVersion;
         runtimeState.Resume();
-        if (runtimeState.stateVersion != previousVersion)
+        if (runtimeState.stateVersion != previousVersion || runtimeState.phase != previousPhase)
         {
             StateChanged?.Invoke(runtimeState);
         }
@@ -386,54 +384,39 @@ public sealed class GuidanceTaskController : MonoBehaviour
         return defaultTask.routeTargetIds[index];
     }
 
-    /// <summary>按主题完成条件结束任务并发布状态变化。</summary>
-    public void CompleteTheme()
+    /// <summary>满足中间游览约束后锁定最终目标并发布状态变化。</summary>
+    public bool EnterFinalApproach()
     {
-        if (!runtimeState.IsNavigating) return;
-        runtimeState.CompleteTheme();
-        StateChanged?.Invoke(runtimeState);
+        var entered = runtimeState.EnterFinalApproach();
+        if (entered)
+        {
+            StateChanged?.Invoke(runtimeState);
+        }
+        return entered;
     }
 
-    /// <summary>推进一项动态主题路线的已到达目标，不依赖旧固定路线数组。</summary>
-    public bool HandleThemeTargetArrived(string targetId)
+    /// <summary>处理动态计划目标到达；中间目标推进计数，最终目标完成任务。</summary>
+    public bool HandlePlannedTargetArrived(string targetId)
     {
-        if (!runtimeState.IsNavigating || string.IsNullOrWhiteSpace(targetId))
+        if (!runtimeState.IsNavigating || string.IsNullOrWhiteSpace(targetId) ||
+            !string.Equals(targetId, runtimeState.nextTargetId, StringComparison.Ordinal))
         {
             return false;
         }
 
-        runtimeState.AdvanceSemanticTo(targetId);
-        runtimeState.UpdateThemeCoverage(GetThemeExhibitIds(runtimeState.themeGoalId));
-        if (runtimeState.HasReachedThemeCompletionThreshold)
+        if (string.Equals(targetId, runtimeState.finalTargetId, StringComparison.Ordinal))
         {
-            runtimeState.CompleteTheme();
+            if (!runtimeState.CompleteFinalGoal(targetId))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            runtimeState.AdvanceSemanticTo(targetId);
         }
         StateChanged?.Invoke(runtimeState);
         return true;
-    }
-
-    private IEnumerable<string> GetThemeExhibitIds(string themeId)
-    {
-        if (semanticGraph == null || string.IsNullOrWhiteSpace(themeId))
-        {
-            yield break;
-        }
-
-        foreach (var exhibit in semanticGraph.Exhibits)
-        {
-            var themes = exhibit != null && exhibit.knowledge != null
-                ? exhibit.knowledge.themes
-                : null;
-            if (themes == null) continue;
-            foreach (var candidateTheme in themes)
-            {
-                if (string.Equals(candidateTheme, themeId, StringComparison.Ordinal))
-                {
-                    yield return exhibit.id;
-                    break;
-                }
-            }
-        }
     }
 
     private static string[] Copy(System.Collections.Generic.IReadOnlyList<string> values)

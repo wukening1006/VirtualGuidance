@@ -22,8 +22,8 @@ TASK_DEFINITION_VERSION = "t2-main-target-v2"
 GUIDANCE_SCHEMA_VERSION = "guidance-schema-v3"
 CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
-SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v1"
-RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v2"
+SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v2"
+RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v3"
 
 
 class ExperimentProfile(BaseModel):
@@ -711,14 +711,66 @@ class VerifierResult(BaseModel):
     reason: str = Field(min_length=1)
 
 
-class ThemeGoal(BaseModel):
-    """Semantic-only Planner 使用的静态主题目标。"""
+class FinalGoalContract(BaseModel):
+    """任务不可变的最终展品目标。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    theme_id: str = Field(min_length=1)
+    exhibit_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    required: bool = True
+
+
+class IntermediateVisitPolicyContract(BaseModel):
+    """最终目标解锁前的中间展品游览约束。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    minimum_visits: int = Field(ge=0)
+    maximum_visits: int = Field(ge=1)
+    exclude_final_until_ready: bool = True
+    require_semantic_connection: bool = True
+
+    @model_validator(mode="after")
+    def validate_visit_range(self) -> "IntermediateVisitPolicyContract":
+        if self.maximum_visits < self.minimum_visits:
+            raise ValueError("maximum_visits must be greater than or equal to minimum_visits.")
+        return self
+
+
+class NaturalLanguageTaskContract(BaseModel):
+    """三个实验条件共享的自然语言任务及其硬约束。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    user_task: str = Field(min_length=1)
+    final_goal: FinalGoalContract
+    intermediate_policy: IntermediateVisitPolicyContract
+
+
+class NaturalLanguageTaskState(BaseModel):
+    """模型只读的任务进度快照。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phase: Literal["exploring", "final_approach", "completed"]
+    current_exhibit_id: str = Field(min_length=1)
+    visited_exhibit_ids: list[str]
+    intermediate_visit_count: int = Field(ge=0)
+    required_target_id: str = ""
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> "NaturalLanguageTaskState":
+        if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
+            raise ValueError("visited_exhibit_ids must be unique.")
+        if self.current_exhibit_id not in self.visited_exhibit_ids:
+            raise ValueError("current_exhibit_id must belong to visited_exhibit_ids.")
+        if self.phase == "final_approach" and not self.required_target_id:
+            raise ValueError("final_approach requires required_target_id.")
+        if self.phase != "final_approach" and self.required_target_id:
+            raise ValueError("required_target_id is only valid during final_approach.")
+        return self
 
 
 class SemanticPlanningNode(BaseModel):
@@ -735,7 +787,6 @@ class SemanticPlanningNode(BaseModel):
     visual_features: list[str]
     cultural_significance: list[str]
     key_concepts: list[str]
-    themes: list[str]
     interpretation_notes: list[CandidateInterpretationNote]
     semantic_edges: list[CandidateSemanticEdge]
     spatial_edges: list[CandidateSpatialEdge]
@@ -746,36 +797,31 @@ class SemanticPlanRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    planning_schema_version: Literal["semantic-local-planning-v1"]
+    planning_schema_version: Literal["semantic-local-planning-v2"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     generation: int = Field(ge=1)
     task_state_version: int = Field(ge=0)
-    theme_goal: ThemeGoal
-    current_exhibit_id: str = Field(min_length=1)
-    visited_exhibit_ids: list[str]
-    theme_progress: dict[str, float]
+    task: NaturalLanguageTaskContract
+    task_state: NaturalLanguageTaskState
     local_semantic_nodes: list[SemanticPlanningNode] = Field(min_length=1)
     local_spatial_edges: list[CandidateSpatialEdge]
     local_semantic_edges: list[CandidateSemanticEdge]
-
-    @field_validator("theme_progress")
-    @classmethod
-    def validate_theme_progress(cls, value: dict[str, float]) -> dict[str, float]:
-        if any(not math.isfinite(progress) or progress < 0.0 or progress > 1.0
-               for progress in value.values()):
-            raise ValueError("theme_progress values must be finite numbers in [0, 1].")
-        return value
 
     @model_validator(mode="after")
     def validate_local_graph(self) -> "SemanticPlanRequest":
         node_ids = [node.id for node in self.local_semantic_nodes]
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("local_semantic_nodes ids must be unique.")
-        if self.current_exhibit_id not in node_ids:
+        if self.task_state.current_exhibit_id not in node_ids:
             raise ValueError("current_exhibit_id must belong to local_semantic_nodes.")
-        if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
-            raise ValueError("visited_exhibit_ids must be unique.")
+        policy = self.task.intermediate_policy
+        if self.task_state.intermediate_visit_count > policy.maximum_visits:
+            raise ValueError("intermediate_visit_count exceeds maximum_visits.")
+        if self.task_state.phase == "final_approach" and (
+            self.task_state.required_target_id != self.task.final_goal.exhibit_id
+        ):
+            raise ValueError("required_target_id must match final_goal during final_approach.")
         node_set = set(node_ids)
         for edge in [*self.local_spatial_edges, *self.local_semantic_edges]:
             if edge.source not in node_set or edge.target not in node_set:
@@ -815,7 +861,7 @@ class SemanticPlanResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    planning_schema_version: Literal["semantic-local-planning-v1"]
+    planning_schema_version: Literal["semantic-local-planning-v2"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     generation: int = Field(ge=1)
@@ -835,11 +881,14 @@ def verify_semantic_plan(
         return VerifierResult(approved=False, reason="node_outside_local_graph")
     if len(set(draft.ordered_node_ids)) != len(draft.ordered_node_ids):
         return VerifierResult(approved=False, reason="plan_contains_cycle")
-    if request.current_exhibit_id in draft.ordered_node_ids:
-        return VerifierResult(approved=False, reason="plan_starts_at_current_exhibit")
-    visited = set(request.visited_exhibit_ids)
+    progress = request.task_state
+    policy = request.task.intermediate_policy
+    final_target_id = request.task.final_goal.exhibit_id
+    if progress.current_exhibit_id in draft.ordered_node_ids:
+        return VerifierResult(approved=False, reason="semantic_plan_starts_at_current_exhibit")
+    visited = set(progress.visited_exhibit_ids)
     if any(node_id in visited for node_id in draft.ordered_node_ids):
-        return VerifierResult(approved=False, reason="plan_targets_visited_exhibit")
+        return VerifierResult(approved=False, reason="semantic_plan_targets_visited_exhibit")
     spatial_pairs = {
         (edge.source, edge.target)
         for edge in request.local_spatial_edges
@@ -850,46 +899,59 @@ def verify_semantic_plan(
         if edge.bidirectional
     )
     for source, target in zip(
-        [request.current_exhibit_id, *draft.ordered_node_ids],
+        [progress.current_exhibit_id, *draft.ordered_node_ids],
         draft.ordered_node_ids,
     ):
         if (source, target) not in spatial_pairs:
             return VerifierResult(
                 approved=False,
-                reason=f"missing_spatial_edge:{source}->{target}",
+                reason=f"semantic_plan_missing_spatial_edge:{source}->{target}",
             )
 
-    node_by_id = {node.id: node for node in request.local_semantic_nodes}
-    planned_nodes = [node_by_id[node_id] for node_id in draft.ordered_node_ids]
-    theme_id = request.theme_goal.theme_id
-    semantic_edges = {
-        (edge.source, edge.target)
-        for edge in request.local_semantic_edges
-    }
-    semantic_edges.update(
-        (edge.target, edge.source)
-        for edge in request.local_semantic_edges
-        if not edge.directed
+    final_index = next(
+        (index for index, node_id in enumerate(draft.ordered_node_ids)
+         if node_id == final_target_id),
+        -1,
     )
-    for node in planned_nodes:
-        if not node.themes or theme_id in node.themes:
-            continue
-        connected_to_theme_node = any(
-            other is not node
-            and other.themes
-            and theme_id in other.themes
-            and ((node.id, other.id) in semantic_edges or (other.id, node.id) in semantic_edges)
-            for other in planned_nodes
+    final_ready = progress.intermediate_visit_count >= policy.minimum_visits
+    final_required = (
+        progress.phase == "final_approach"
+        or progress.intermediate_visit_count >= policy.maximum_visits
+    )
+    if final_index >= 0 and (
+        not final_ready or final_index != 0 or len(draft.ordered_node_ids) != 1
+    ):
+        reason = (
+            "semantic_plan_final_goal_must_be_single_target"
+            if final_ready
+            else "semantic_plan_final_goal_locked"
         )
-        if not connected_to_theme_node:
-            return VerifierResult(approved=False, reason="plan_leaves_theme_context")
-    for left, right in zip(planned_nodes, planned_nodes[1:]):
-        shares_theme = bool(set(left.themes).intersection(right.themes))
-        if semantic_edges and not shares_theme and (left.id, right.id) not in semantic_edges:
-            return VerifierResult(
-                approved=False,
-                reason=f"semantic_discontinuity:{left.id}->{right.id}",
-            )
+        return VerifierResult(approved=False, reason=reason)
+    if final_required and final_index != 0:
+        return VerifierResult(approved=False, reason="semantic_plan_final_goal_required")
+
+    if policy.require_semantic_connection:
+        adjacency: dict[str, set[str]] = {}
+        for edge in request.local_semantic_edges:
+            # 与 Unity 端一致：关系只用于证明相关性，不作为有向导航边。
+            adjacency.setdefault(edge.source, set()).add(edge.target)
+            adjacency.setdefault(edge.target, set()).add(edge.source)
+        for node_id in draft.ordered_node_ids:
+            if node_id == final_target_id:
+                continue
+            frontier = [node_id]
+            reached = {node_id}
+            while frontier and final_target_id not in reached:
+                current = frontier.pop(0)
+                for neighbor in adjacency.get(current, set()):
+                    if neighbor not in reached:
+                        reached.add(neighbor)
+                        frontier.append(neighbor)
+            if final_target_id not in reached:
+                return VerifierResult(
+                    approved=False,
+                    reason=f"semantic_plan_node_unrelated_to_final:{node_id}",
+                )
     return VerifierResult(approved=True, reason="semantic_plan_is_graph_valid")
 
 
@@ -940,7 +1002,7 @@ class RouteSelectionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    planning_schema_version: Literal["rdw-route-selection-v1", "rdw-route-selection-v2"]
+    planning_schema_version: Literal["rdw-route-selection-v3"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)
@@ -956,18 +1018,31 @@ class RouteSelectionRequest(BaseModel):
     estimator_id: str = Field(min_length=1)
     estimator_version: str = Field(min_length=1)
     route_candidates: list[PlanningRouteCandidate] = Field(min_length=1, max_length=5)
-    theme_goal: ThemeGoal | None = None
-    visited_exhibit_ids: list[str] = Field(default_factory=list)
-    theme_progress: dict[str, float] = Field(default_factory=dict)
+    task: NaturalLanguageTaskContract
+    task_state: NaturalLanguageTaskState
 
     @model_validator(mode="after")
     def validate_candidate_identity(self) -> "RouteSelectionRequest":
-        if self.planning_schema_version == RDW_ROUTE_SELECTION_SCHEMA_VERSION and self.theme_goal is None:
-            raise ValueError("rdw-route-selection-v2 requires theme_goal.")
-        if self.planning_schema_version == "rdw-route-selection-v1" and not self.final_target_id:
-            raise ValueError("rdw-route-selection-v1 requires final_target_id.")
-        if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
-            raise ValueError("visited_exhibit_ids must be unique.")
+        if self.final_target_id != self.task.final_goal.exhibit_id:
+            raise ValueError("final_target_id must match task.final_goal.exhibit_id.")
+        if self.current_node_id != self.task_state.current_exhibit_id:
+            raise ValueError("current_node_id must match task_state.current_exhibit_id.")
+        if self.task_state.phase == "final_approach" and (
+            self.task_state.required_target_id != self.final_target_id
+        ):
+            raise ValueError("final_approach must require final_target_id.")
+        policy = self.task.intermediate_policy
+        final_ready = self.task_state.intermediate_visit_count >= policy.minimum_visits
+        final_required = (
+            self.task_state.phase == "final_approach"
+            or self.task_state.intermediate_visit_count >= policy.maximum_visits
+        )
+        for candidate in self.route_candidates:
+            targets_final = candidate.first_target_id == self.final_target_id
+            if targets_final and not final_ready:
+                raise ValueError("route candidate selects final goal before minimum_visits.")
+            if final_required and not targets_final:
+                raise ValueError("all route candidates must select final goal during final_approach.")
         route_ids = [candidate.route_id for candidate in self.route_candidates]
         if len(route_ids) != len(set(route_ids)):
             raise ValueError("route_candidates route_id values must be unique.")
@@ -993,7 +1068,7 @@ class RouteSelectionResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    planning_schema_version: Literal["rdw-route-selection-v1", "rdw-route-selection-v2"]
+    planning_schema_version: Literal["rdw-route-selection-v3"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)

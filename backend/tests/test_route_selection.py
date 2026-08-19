@@ -24,7 +24,7 @@ def route_selection_payload() -> dict:
     """构造由 Unity 冻结的最小合法 Top-K 路线请求。"""
 
     return {
-        "planning_schema_version": "rdw-route-selection-v1",
+        "planning_schema_version": "rdw-route-selection-v3",
         "session_id": "session-route-001",
         "request_id": "request-route-001",
         "plan_id": "plan-001",
@@ -101,23 +101,44 @@ def route_selection_payload() -> dict:
                 ],
             },
         ],
+        "task": {
+            "task_id": "T2_main_target",
+            "user_task": "参观相关展品后，最后抵达青铜神树。",
+            "final_goal": {
+                "exhibit_id": "E5",
+                "name": "青铜神树",
+                "required": True,
+            },
+            "intermediate_policy": {
+                "minimum_visits": 3,
+                "maximum_visits": 4,
+                "exclude_final_until_ready": True,
+                "require_semantic_connection": True,
+            },
+        },
+        "task_state": {
+            "phase": "exploring",
+            "current_exhibit_id": "E1",
+            "visited_exhibit_ids": ["E1"],
+            "intermediate_visit_count": 0,
+            "required_target_id": "",
+        },
     }
 
 
-def test_route_selection_v2_requires_theme_context() -> None:
+def test_route_selection_v3_requires_natural_language_task_context() -> None:
     payload = route_selection_payload()
-    payload["planning_schema_version"] = "rdw-route-selection-v2"
-    payload["final_target_id"] = ""
-    payload["theme_goal"] = {
-        "theme_id": "TH_RITUAL",
-        "name": "祭祀",
-        "description": "主题描述",
-    }
-    payload["visited_exhibit_ids"] = ["E1"]
-    payload["theme_progress"] = {"TH_RITUAL": 0.0}
     request = RouteSelectionRequest.model_validate(payload)
-    assert request.theme_goal is not None
-    assert request.final_target_id == ""
+    assert request.task.final_goal.exhibit_id == "E5"
+    assert request.task_state.intermediate_visit_count == 0
+
+
+def test_route_selection_rejects_final_goal_mismatch() -> None:
+    payload = route_selection_payload()
+    payload["final_target_id"] = "E8"
+
+    with pytest.raises(ValueError, match="final_target_id"):
+        RouteSelectionRequest.model_validate(payload)
 
 
 class FixedRouteSelector:

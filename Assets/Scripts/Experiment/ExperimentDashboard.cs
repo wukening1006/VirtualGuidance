@@ -928,6 +928,20 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
     }
 
+    private void HandlePlanningFailed(string message)
+    {
+        experimentLogger?.LogStatus(
+            "planning_failed",
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            string.IsNullOrWhiteSpace(message) ? "planning failed" : message);
+        if (IsSessionActiveState())
+        {
+            guidanceCoordinator?.HoldAfterPlanningFailure(message);
+        }
+    }
+
     private void HandleGuidanceRejected(string reason)
     {
         experimentLogger?.LogGuidanceRejected(
@@ -1529,6 +1543,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.GuidanceRejected += HandleGuidanceRejected;
             guidanceCoordinator.RuntimeIntervention -= HandleRuntimeIntervention;
             guidanceCoordinator.RuntimeIntervention += HandleRuntimeIntervention;
+            guidanceCoordinator.PlanningFailed -= HandlePlanningFailed;
+            guidanceCoordinator.PlanningFailed += HandlePlanningFailed;
             guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExecuted += HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
@@ -1604,6 +1620,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             guidanceCoordinator.GuidanceRejected -= HandleGuidanceRejected;
             guidanceCoordinator.RuntimeIntervention -= HandleRuntimeIntervention;
+            guidanceCoordinator.PlanningFailed -= HandlePlanningFailed;
             guidanceCoordinator.GuidanceExecuted -= HandleGuidanceExecuted;
             guidanceCoordinator.GuidanceExpired -= HandleGuidanceExpired;
             guidanceCoordinator.RequestPhaseChanged -= HandleRequestPhaseChanged;

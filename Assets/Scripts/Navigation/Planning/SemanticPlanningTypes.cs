@@ -4,32 +4,113 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
-/// <summary>
-/// 场景语义图中的主题目标；正式实验只引用 scene_semantics.json 中已有主题。
-/// </summary>
+/// <summary>任务不可变的最终目标。</summary>
 [Serializable]
-public sealed class ThemeGoal
+public sealed class FinalGoalContract
 {
-    /// <summary>主题稳定 ID。</summary>
-    [JsonProperty("theme_id", Required = Required.Always)] public string theme_id;
-    /// <summary>主题显示名称。</summary>
+    /// <summary>最终目标展品 ID。</summary>
+    [JsonProperty("exhibit_id", Required = Required.Always)] public string exhibit_id;
+    /// <summary>最终目标显示名称。</summary>
     [JsonProperty("name", Required = Required.Always)] public string name;
-    /// <summary>主题知识描述。</summary>
-    [JsonProperty("description", Required = Required.Always)] public string description;
+    /// <summary>是否必须到达该目标才能完成任务。</summary>
+    [JsonProperty("required", Required = Required.Always)] public bool required = true;
 
-    /// <summary>从静态语义图读取主题，找不到时返回 null。</summary>
-    public static ThemeGoal From(StaticSceneSemanticGraph graph, string themeId)
+    /// <summary>从静态语义图读取最终展品，找不到时返回 null。</summary>
+    public static FinalGoalContract From(StaticSceneSemanticGraph graph, string exhibitId)
     {
-        if (graph == null || string.IsNullOrWhiteSpace(themeId)) return null;
-        var definition = graph.GetTheme(themeId);
-        return definition == null
-            ? null
-            : new ThemeGoal
+        if (graph == null || string.IsNullOrWhiteSpace(exhibitId) ||
+            !graph.TryGetExhibit(exhibitId, out var definition)) return null;
+        return new FinalGoalContract
+        {
+            exhibit_id = definition.id,
+            name = definition.name,
+            required = true
+        };
+    }
+}
+
+/// <summary>约束最终目标解锁前允许执行的中间游览数量。</summary>
+[Serializable]
+public sealed class IntermediateVisitPolicyContract
+{
+    /// <summary>最终目标允许被选择前的最少中间展品数量。</summary>
+    [JsonProperty("minimum_visits", Required = Required.Always)] public int minimum_visits;
+    /// <summary>达到后必须选择最终目标的中间展品数量。</summary>
+    [JsonProperty("maximum_visits", Required = Required.Always)] public int maximum_visits;
+    /// <summary>最少数量达成前是否排除最终目标。</summary>
+    [JsonProperty("exclude_final_until_ready", Required = Required.Always)] public bool exclude_final_until_ready = true;
+    /// <summary>中间展品是否必须与最终目标存在语义图连接。</summary>
+    [JsonProperty("require_semantic_connection", Required = Required.Always)] public bool require_semantic_connection = true;
+}
+
+/// <summary>三个正式条件共享的自然语言任务契约。</summary>
+[Serializable]
+public sealed class NaturalLanguageTaskContract
+{
+    /// <summary>稳定任务 ID。</summary>
+    [JsonProperty("task_id", Required = Required.Always)] public string task_id;
+    /// <summary>提供给模型理解意图的自然语言任务。</summary>
+    [JsonProperty("user_task", Required = Required.Always)] public string user_task;
+    /// <summary>不可变最终目标。</summary>
+    [JsonProperty("final_goal", Required = Required.Always)] public FinalGoalContract final_goal;
+    /// <summary>中间游览约束。</summary>
+    [JsonProperty("intermediate_policy", Required = Required.Always)] public IntermediateVisitPolicyContract intermediate_policy;
+
+    /// <summary>从运行状态和静态语义图构建权威任务契约。</summary>
+    public static NaturalLanguageTaskContract From(StaticSceneSemanticGraph graph, GuidanceRuntimeState state)
+    {
+        if (state == null) return null;
+        var finalGoal = FinalGoalContract.From(graph, state.finalTargetId);
+        if (finalGoal == null) return null;
+        return new NaturalLanguageTaskContract
+        {
+            task_id = state.taskId,
+            user_task = state.userTask,
+            final_goal = finalGoal,
+            intermediate_policy = new IntermediateVisitPolicyContract
             {
-                theme_id = definition.id,
-                name = definition.name,
-                description = definition.description
-            };
+                minimum_visits = state.minimumIntermediateVisits,
+                maximum_visits = state.maximumIntermediateVisits,
+                exclude_final_until_ready = true,
+                require_semantic_connection = true
+            }
+        };
+    }
+}
+
+/// <summary>发送给模型的只读任务进度快照。</summary>
+[Serializable]
+public sealed class NaturalLanguageTaskState
+{
+    /// <summary>exploring、final_approach 或 completed。</summary>
+    [JsonProperty("phase", Required = Required.Always)] public string phase;
+    /// <summary>当前展品 ID。</summary>
+    [JsonProperty("current_exhibit_id", Required = Required.Always)] public string current_exhibit_id;
+    /// <summary>已访问展品 ID。</summary>
+    [JsonProperty("visited_exhibit_ids", Required = Required.Always)] public string[] visited_exhibit_ids = Array.Empty<string>();
+    /// <summary>已完成的中间展品数量。</summary>
+    [JsonProperty("intermediate_visit_count", Required = Required.Always)] public int intermediate_visit_count;
+    /// <summary>当前强制目标；探索阶段为空。</summary>
+    [JsonProperty("required_target_id", Required = Required.Always)] public string required_target_id;
+
+    /// <summary>从运行状态创建不可变请求快照。</summary>
+    public static NaturalLanguageTaskState From(GuidanceRuntimeState state)
+    {
+        if (state == null) return null;
+        return new NaturalLanguageTaskState
+        {
+            phase = state.taskStage == GuidanceTaskStage.FinalApproach
+                ? "final_approach"
+                : state.taskStage == GuidanceTaskStage.Completed ? "completed" : "exploring",
+            current_exhibit_id = state.currentExhibitId,
+            visited_exhibit_ids = state.visitedExhibitIds != null
+                ? (string[])state.visitedExhibitIds.Clone()
+                : Array.Empty<string>(),
+            intermediate_visit_count = state.intermediateVisitCount,
+            required_target_id = state.taskStage == GuidanceTaskStage.FinalApproach
+                ? state.finalTargetId
+                : string.Empty
+        };
     }
 }
 
@@ -57,8 +138,6 @@ public sealed class SemanticPlanningNode
     [JsonProperty("cultural_significance", Required = Required.Always)] public string[] cultural_significance = Array.Empty<string>();
     /// <summary>关键知识概念。</summary>
     [JsonProperty("key_concepts", Required = Required.Always)] public string[] key_concepts = Array.Empty<string>();
-    /// <summary>所属主题 ID。</summary>
-    [JsonProperty("themes", Required = Required.Always)] public string[] themes = Array.Empty<string>();
     /// <summary>解释边界说明。</summary>
     [JsonProperty("interpretation_notes", Required = Required.Always)] public InterpretationNote[] interpretation_notes = Array.Empty<InterpretationNote>();
     /// <summary>局部语义边。</summary>
@@ -84,7 +163,6 @@ public sealed class SemanticPlanningNode
             visual_features = Copy(exhibit.knowledge.visual_features),
             cultural_significance = Copy(exhibit.knowledge.cultural_significance),
             key_concepts = Copy(exhibit.knowledge.key_concepts),
-            themes = Copy(exhibit.knowledge.themes),
             interpretation_notes = Copy(exhibit.knowledge.interpretation_notes),
             semantic_edges = Copy(semanticEdges),
             spatial_edges = Copy(spatialEdges)
@@ -108,7 +186,7 @@ public sealed class SemanticPlanningNode
 public sealed class SemanticPlanRequest
 {
     /// <summary>语义局部规划协议版本。</summary>
-    public string planning_schema_version = "semantic-local-planning-v1";
+    public string planning_schema_version = "semantic-local-planning-v2";
     /// <summary>实验会话 ID。</summary>
     public string session_id;
     /// <summary>请求 ID。</summary>
@@ -117,14 +195,10 @@ public sealed class SemanticPlanRequest
     public int generation;
     /// <summary>任务状态版本。</summary>
     public int task_state_version;
-    /// <summary>主题目标。</summary>
-    public ThemeGoal theme_goal;
-    /// <summary>当前展品 ID。</summary>
-    public string current_exhibit_id;
-    /// <summary>已参观展品 ID。</summary>
-    public string[] visited_exhibit_ids = Array.Empty<string>();
-    /// <summary>主题进度，键和值均为语义统计。</summary>
-    public Dictionary<string, float> theme_progress = new Dictionary<string, float>();
+    /// <summary>自然语言与不可变最终目标组成的任务契约。</summary>
+    public NaturalLanguageTaskContract task;
+    /// <summary>当前任务进度快照。</summary>
+    public NaturalLanguageTaskState task_state;
     /// <summary>局部语义节点。</summary>
     public SemanticPlanningNode[] local_semantic_nodes = Array.Empty<SemanticPlanningNode>();
     /// <summary>局部虚拟空间边。</summary>
@@ -161,6 +235,12 @@ public sealed class SemanticPlanResponse
             failureReason = "semantic_plan_request_missing";
             return false;
         }
+        if (request.task?.final_goal == null || request.task.intermediate_policy == null ||
+            request.task_state == null)
+        {
+            failureReason = "semantic_plan_task_contract_missing";
+            return false;
+        }
         if (!string.Equals(planning_schema_version, request.planning_schema_version, StringComparison.Ordinal) ||
             !string.Equals(session_id, request.session_id, StringComparison.Ordinal) ||
             !string.Equals(request_id, request.request_id, StringComparison.Ordinal) ||
@@ -172,6 +252,11 @@ public sealed class SemanticPlanResponse
         if (verifier == null || !verifier.approved)
         {
             failureReason = verifier != null ? verifier.reason : "semantic_plan_verifier_missing";
+            return false;
+        }
+        if (ordered_node_ids == null || ordered_node_ids.Length == 0)
+        {
+            failureReason = "semantic_plan_empty";
             return false;
         }
         return SemanticPlanVerifier.TryVerify(request, ordered_node_ids, out failureReason);
@@ -205,6 +290,12 @@ public static class SemanticPlanVerifier
             failureReason = "semantic_plan_request_missing";
             return false;
         }
+        if (request.task?.final_goal == null || request.task.intermediate_policy == null ||
+            request.task_state == null)
+        {
+            failureReason = "semantic_plan_task_contract_missing";
+            return false;
+        }
         if (orderedNodeIds == null || orderedNodeIds.Count < 1 || orderedNodeIds.Count > 3)
         {
             failureReason = "semantic_plan_length_invalid";
@@ -229,7 +320,7 @@ public static class SemanticPlanVerifier
         var containsCurrent = false;
         foreach (var nodeId in orderedNodeIds)
         {
-            if (string.Equals(nodeId, request.current_exhibit_id, StringComparison.Ordinal))
+            if (string.Equals(nodeId, request.task_state.current_exhibit_id, StringComparison.Ordinal))
             {
                 containsCurrent = true;
                 break;
@@ -241,7 +332,9 @@ public static class SemanticPlanVerifier
             return false;
         }
 
-        var visited = new HashSet<string>(request.visited_exhibit_ids ?? Array.Empty<string>(), StringComparer.Ordinal);
+        var visited = new HashSet<string>(
+            request.task_state.visited_exhibit_ids ?? Array.Empty<string>(),
+            StringComparer.Ordinal);
         foreach (var nodeId in orderedNodeIds)
         {
             if (visited.Contains(nodeId))
@@ -253,7 +346,7 @@ public static class SemanticPlanVerifier
 
         for (var index = 0; index < orderedNodeIds.Count; index++)
         {
-            var source = index == 0 ? request.current_exhibit_id : orderedNodeIds[index - 1];
+            var source = index == 0 ? request.task_state.current_exhibit_id : orderedNodeIds[index - 1];
             var target = orderedNodeIds[index];
             var connected = false;
             foreach (var edge in request.local_spatial_edges ?? Array.Empty<SpatialEdgeDefinition>())
@@ -277,60 +370,84 @@ public static class SemanticPlanVerifier
             }
         }
 
-        var nodeById = new Dictionary<string, SemanticPlanningNode>(StringComparer.Ordinal);
-        foreach (var node in request.local_semantic_nodes ?? Array.Empty<SemanticPlanningNode>())
+        var finalTargetId = request.task?.final_goal?.exhibit_id ?? string.Empty;
+        var policy = request.task?.intermediate_policy;
+        var progress = request.task_state;
+        if (string.IsNullOrWhiteSpace(finalTargetId) || policy == null || progress == null)
         {
-            if (node != null && !string.IsNullOrWhiteSpace(node.id)) nodeById[node.id] = node;
+            failureReason = "semantic_plan_task_contract_missing";
+            return false;
         }
-        var plannedNodes = new List<SemanticPlanningNode>();
-        foreach (var nodeId in orderedNodeIds)
-        {
-            if (nodeById.TryGetValue(nodeId, out var node)) plannedNodes.Add(node);
-        }
-        var themeId = request.theme_goal != null ? request.theme_goal.theme_id : string.Empty;
-        var semanticEdges = request.local_semantic_edges ?? Array.Empty<SemanticEdgeDefinition>();
-        foreach (var node in plannedNodes)
-        {
-            if (node.themes == null || node.themes.Length == 0 ||
-                Array.IndexOf(node.themes, themeId) >= 0)
-            {
-                continue;
-            }
 
-            var connectedToThemeNode = false;
-            foreach (var other in plannedNodes)
-            {
-                if (other == null || other == node || other.themes == null ||
-                    Array.IndexOf(other.themes, themeId) < 0) continue;
-                connectedToThemeNode = HasSemanticConnection(semanticEdges, node.id, other.id);
-                if (connectedToThemeNode) break;
-            }
-            if (!connectedToThemeNode)
-            {
-                failureReason = "semantic_plan_leaves_theme_context";
-                return false;
-            }
-        }
-        for (var index = 0; index + 1 < plannedNodes.Count; index++)
+        var finalIndex = IndexOf(orderedNodeIds, finalTargetId);
+        var finalReady = progress.intermediate_visit_count >= policy.minimum_visits;
+        var finalRequired = string.Equals(progress.phase, "final_approach", StringComparison.Ordinal) ||
+                            progress.intermediate_visit_count >= policy.maximum_visits;
+        if (finalIndex >= 0 && (!finalReady || finalIndex != 0 || orderedNodeIds.Count != 1))
         {
-            var left = plannedNodes[index];
-            var right = plannedNodes[index + 1];
-            var sharesTheme = HasSharedTheme(left, right);
-            if (semanticEdges.Length > 0 && !sharesTheme &&
-                !HasSemanticConnection(semanticEdges, left.id, right.id))
+            failureReason = finalReady
+                ? "semantic_plan_final_goal_must_be_single_target"
+                : "semantic_plan_final_goal_locked";
+            return false;
+        }
+        if (finalRequired && finalIndex != 0)
+        {
+            failureReason = "semantic_plan_final_goal_required";
+            return false;
+        }
+
+        if (policy.require_semantic_connection)
+        {
+            foreach (var nodeId in orderedNodeIds)
             {
-                failureReason = $"semantic_plan_discontinuity:{left.id}->{right.id}";
-                return false;
+                if (string.Equals(nodeId, finalTargetId, StringComparison.Ordinal)) continue;
+                if (!HasSemanticPath(
+                        request.local_semantic_edges,
+                        nodeId,
+                        finalTargetId))
+                {
+                    failureReason = $"semantic_plan_node_unrelated_to_final:{nodeId}";
+                    return false;
+                }
             }
         }
         return true;
     }
 
-    private static bool HasSharedTheme(SemanticPlanningNode left, SemanticPlanningNode right)
+    private static int IndexOf(IReadOnlyList<string> values, string target)
     {
-        foreach (var leftTheme in left?.themes ?? Array.Empty<string>())
+        for (var index = 0; index < values.Count; index++)
         {
-            if (Array.IndexOf(right?.themes ?? Array.Empty<string>(), leftTheme) >= 0) return true;
+            if (string.Equals(values[index], target, StringComparison.Ordinal)) return index;
+        }
+        return -1;
+    }
+
+    /// <summary>检查两个展品是否通过静态语义关系链连通。</summary>
+    public static bool HasSemanticPath(
+        IReadOnlyList<SemanticEdgeDefinition> edges,
+        string source,
+        string target)
+    {
+        if (string.Equals(source, target, StringComparison.Ordinal)) return true;
+        var visited = new HashSet<string>(StringComparer.Ordinal) { source };
+        var frontier = new Queue<string>();
+        frontier.Enqueue(source);
+        while (frontier.Count > 0)
+        {
+            var current = frontier.Dequeue();
+            foreach (var edge in edges ?? Array.Empty<SemanticEdgeDefinition>())
+            {
+                if (edge == null) continue;
+                var neighbor = string.Equals(edge.source, current, StringComparison.Ordinal)
+                    ? edge.target
+                    : string.Equals(edge.target, current, StringComparison.Ordinal)
+                        ? edge.source
+                        : string.Empty;
+                if (string.IsNullOrWhiteSpace(neighbor) || !visited.Add(neighbor)) continue;
+                if (string.Equals(neighbor, target, StringComparison.Ordinal)) return true;
+                frontier.Enqueue(neighbor);
+            }
         }
         return false;
     }
@@ -481,10 +598,8 @@ public sealed class SemanticLocalGraphBuilder
     /// <summary>根据空间跳数构建局部语义图。</summary>
     public SemanticPlanRequest Build(
         StaticSceneSemanticGraph graph,
-        ThemeGoal themeGoal,
-        string currentExhibitId,
-        IEnumerable<string> visitedExhibitIds,
-        IDictionary<string, float> themeProgress,
+        NaturalLanguageTaskContract task,
+        NaturalLanguageTaskState taskState,
         string sessionId,
         string requestId,
         int generation,
@@ -492,7 +607,9 @@ public sealed class SemanticLocalGraphBuilder
         int maximumSpatialHops = 3)
     {
         if (graph == null) throw new ArgumentNullException(nameof(graph));
-        if (themeGoal == null) throw new ArgumentNullException(nameof(themeGoal));
+        if (task == null) throw new ArgumentNullException(nameof(task));
+        if (taskState == null) throw new ArgumentNullException(nameof(taskState));
+        var currentExhibitId = taskState.current_exhibit_id;
         if (!graph.TryGetExhibit(currentExhibitId, out _))
         {
             throw new ArgumentException("current exhibit is not present in the static semantic graph", nameof(currentExhibitId));
@@ -517,12 +634,8 @@ public sealed class SemanticLocalGraphBuilder
             request_id = requestId ?? string.Empty,
             generation = Math.Max(1, generation),
             task_state_version = Math.Max(0, taskStateVersion),
-            theme_goal = themeGoal,
-            current_exhibit_id = currentExhibitId,
-            visited_exhibit_ids = new List<string>(visitedExhibitIds ?? Array.Empty<string>()).ToArray(),
-            theme_progress = themeProgress != null
-                ? new Dictionary<string, float>(themeProgress, StringComparer.Ordinal)
-                : new Dictionary<string, float>(StringComparer.Ordinal),
+            task = task,
+            task_state = taskState,
             local_semantic_nodes = nodes.ToArray(),
             local_semantic_edges = localSemanticEdges,
             local_spatial_edges = localSpatialEdges
@@ -698,8 +811,8 @@ public sealed class GuidanceExecutionSafetyEvaluator
 /// <summary>Ours Reset 期间使用的只读语义偏好上下文，不包含任何安全判定。</summary>
 public sealed class SemanticResetContext
 {
-    /// <summary>主题目标 ID。</summary>
-    public string ThemeGoalId { get; }
+    /// <summary>不可变最终目标 ID。</summary>
+    public string FinalGoalId { get; }
     /// <summary>当前活动计划 ID。</summary>
     public string ActivePlanId { get; }
     /// <summary>当前活动路线 ID。</summary>
@@ -713,14 +826,14 @@ public sealed class SemanticResetContext
 
     /// <summary>创建 Reset 语义偏好上下文。</summary>
     public SemanticResetContext(
-        string themeGoalId,
+        string finalGoalId,
         string activePlanId,
         string activeRouteId,
         string currentExhibitId,
         string nextSemanticTargetId,
         IEnumerable<string> remainingPlanNodeIds)
     {
-        ThemeGoalId = themeGoalId ?? string.Empty;
+        FinalGoalId = finalGoalId ?? string.Empty;
         ActivePlanId = activePlanId ?? string.Empty;
         ActiveRouteId = activeRouteId ?? string.Empty;
         CurrentExhibitId = currentExhibitId ?? string.Empty;
@@ -744,7 +857,7 @@ public sealed class RdwRouteCandidate
     public float route_utility;
     /// <summary>叙事介入等级。</summary>
     public string intervention_level;
-    /// <summary>主题覆盖增量。</summary>
+    /// <summary>任务语义进展。</summary>
     public float semantic_progress;
     /// <summary>路线边代价。</summary>
     public RdwRouteCandidateEdge[] edges = Array.Empty<RdwRouteCandidateEdge>();

@@ -13,13 +13,17 @@ public enum ContinuousRedirectorMode
     ThomasAPF
 }
 
-/// <summary>集中判断 Continuous Redirector 是否具备 owner 仲裁资格。</summary>
+/// <summary>集中判断基础移动或 Continuous Steering 是否具备 Root owner 仲裁资格。</summary>
 public static class RdwContinuousAvailability
 {
-    /// <summary>只有会话、导航、位姿、安全事实、意图与模式全部有效时才允许 Continuous owner。</summary>
+    /// <summary>
+    /// 基础移动不依赖 Continuous RDW 或导航意图；Steering 仍需显式启用且持有有效导航意图。
+    /// 两条路径共同服从会话、Tracking、Calibration 与物理空间安全门。
+    /// </summary>
     public static bool IsAvailable(
+        bool locomotionAvailable,
         bool continuousEnabled,
-        bool redirectorAvailable,
+        bool steeringAvailable,
         bool sessionRunning,
         bool runtimeNavigating,
         bool poseValid,
@@ -28,23 +32,35 @@ public static class RdwContinuousAvailability
         bool physicalSpaceValid,
         bool navigationIntentValid)
     {
-        return continuousEnabled &&
-               redirectorAvailable &&
-               sessionRunning &&
+        var runtimeSafe = sessionRunning &&
                runtimeNavigating &&
                poseValid &&
                trackingValid &&
                calibrationValid &&
-               physicalSpaceValid &&
-               navigationIntentValid;
+               physicalSpaceValid;
+        return runtimeSafe &&
+               (locomotionAvailable ||
+                (continuousEnabled && steeringAvailable && navigationIntentValid));
     }
 }
 
-/// <summary>把 ControllerSimulation 平移与所选 steering yaw/curvature 合并为一个 Continuous 命令。</summary>
-public sealed class CompositeContinuousRedirector : IRdwRedirector, IRdwRedirectorAvailability, IRdwRedirectorDiagnosticsSource, IRdwRedirectorLifecycle
+/// <summary>公开组合 Redirector 中基础移动与可选 Steering 的独立能力。</summary>
+public interface IRdwRedirectorChannels
+{
+    /// <summary>当前是否有基础虚拟平移请求。</summary>
+    bool LocomotionAvailable { get; }
+    /// <summary>当前是否允许并具备 Continuous Steering 能力。</summary>
+    bool SteeringAvailable { get; }
+    /// <summary>切换可选 Steering，不影响基础移动来源。</summary>
+    void SetSteeringEnabled(bool enabled);
+}
+
+/// <summary>把基础 ControllerSimulation 平移与可选 steering yaw/curvature 合并为一个 Root 命令。</summary>
+public sealed class CompositeContinuousRedirector : IRdwRedirector, IRdwRedirectorAvailability, IRdwRedirectorChannels, IRdwRedirectorDiagnosticsSource, IRdwRedirectorLifecycle
 {
     private readonly IRdwRedirector locomotionRedirector;
     private readonly IRdwRedirector steeringRedirector;
+    private bool steeringEnabled = true;
 
     /// <summary>创建连续命令组合器；两个来源都不能直接操作 Virtual Root。</summary>
     public CompositeContinuousRedirector(IRdwRedirector locomotion, IRdwRedirector steering)
@@ -56,8 +72,28 @@ public sealed class CompositeContinuousRedirector : IRdwRedirector, IRdwRedirect
 
     /// <summary>最近一次可选 steering Redirector 的诊断。</summary>
     public RdwRedirectorDiagnostics LastDiagnostics { get; private set; }
-    /// <summary>任一组合来源当前可用时参与 Continuous owner 仲裁。</summary>
-    public bool IsAvailable => IsSourceAvailable(locomotionRedirector) || IsSourceAvailable(steeringRedirector);
+    /// <summary>基础移动来源当前是否请求虚拟平移。</summary>
+    public bool LocomotionAvailable => IsSourceAvailable(locomotionRedirector);
+    /// <summary>实验条件允许且 Steering 来源可用时返回 true。</summary>
+    public bool SteeringAvailable => steeringEnabled && IsSourceAvailable(steeringRedirector);
+    /// <summary>任一合法来源当前可用时参与 Root owner 仲裁。</summary>
+    public bool IsAvailable => LocomotionAvailable || SteeringAvailable;
+
+    /// <summary>按实验条件切换 Steering；关闭时只清理 Steering 历史，保留基础移动。</summary>
+    public void SetSteeringEnabled(bool enabled)
+    {
+        if (steeringEnabled == enabled)
+        {
+            return;
+        }
+
+        steeringEnabled = enabled;
+        if (!enabled)
+        {
+            ResetSteeringSmoothing();
+            LastDiagnostics = RdwRedirectorDiagnostics.Empty;
+        }
+    }
 
     /// <summary>在一个 PoseSequence 内合并平移与旋转 proposal，确保一次提交。</summary>
     public RdwGainCommand Evaluate(in RdwPoseFrame pose, in RdwGeometrySnapshot geometry, in RdwNavigationIntent intent)
@@ -65,12 +101,18 @@ public sealed class CompositeContinuousRedirector : IRdwRedirector, IRdwRedirect
         var locomotion = locomotionRedirector != null
             ? locomotionRedirector.Evaluate(pose, geometry, intent)
             : RdwGainCommand.Zero(pose.Sequence, "simulation_idle");
-        var steering = steeringRedirector != null
+        var steering = SteeringAvailable && intent.IsValid
             ? steeringRedirector.Evaluate(pose, geometry, intent)
             : RdwGainCommand.Zero(pose.Sequence, "redirector_disabled");
-        LastDiagnostics = steeringRedirector is IRdwRedirectorDiagnosticsSource diagnostics
+        LastDiagnostics = SteeringAvailable && intent.IsValid &&
+                          steeringRedirector is IRdwRedirectorDiagnosticsSource diagnostics
             ? diagnostics.LastDiagnostics
             : RdwRedirectorDiagnostics.Empty;
+
+        if (steeringEnabled && !intent.IsValid)
+        {
+            ResetSteeringSmoothing();
+        }
 
         return new RdwGainCommand(
             steering.RotationYawDeltaDeg,
@@ -88,11 +130,16 @@ public sealed class CompositeContinuousRedirector : IRdwRedirector, IRdwRedirect
         {
             locomotion.ResetSmoothing();
         }
+        ResetSteeringSmoothing();
+        LastDiagnostics = RdwRedirectorDiagnostics.Empty;
+    }
+
+    private void ResetSteeringSmoothing()
+    {
         if (steeringRedirector is IRdwRedirectorLifecycle steering)
         {
             steering.ResetSmoothing();
         }
-        LastDiagnostics = RdwRedirectorDiagnostics.Empty;
     }
 
     private static string ComposeReason(in RdwGainCommand locomotion, in RdwGainCommand steering)

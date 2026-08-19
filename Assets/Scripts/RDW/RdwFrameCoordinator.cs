@@ -90,14 +90,21 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     /// <summary>当前帧使用的 Continuous Redirector。</summary>
     public IRdwRedirector Redirector => redirector;
 
-    /// <summary>当前会话是否允许 Continuous RDW owner 参与仲裁。</summary>
+    /// <summary>当前会话是否允许 Continuous Steering 参与仲裁；不控制基础移动。</summary>
     public bool ContinuousRdwEnabled => continuousRdwEnabled;
 
-    /// <summary>按正式实验 Profile 切换 Continuous RDW；不会改变当前物理事实。</summary>
+    /// <summary>按正式实验 Profile 切换 Continuous Steering；不会关闭基础移动或物理安全链路。</summary>
     public void SetContinuousEnabled(bool enabled)
     {
         continuousRdwEnabled = enabled;
-        if (!enabled) ResetRedirectorSmoothing();
+        if (redirector is IRdwRedirectorChannels channels)
+        {
+            channels.SetSteeringEnabled(enabled);
+        }
+        else if (!enabled)
+        {
+            ResetRedirectorSmoothing();
+        }
     }
 
     /// <summary>创建 Step 2A 的帧协调器；Redirector 缺省为 NullRedirector。</summary>
@@ -133,6 +140,10 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         sessionDashboard = dashboard;
         continuousRdwEnabled = continuousEnabled;
         redirector = continuousRedirector ?? new NullRedirector();
+        if (redirector is IRdwRedirectorChannels channels)
+        {
+            channels.SetSteeringEnabled(continuousEnabled);
+        }
         ownerArbiter = arbiter ?? new RdwOwnerArbiter();
         gainLimiter = limiter ?? new RdwGainLimiter();
         poseJumpDistanceMeters = Mathf.Max(0.01f, maxPoseJumpMeters);
@@ -157,9 +168,13 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         var resetActive = pauseResetController != null && pauseResetController.IsActive ||
                           guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive;
         var guidanceTurnActive = rotationGainController != null && rotationGainController.IsActive;
-        var continuousAvailable = RdwContinuousAvailability.IsAvailable(
+        var redirectorChannels = redirector as IRdwRedirectorChannels;
+        var redirectorAvailable = RdwContinuousAvailability.IsAvailable(
+            redirectorChannels != null && redirectorChannels.LocomotionAvailable,
             continuousRdwEnabled,
-            IsRedirectorAvailable(),
+            redirectorChannels != null
+                ? redirectorChannels.SteeringAvailable
+                : IsRedirectorAvailable(),
             sessionDashboard != null && sessionDashboard.RunState == ExperimentRunState.Running,
             guidanceCoordinator != null &&
             guidanceCoordinator.RuntimeState != null &&
@@ -170,7 +185,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             riskEvaluator != null && riskEvaluator.IsCalibrationValid,
             geometry.IsValid && riskEvaluator != null && riskEvaluator.PhysicalSpaceMatches,
             intent.IsValid);
-        var owner = ownerArbiter.Resolve(hardStop, resetActive, guidanceTurnActive, continuousAvailable);
+        var owner = ownerArbiter.Resolve(hardStop, resetActive, guidanceTurnActive, redirectorAvailable);
         var requested = RdwGainCommand.Zero(frame.Sequence, OwnerReason(owner));
         var limited = requested;
         var applied = default(RdwGainApplyResult);

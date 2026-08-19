@@ -488,12 +488,11 @@ MonoBehaviour:
     taskId: T2_main_target
     participantId: P001
     condition: B1_semantic_only
-    userTask: 
-    themeGoalId: TH_RITUAL
-    themeCoverageThreshold: 0.6
-    maxThemeSteps: 8
+    userTask: "\u6211\u60F3\u53C2\u89C2\u9752\u94DC\u795E\u6811\u3002\u5728\u5230\u8FBE\u5B83\u4E4B\u524D\uFF0C\u8BF7\u5E26\u6211\u6D4F\u89C8\u51E0\u4EF6\u6709\u52A9\u4E8E\u7406\u89E3\u4E09\u661F\u5806\u6587\u5316\u7684\u76F8\u5173\u5C55\u54C1\uFF0C\u5E76\u8BF4\u660E\u5B83\u4EEC\u4E0E\u76EE\u6807\u5C55\u54C1\u4E4B\u95F4\u7684\u8054\u7CFB\uFF0C\u6700\u540E\u5E26\u6211\u62B5\u8FBE\u9752\u94DC\u795E\u6811\u3002"
     startExhibitId: E1
-    finalTargetId:
+    finalTargetId: E5
+    minimumIntermediateVisits: 3
+    maximumIntermediateVisits: 4
     routeTargetIds:
     - E1
     maxConsecutiveDetours: 2
@@ -28416,6 +28415,7 @@ MonoBehaviour:
   routeSelectionEndpoint: http://127.0.0.1:8000/api/planning/route-selection
   semanticPlanEndpoint: http://127.0.0.1:8000/api/planning/semantic-local
   requestTimeoutSeconds: 8
+  semanticPlanRequestTimeoutSeconds: 75
   healthEndpoint: http://127.0.0.1:8000/health
   healthCheckIntervalSeconds: 2
   healthCheckFailureThreshold: 3

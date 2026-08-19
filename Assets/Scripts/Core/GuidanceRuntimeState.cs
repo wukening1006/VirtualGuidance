@@ -1,6 +1,19 @@
 using System;
 using System.Collections.Generic;
 
+/// <summary>
+/// 描述 T2 在中间展品游览、最终目标执行和完成之间的任务阶段。
+/// </summary>
+public enum GuidanceTaskStage
+{
+    /// <summary>模型可以选择尚未访问且与最终目标相关的中间展品。</summary>
+    Exploring,
+    /// <summary>最终目标已经锁定，后续规划不得替换该目标。</summary>
+    FinalApproach,
+    /// <summary>已经确认到达最终目标。</summary>
+    Completed
+}
+
 [Serializable]
 /// <summary>
 /// 保存导览任务的当前阶段和路线位置，由任务控制器推进并提供给请求与日志模块。
@@ -18,18 +31,20 @@ public sealed class GuidanceRuntimeState
     public string currentExhibitId = "E1";
     /// <summary>当前局部计划的第一步目标 ID；未生成计划时为空。</summary>
     public string nextTargetId = string.Empty;
-    /// <summary>兼容旧请求的最终目标 ID；正式主题导览不固定终点。</summary>
-    public string finalTargetId = string.Empty;
-    /// <summary>当前主题目标 ID；正式三条件 Planner 的任务语义入口。</summary>
-    public string themeGoalId = "TH_RITUAL";
+    /// <summary>本次任务不可变的最终目标 ID。</summary>
+    public string finalTargetId = "E5";
+    /// <summary>提供给模型理解用户意图的自然语言任务。</summary>
+    public string userTask = string.Empty;
+    /// <summary>当前最终目标任务阶段。</summary>
+    public GuidanceTaskStage taskStage = GuidanceTaskStage.Exploring;
     /// <summary>已参观展品 ID，按首次到达顺序保存。</summary>
     public string[] visitedExhibitIds = new[] { "E1" };
-    /// <summary>主题覆盖进度，范围 0-1。</summary>
-    public float themeCoverage;
-    /// <summary>主题完成覆盖阈值，范围 0-1。</summary>
-    public float themeCoverageThreshold = 0.6f;
-    /// <summary>主题导览最大展品步数。</summary>
-    public int maxThemeSteps = 8;
+    /// <summary>已经确认到达的中间展品数量，不包含起点和最终目标。</summary>
+    public int intermediateVisitCount;
+    /// <summary>最终目标允许被选择前需要完成的最少中间展品数量。</summary>
+    public int minimumIntermediateVisits = 3;
+    /// <summary>达到后必须锁定最终目标的中间展品数量。</summary>
+    public int maximumIntermediateVisits = 4;
     /// <summary>当前有效语义计划 ID。</summary>
     public string activePlanId = string.Empty;
     /// <summary>当前语义计划代际。</summary>
@@ -71,6 +86,11 @@ public sealed class GuidanceRuntimeState
 
     /// <summary>任务当前是否允许请求 guidance 或接受到达事件。</summary>
     public bool IsNavigating => phase == GuidanceRuntimePhase.Navigating;
+    /// <summary>当前是否已经满足选择最终目标的最少中间游览数量。</summary>
+    public bool CanSelectFinalGoal => intermediateVisitCount >= minimumIntermediateVisits;
+    /// <summary>当前规划是否只能选择最终目标。</summary>
+    public bool MustSelectFinalGoal => taskStage == GuidanceTaskStage.FinalApproach ||
+                                       intermediateVisitCount >= maximumIntermediateVisits;
     /// <summary>当前 Guidance Target；未选择时返回 null。</summary>
     public GuidanceTarget CurrentGuidanceTarget => string.IsNullOrWhiteSpace(guidanceTargetId)
         ? null
@@ -114,12 +134,13 @@ public sealed class GuidanceRuntimeState
     {
         taskId = EmptyFallback(nextTaskId, taskId);
         currentExhibitId = EmptyFallback(startExhibitId, "E1");
-        nextTargetId = EmptyFallback(firstTargetId, finalTarget);
-        finalTargetId = EmptyFallback(finalTarget, nextTargetId);
+        nextTargetId = firstTargetId ?? string.Empty;
+        finalTargetId = EmptyFallback(finalTarget, "E5");
         visitedExhibitIds = string.IsNullOrWhiteSpace(currentExhibitId)
             ? Array.Empty<string>()
             : new[] { currentExhibitId };
-        themeCoverage = 0f;
+        taskStage = GuidanceTaskStage.Exploring;
+        intermediateVisitCount = 0;
         activePlanId = string.Empty;
         // 规划代际从 1 开始，便于跨端请求身份校验。
         planGeneration = 1;
@@ -158,17 +179,15 @@ public sealed class GuidanceRuntimeState
         stateVersion++;
     }
 
-    /// <summary>配置主题目标；不改变当前导航阶段。</summary>
-    public void ConfigureTheme(
-        string goalId,
-        float coverage = 0f,
-        float coverageThreshold = 0.6f,
-        int maximumSteps = 8)
+    /// <summary>配置自然语言任务和中间游览约束；不改变当前导航阶段。</summary>
+    public void ConfigureIntermediateVisitPolicy(
+        string naturalLanguageTask,
+        int minimumVisits,
+        int maximumVisits)
     {
-        themeGoalId = string.IsNullOrWhiteSpace(goalId) ? themeGoalId : goalId;
-        themeCoverage = Math.Max(0f, Math.Min(1f, coverage));
-        themeCoverageThreshold = Math.Max(0f, Math.Min(1f, coverageThreshold));
-        maxThemeSteps = Math.Max(1, maximumSteps);
+        userTask = naturalLanguageTask ?? string.Empty;
+        minimumIntermediateVisits = Math.Max(0, minimumVisits);
+        maximumIntermediateVisits = Math.Max(minimumIntermediateVisits, maximumVisits);
     }
 
     /// <summary>冻结一份当前语义计划，使旧计划在代际变化后失效。</summary>
@@ -198,8 +217,14 @@ public sealed class GuidanceRuntimeState
     public void AdvanceSemanticTo(string arrivedTargetId)
     {
         CompleteActiveReservation();
+        var alreadyVisited = Contains(visitedExhibitIds, arrivedTargetId);
         currentExhibitId = EmptyFallback(arrivedTargetId, currentExhibitId);
         visitedExhibitIds = AppendUnique(visitedExhibitIds, currentExhibitId);
+        if (!alreadyVisited &&
+            !string.Equals(currentExhibitId, finalTargetId, StringComparison.Ordinal))
+        {
+            intermediateVisitCount++;
+        }
         activePlanId = string.Empty;
         activePlanNodes = Array.Empty<string>();
         nextTargetId = string.Empty;
@@ -207,57 +232,56 @@ public sealed class GuidanceRuntimeState
         ClearRedirectionHistory();
         phase = GuidanceRuntimePhase.Navigating;
         stateVersion++;
+        if (intermediateVisitCount >= maximumIntermediateVisits)
+        {
+            EnterFinalApproach();
+        }
     }
 
-    /// <summary>按覆盖阈值、最大步数或无候选条件结束主题导览。</summary>
-    public void CompleteTheme()
+    /// <summary>锁定不可变最终目标；进入后不再接受普通中间目标。</summary>
+    public bool EnterFinalApproach()
     {
+        if (!IsNavigating || !CanSelectFinalGoal || string.IsNullOrWhiteSpace(finalTargetId))
+        {
+            return false;
+        }
+
+        if (taskStage == GuidanceTaskStage.FinalApproach)
+        {
+            return true;
+        }
+
+        taskStage = GuidanceTaskStage.FinalApproach;
+        activePlanId = string.Empty;
+        activePlanNodes = Array.Empty<string>();
+        nextTargetId = finalTargetId;
+        stateVersion++;
+        return true;
+    }
+
+    /// <summary>确认最终目标到达；只有 FinalApproach 阶段可以完成任务。</summary>
+    public bool CompleteFinalGoal(string arrivedTargetId)
+    {
+        if (!IsNavigating || taskStage != GuidanceTaskStage.FinalApproach ||
+            !string.Equals(arrivedTargetId, finalTargetId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         CompleteActiveReservation();
+        currentExhibitId = finalTargetId;
+        visitedExhibitIds = AppendUnique(visitedExhibitIds, finalTargetId);
+        taskStage = GuidanceTaskStage.Completed;
         activePlanId = string.Empty;
         activePlanNodes = Array.Empty<string>();
         nextTargetId = string.Empty;
         phase = GuidanceRuntimePhase.Completed;
         stateVersion++;
-    }
-
-    /// <summary>当前覆盖度或已访问步数是否达到主题完成阈值。</summary>
-    public bool HasReachedThemeCompletionThreshold =>
-        themeCoverage >= themeCoverageThreshold ||
-        (visitedExhibitIds != null && visitedExhibitIds.Length >= maxThemeSteps);
-
-    /// <summary>按已访问展品数量更新确定性主题覆盖进度。</summary>
-    public void UpdateThemeCoverage(int totalExhibitCount)
-    {
-        if (totalExhibitCount <= 0)
-        {
-            themeCoverage = 0f;
-            return;
-        }
-
-        themeCoverage = Math.Max(0f, Math.Min(1f,
-            (float)(visitedExhibitIds != null ? visitedExhibitIds.Length : 0) / totalExhibitCount));
-    }
-
-    /// <summary>按主题包含关系更新已访问主题覆盖度。</summary>
-    public void UpdateThemeCoverage(IEnumerable<string> themeExhibitIds)
-    {
-        var themeIds = new HashSet<string>(themeExhibitIds ?? Array.Empty<string>(), StringComparer.Ordinal);
-        if (themeIds.Count == 0)
-        {
-            themeCoverage = 0f;
-            return;
-        }
-
-        var covered = 0;
-        foreach (var exhibitId in visitedExhibitIds ?? Array.Empty<string>())
-        {
-            if (themeIds.Contains(exhibitId)) covered++;
-        }
-        themeCoverage = Math.Max(0f, Math.Min(1f, (float)covered / themeIds.Count));
+        return true;
     }
 
     /// <summary>
-    /// 将任务标记为等待物理 reset，使在途 guidance 响应因版本变化而失效。
+    /// 将执行层标记为等待物理 Reset；不清除语义计划、当前语义目标或任务状态版本。
     /// </summary>
     public void PauseForReset()
     {
@@ -266,9 +290,7 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
-        AbandonActiveReservationWithoutVersion();
         phase = GuidanceRuntimePhase.PausedForReset;
-        stateVersion++;
     }
 
     /// <summary>
@@ -298,6 +320,24 @@ public sealed class GuidanceRuntimeState
         }
 
         if (HasLockedSemanticGoal || HasActiveSemanticPlanning)
+        {
+            return false;
+        }
+
+        var targetsFinalGoal = string.Equals(target.TargetId, finalTargetId, StringComparison.Ordinal);
+        if (targetsFinalGoal)
+        {
+            if (!CanSelectFinalGoal)
+            {
+                return false;
+            }
+
+            taskStage = GuidanceTaskStage.FinalApproach;
+            nextTargetId = finalTargetId;
+        }
+        else if (target.TargetRole != NavigationTargetRole.NavigableDetour &&
+                 target.TargetRole != NavigationTargetRole.TurnCueAnchor &&
+                 MustSelectFinalGoal)
         {
             return false;
         }
@@ -419,6 +459,27 @@ public sealed class GuidanceRuntimeState
             activeCandidateSetReservation.Phase != CandidateSetReservationPhase.Validated ||
             stateVersion != activeCandidateSetReservation.TaskStateVersion ||
             !activeCandidateSetReservation.ContainsModelCandidate(selectedCandidate.TargetId))
+        {
+            return false;
+        }
+
+        var targetsFinalGoal = string.Equals(
+            selectedCandidate.TargetId,
+            finalTargetId,
+            StringComparison.Ordinal);
+        if (targetsFinalGoal)
+        {
+            if (!CanSelectFinalGoal)
+            {
+                return false;
+            }
+
+            taskStage = GuidanceTaskStage.FinalApproach;
+            nextTargetId = finalTargetId;
+        }
+        else if (selectedCandidate.TargetRole != NavigationTargetRole.NavigableDetour &&
+                 selectedCandidate.TargetRole != NavigationTargetRole.TurnCueAnchor &&
+                 MustSelectFinalGoal)
         {
             return false;
         }
@@ -618,9 +679,7 @@ public sealed class GuidanceRuntimeState
         stateVersion++;
     }
 
-    /// <summary>
-    /// 仅从 PausedForReset 恢复，并依据是否仍有下一目标返回导航或完成阶段。
-    /// </summary>
+    /// <summary>从暂停恢复；物理 Reset 恢复不改变语义任务状态版本。</summary>
     public void Resume()
     {
         if (phase != GuidanceRuntimePhase.PausedForReset && phase != GuidanceRuntimePhase.PausedByResearcher)
@@ -628,8 +687,14 @@ public sealed class GuidanceRuntimeState
             return;
         }
 
-        phase = string.IsNullOrWhiteSpace(nextTargetId) ? GuidanceRuntimePhase.Completed : GuidanceRuntimePhase.Navigating;
-        stateVersion++;
+        var wasResetPaused = phase == GuidanceRuntimePhase.PausedForReset;
+        phase = taskStage == GuidanceTaskStage.Completed
+            ? GuidanceRuntimePhase.Completed
+            : GuidanceRuntimePhase.Navigating;
+        if (!wasResetPaused)
+        {
+            stateVersion++;
+        }
     }
 
     /// <summary>终止任务并使所有在途响应因版本变化失效。</summary>

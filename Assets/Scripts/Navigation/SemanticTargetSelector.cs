@@ -106,7 +106,8 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
         var candidates = new List<NavigationCandidate>();
         var assessments = new List<CandidateAssessment>();
-        if (!string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
+        if (runtimeState.CanSelectFinalGoal &&
+            !string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
         {
             TryAddCandidate(
                 candidates,
@@ -117,7 +118,8 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                 NavigationTargetRole.FinalTarget);
         }
         var graph = navigationTargets.SemanticGraph;
-        if (graph != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
+        if (!runtimeState.MustSelectFinalGoal &&
+            graph != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
         {
             var included = new HashSet<string>(StringComparer.Ordinal)
             {
@@ -137,7 +139,11 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                     {
                         if (!included.Add(neighborId)) continue;
                         nextFrontier.Add(neighborId);
-                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
+                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal) &&
+                            SemanticPlanVerifier.HasSemanticPath(
+                                graph.SemanticEdges,
+                                neighborId,
+                                runtimeState.finalTargetId))
                         {
                             TryAddCandidate(
                                 candidates,

@@ -144,9 +144,11 @@ public static class ExperimentConditionMatrix
         for (var taskIndex = 0; taskIndex < TaskIds.Length; taskIndex++)
         {
             var spec = Build(0, taskIndex, 0, "semantic_validation");
-            ValidateThemeReference(graph, errors, spec.themeGoalId, spec.taskId);
             ValidateExhibitReference(graph, errors, spec.startExhibitId, spec.taskId, "start_exhibit_id");
-            ValidateExhibitReference(graph, errors, spec.semanticNextTargetId, spec.taskId, "semantic_next_target_id");
+            if (!string.IsNullOrWhiteSpace(spec.semanticNextTargetId))
+            {
+                ValidateExhibitReference(graph, errors, spec.semanticNextTargetId, spec.taskId, "semantic_next_target_id");
+            }
             ValidateExhibitReference(graph, errors, spec.finalTargetId, spec.taskId, "final_target_id");
 
             if (spec.routeTargetIds == null || spec.routeTargetIds.Length == 0)
@@ -251,29 +253,17 @@ public static class ExperimentConditionMatrix
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
     {
         spec.startExhibitId = "E1";
-        // 正式三条件不再固定最终展品；语义 Planner 负责逐步生成主题路线。
+        // 三种条件共享同一最终目标；Planner 只负责选择到达 E5 前的中间展品。
         spec.semanticNextTargetId = string.Empty;
-        spec.finalTargetId = string.Empty;
+        spec.finalTargetId = "E5";
+        spec.minimumIntermediateVisits = 3;
+        spec.maximumIntermediateVisits = 4;
         spec.routeTargetIds = new[] { "E1" };
     }
 
     private static string UserTaskFor(string taskId)
     {
-        return "请围绕当前主题进行局部展厅导览。";
-    }
-
-    private static void ValidateThemeReference(
-        StaticSceneSemanticGraph graph,
-        IList<string> errors,
-        string themeId,
-        string taskId)
-    {
-        if (string.IsNullOrWhiteSpace(themeId) || graph.GetTheme(themeId) == null)
-        {
-            errors?.Add(
-                "unknown_theme_reference:experiment_matrix." + taskId + ".theme_goal_id:" +
-                (themeId ?? string.Empty));
-        }
+        return "我想参观青铜神树。在到达它之前，请带我浏览几件有助于理解三星堆文化的相关展品，并说明它们与目标展品之间的联系，最后带我抵达青铜神树。";
     }
 
     /// <summary>检查任务是否属于当前正式实验允许启动的 T2 范围。</summary>

@@ -1,8 +1,9 @@
-"""Theme-driven Semantic-only Local Planner 与静态图 Verifier。"""
+"""自然语言任务驱动的 Semantic-only Local Planner 与静态图 Verifier。"""
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Mapping, Protocol
 
@@ -32,8 +33,12 @@ from backend.services.mllm_provider import (
 SEMANTIC_PLAN_TEMPERATURE = 0.0
 SEMANTIC_PLAN_MAX_TOKENS = 512
 SEMANTIC_PLAN_SYSTEM_PROMPT = (
-    "你是博物馆主题导览的 Semantic-only Local Planner。"
-    "只能依据 ThemeGoal、当前展品、已参观展品和语义/虚拟空间图生成 1-3 个展品节点。"
+    "你是博物馆自然语言任务的 Semantic-only Local Planner。"
+    "只能依据 task、task_state 和给定的语义/虚拟空间图生成 1-3 个展品节点。"
+    "final_goal 是不可更改的最终目标；达到 minimum_visits 前不得选择它，"
+    "达到 maximum_visits 或进入 final_approach 后必须只选择它。"
+    "探索阶段只能选择尚未参观、且通过 Semantic Edge 与 final_goal 相关的中间展品。"
+    "narration 应自然说明所选展品与最终目标之间的联系。"
     "必须返回 ordered_node_ids 与 narration。"
     "不得使用、推断或输出 Physical Risk、Clearance、RDW、Gain、Reset 或执行方向。"
     "只能使用给定的展品和 Spatial Edge，不能创建不存在的节点或连接。"
@@ -53,6 +58,8 @@ SEMANTIC_PLAN_JSON_SCHEMA: dict[str, Any] = {
     "required": ["ordered_node_ids", "narration"],
 }
 
+logger = logging.getLogger(__name__)
+
 
 class SemanticPlanGenerator(Protocol):
     """Semantic Planner 依赖的最小异步接口。"""
@@ -70,10 +77,8 @@ class MLLMSemanticPlanGenerator:
     async def generate(self, request: SemanticPlanRequest) -> SemanticPlanDraft:
         # request schema 已经从类型层排除了物理事实，序列化前再做一层固定上下文裁剪。
         context = {
-            "theme_goal": request.theme_goal.model_dump(mode="json"),
-            "current_exhibit_id": request.current_exhibit_id,
-            "visited_exhibit_ids": list(request.visited_exhibit_ids),
-            "theme_progress": dict(request.theme_progress),
+            "task": request.task.model_dump(mode="json"),
+            "task_state": request.task_state.model_dump(mode="json"),
             "local_semantic_nodes": [
                 node.model_dump(mode="json") for node in request.local_semantic_nodes
             ],
@@ -103,7 +108,10 @@ class DeterministicSemanticPlanGenerator:
     """离线测试用 Planner，按局部 Spatial Graph 稳定生成合法路径。"""
 
     async def generate(self, request: SemanticPlanRequest) -> SemanticPlanDraft:
-        visited = set(request.visited_exhibit_ids)
+        progress = request.task_state
+        policy = request.task.intermediate_policy
+        final_target_id = request.task.final_goal.exhibit_id
+        visited = set(progress.visited_exhibit_ids)
         adjacency: dict[str, list[str]] = {
             node.id: [] for node in request.local_semantic_nodes
         }
@@ -114,14 +122,51 @@ class DeterministicSemanticPlanGenerator:
         for values in adjacency.values():
             values.sort()
 
+        semantic_adjacency: dict[str, set[str]] = {
+            node.id: set() for node in request.local_semantic_nodes
+        }
+        for edge in request.local_semantic_edges:
+            semantic_adjacency.setdefault(edge.source, set()).add(edge.target)
+            semantic_adjacency.setdefault(edge.target, set()).add(edge.source)
+
+        def is_related_to_final(node_id: str) -> bool:
+            frontier = [node_id]
+            reached = {node_id}
+            while frontier and final_target_id not in reached:
+                current_node = frontier.pop(0)
+                for neighbor in semantic_adjacency.get(current_node, set()):
+                    if neighbor not in reached:
+                        reached.add(neighbor)
+                        frontier.append(neighbor)
+            return final_target_id in reached
+
+        final_ready = progress.intermediate_visit_count >= policy.minimum_visits
+        final_required = (
+            progress.phase == "final_approach"
+            or progress.intermediate_visit_count >= policy.maximum_visits
+        )
+        current = progress.current_exhibit_id
+        if final_ready and final_target_id in adjacency.get(current, []):
+            return SemanticPlanDraft(
+                ordered_node_ids=[final_target_id],
+                narration="前面的参观已经建立了理解线索，现在前往最终目标展品。",
+            )
+        if final_required:
+            raise ValueError("final goal is required but has no executable spatial edge")
+
         path: list[str] = []
-        current = request.current_exhibit_id
         seen = {current}
         for _ in range(3):
             candidates = [
                 node_id
                 for node_id in adjacency.get(current, [])
-                if node_id not in seen and node_id not in visited
+                if node_id != final_target_id
+                and node_id not in seen
+                and node_id not in visited
+                and (
+                    not policy.require_semantic_connection
+                    or is_related_to_final(node_id)
+                )
             ]
             if not candidates:
                 break
@@ -129,18 +174,10 @@ class DeterministicSemanticPlanGenerator:
             path.append(current)
             seen.add(current)
         if not path:
-            # 主题接近完成时允许选择一个已访问邻居作为保守的语义收束点。
-            fallback = [
-                node_id
-                for node_id in adjacency.get(request.current_exhibit_id, [])
-                if node_id != request.current_exhibit_id
-            ]
-            path = fallback[:1]
-        if not path:
             raise ValueError("semantic planner found no local executable graph node")
         return SemanticPlanDraft(
             ordered_node_ids=path,
-            narration="我们沿着当前主题线索继续参观。",
+            narration="先参观这些相关展品，逐步建立理解最终目标所需的文化线索。",
         )
 
 
@@ -172,6 +209,28 @@ class SemanticPlanPipeline:
     def __init__(self, planner: SemanticPlanGenerator | None = None) -> None:
         self.planner = planner
 
+    async def _deterministic_fallback(
+        self,
+        request: SemanticPlanRequest,
+        reason: str,
+    ) -> tuple[SemanticPlanDraft | None, VerifierResult | None]:
+        """模型不可用或计划不合法时，使用静态图生成可验证的局部计划。"""
+        try:
+            fallback_draft = await DeterministicSemanticPlanGenerator().generate(request)
+        except ValueError:
+            return None, None
+
+        fallback_verifier = verify_semantic_plan(request, fallback_draft)
+        if not fallback_verifier.approved:
+            return None, None
+
+        logger.warning(
+            "Semantic planner fallback activated: %s; request_id=%s",
+            reason,
+            request.request_id,
+        )
+        return fallback_draft, fallback_verifier
+
     async def handle(self, request: SemanticPlanRequest) -> SemanticPlanResponse:
         try:
             if self.planner is None:
@@ -179,28 +238,35 @@ class SemanticPlanPipeline:
             draft = await self.planner.generate(request)
         except MLLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except MLLMTimeoutError as exc:
-            raise HTTPException(status_code=504, detail=str(exc)) from exc
-        except (MLLMHTTPError, MLLMResponseError) as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except (ValueError, ValidationError) as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Semantic plan contract violation: {exc}",
-            ) from exc
-
-        verifier = verify_semantic_plan(request, draft)
-        if not verifier.approved and verifier.reason.startswith("missing_spatial_edge:"):
-            # 模型可能混淆语义边与空间边；只对空间图失败使用确定性路径兜底。
-            try:
-                fallback_draft = await DeterministicSemanticPlanGenerator().generate(request)
-            except ValueError:
-                fallback_draft = None
-            if fallback_draft is not None:
-                fallback_verifier = verify_semantic_plan(request, fallback_draft)
-                if fallback_verifier.approved:
+        except (
+            MLLMTimeoutError,
+            MLLMHTTPError,
+            MLLMResponseError,
+            ValueError,
+            ValidationError,
+        ) as exc:
+            fallback_draft, fallback_verifier = await self._deterministic_fallback(
+                request,
+                f"model failure: {exc}",
+            )
+            if fallback_draft is None or fallback_verifier is None:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Semantic plan unavailable: {exc}",
+                ) from exc
+            draft = fallback_draft
+            verifier = fallback_verifier
+        else:
+            verifier = verify_semantic_plan(request, draft)
+            if not verifier.approved:
+                fallback_draft, fallback_verifier = await self._deterministic_fallback(
+                    request,
+                    f"verifier rejection: {verifier.reason}",
+                )
+                if fallback_draft is not None and fallback_verifier is not None:
                     draft = fallback_draft
                     verifier = fallback_verifier
+
         if not verifier.approved:
             raise HTTPException(
                 status_code=502,

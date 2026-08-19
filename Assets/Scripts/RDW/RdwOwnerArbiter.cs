@@ -2,11 +2,11 @@
 public sealed class RdwOwnerArbiter
 {
     /// <summary>根据安全与运行状态解析当前帧的唯一 owner。</summary>
-    public RdwGainOwner Resolve(bool hardStop, bool resetActive, bool guidanceTurnActive, bool continuousRedirectorAvailable)
+    public RdwGainOwner Resolve(bool hardStop, bool resetActive, bool guidanceTurnActive, bool redirectorAvailable)
     {
         if (hardStop) return RdwGainOwner.HardStop;
         if (resetActive) return RdwGainOwner.Resetter;
         if (guidanceTurnActive) return RdwGainOwner.GuidanceTurnGain;
-        return continuousRedirectorAvailable ? RdwGainOwner.ContinuousRedirector : RdwGainOwner.None;
+        return redirectorAvailable ? RdwGainOwner.ContinuousRedirector : RdwGainOwner.None;
     }
 }

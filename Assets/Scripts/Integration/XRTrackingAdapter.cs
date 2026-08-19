@@ -387,7 +387,7 @@ public sealed class XRTrackingAdapter : MonoBehaviour
     }
 }
 
-/// <summary>将 ControllerSimulation 的虚拟平移接入现有 ContinuousRedirector owner。</summary>
+/// <summary>将 ControllerSimulation 的基础虚拟平移接入统一 Root owner，不受 Continuous Steering 开关控制。</summary>
 public sealed class ControllerSimulationLocomotionRedirector : IRdwRedirector, IRdwRedirectorAvailability
 {
     private readonly XRTrackingAdapter trackingAdapter;
@@ -398,7 +398,7 @@ public sealed class ControllerSimulationLocomotionRedirector : IRdwRedirector, I
         trackingAdapter = adapter;
     }
 
-    /// <summary>仅在 ControllerSimulation 当前样本存在平移请求时参与 Continuous 仲裁。</summary>
+    /// <summary>仅在 ControllerSimulation 当前样本存在平移请求时参与 Root 仲裁。</summary>
     public bool IsAvailable => trackingAdapter != null &&
                                trackingAdapter.ControllerSimulationVirtualTranslationDeltaXZ.sqrMagnitude > 0.000001f;
 

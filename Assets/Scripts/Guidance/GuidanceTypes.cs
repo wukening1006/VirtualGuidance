@@ -399,10 +399,10 @@ public sealed class GuidanceRequest
     /// </summary>
     public string user_task;
 
-    /// <summary>兼容旧 Guidance 请求的最终目标；主题导览正式请求为空。</summary>
+    /// <summary>任务不可变的最终目标 ID。</summary>
     public string final_target = string.Empty;
 
-    /// <summary>局部主题计划的第一步目标；未生成计划时为空。</summary>
+    /// <summary>局部语义计划的第一步目标；未生成计划时为空。</summary>
     public string preferred_task_target = string.Empty;
 
     /// <summary>Candidate Policy 生成的完整基础候选。</summary>
@@ -576,10 +576,10 @@ public sealed class GuidanceRequestContext
     [Tooltip("当前展品 ID，例如 E1。")]
     public string current_exhibit = "E1";
 
-    /// <summary>兼容旧 Guidance 请求的 Final Goal；主题导览不固定终点。</summary>
+    /// <summary>任务不可变的最终目标 ID。</summary>
     public string final_target = string.Empty;
 
-    /// <summary>当前局部主题计划第一步目标；未生成计划时为空。</summary>
+    /// <summary>当前局部语义计划第一步目标；未生成计划时为空。</summary>
     public string preferred_task_target = string.Empty;
 
     /// <summary>完整基础候选 ID。</summary>

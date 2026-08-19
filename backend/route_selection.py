@@ -31,7 +31,9 @@ ROUTE_SELECTION_TEMPERATURE = 0.0
 ROUTE_SELECTION_MAX_TOKENS = 256
 ROUTE_SELECTION_SYSTEM_PROMPT = (
     "你是博物馆路线候选选择与讲解模块。"
+    "必须遵守 task 中不可变的 final_goal 和 intermediate_policy，并依据 task_state 判断当前阶段。"
     "只能从给定 route_candidates 中选择一个 route_id，并返回 route_id 与 narration。"
+    "narration 应使用自然语言说明当前展品与最终目标的联系。"
     "不得创建节点或路线，不得输出 gain、reset、安全结论、clearance 或执行方向。"
 )
 ROUTE_SELECTION_JSON_SCHEMA: dict[str, Any] = {
@@ -89,13 +91,8 @@ class MLLMRouteSelectionGenerator:
 
     async def generate(self, request: RouteSelectionRequest) -> RouteSelectionDraft:
         context = {
-            "task": {
-                "current_node_id": request.current_node_id,
-                "final_target_id": request.final_target_id,
-            },
-            "theme_goal": request.theme_goal.model_dump(mode="json") if request.theme_goal else None,
-            "visited_exhibit_ids": list(request.visited_exhibit_ids),
-            "theme_progress": dict(request.theme_progress),
+            "task": request.task.model_dump(mode="json"),
+            "task_state": request.task_state.model_dump(mode="json"),
             "route_candidates": [
                 candidate.model_dump(mode="json")
                 for candidate in request.route_candidates

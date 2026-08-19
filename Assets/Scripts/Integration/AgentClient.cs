@@ -158,6 +158,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
         "http://127.0.0.1:8000/api/planning/semantic-local";
     [Tooltip("请求超时时间，单位：秒。")]
     [SerializeField] private int requestTimeoutSeconds = 8;
+    [Tooltip("Semantic-only 规划请求超时时间，单位：秒；应覆盖后端 MLLM 等待时间。")]
+    [SerializeField, Min(1)] private int semanticPlanRequestTimeoutSeconds = 75;
     [Tooltip("后端健康检查地址。")]
     [SerializeField] private string healthEndpoint = "http://127.0.0.1:8000/health";
     [Tooltip("健康检查间隔，单位：秒。")]
@@ -886,7 +888,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
             activeSemanticPlanRequest = webRequest;
             webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
             webRequest.downloadHandler = new DownloadHandlerBuffer();
-            webRequest.timeout = Mathf.Max(1, requestTimeoutSeconds);
+            webRequest.timeout = Mathf.Max(1, semanticPlanRequestTimeoutSeconds);
             webRequest.SetRequestHeader("Content-Type", "application/json");
 
             yield return webRequest.SendWebRequest();

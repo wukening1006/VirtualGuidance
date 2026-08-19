@@ -109,6 +109,7 @@ public sealed class SemanticGoalLockEditModeTests
     {
         var state = new GuidanceRuntimeState();
         state.Begin("T2_main_target", "E1", "E5", "E5");
+        state.ConfigureIntermediateVisitPolicy("测试任务", 0, 0);
         return state;
     }
 
