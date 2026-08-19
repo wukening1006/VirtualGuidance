@@ -213,6 +213,9 @@ public sealed class SemanticReplanInfo
 /// </summary>
 public sealed class GuidanceCoordinator : MonoBehaviour
 {
+    // 小于该角度的恢复航向不具备实际物理转向意义，单位：度。
+    private const float MinimumMeaningfulResetTurnDegrees = 1f;
+
     [SerializeField] private AgentClient agentClient;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
     [SerializeField] private GuidanceTaskController taskController;
@@ -266,8 +269,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField, Range(1f, 180f)] private float replanWakeHeadingDegrees = 12f;
 
     [Header("Reset 后导航恢复")]
-    [Tooltip("一次 Initial Reset 后允许执行的 Recovery Reset 次数；最小恢复策略限制为 0 或 1。")]
-    [SerializeField, Range(0, 1)] private int navigationRecoveryResetBudget = 1;
+    [Tooltip("一次 Initial Reset 后允许执行的 Recovery Reset 最大次数；单位：次。")]
+    [SerializeField, Min(0)] private int navigationRecoveryResetBudget = 1;
     [Tooltip("Navigation Recovery Hold 的最长等待时间，单位：秒。")]
     [SerializeField, Min(0.1f)] private float navigationRecoveryHoldBudgetSeconds = 8f;
 
@@ -2662,10 +2665,23 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        var isInitialReset = !postResetNavigationRecoveryPending;
+        if (!TryConsumeNavigationRecoveryResetBudget())
+        {
+            EnterNavigationRecoveryHold(
+                riskState,
+                BuildPlanningFingerprint(riskState),
+                "Navigation Recovery Reset budget has been exhausted; waiting for new facts.");
+            return;
+        }
+
         ClearRecoveryHold();
         automaticResetAttempts++;
         postResetNavigationRecoveryPending = true;
-        navigationRecoveryResetAttempts = 0;
+        if (isInitialReset)
+        {
+            navigationRecoveryResetAttempts = 0;
+        }
         navigationRecoveryHoldStartedAt = float.PositiveInfinity;
         frozenRecoveryPlan = nextPlan;
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
@@ -2808,11 +2824,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
+            var isInitialReset = !postResetNavigationRecoveryPending;
+            if (!TryConsumeNavigationRecoveryResetBudget())
+            {
+                EnterNavigationRecoveryHold(
+                    riskState,
+                    BuildPlanningFingerprint(riskState),
+                    "Navigation Recovery Reset budget has been exhausted; waiting for new facts.");
+                return;
+            }
+
             frozenRecoveryPlan = plan;
             ClearRecoveryHold();
             automaticResetAttempts++;
             postResetNavigationRecoveryPending = true;
-            navigationRecoveryResetAttempts = 0;
+            if (isInitialReset)
+            {
+                navigationRecoveryResetAttempts = 0;
+            }
             navigationRecoveryHoldStartedAt = float.PositiveInfinity;
             if (!pauseResetController.PauseForReset(
                     "An explicitly Safe recovery heading became available.",
@@ -3013,7 +3042,28 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     }
 
     /// <summary>
-    /// Reset 后 0 executable candidates 时尝试受控恢复或最多一次 Recovery Reset。
+    /// 尝试消费当前 Automatic Recovery Episode 的一次 Recovery Reset 预算。
+    /// </summary>
+    /// <returns>Initial Reset 或预算仍可用时返回 true。</returns>
+    private bool TryConsumeNavigationRecoveryResetBudget()
+    {
+        if (!postResetNavigationRecoveryPending)
+        {
+            return true;
+        }
+
+        var budget = Mathf.Max(0, navigationRecoveryResetBudget);
+        if (navigationRecoveryResetAttempts >= budget)
+        {
+            return false;
+        }
+
+        navigationRecoveryResetAttempts++;
+        return true;
+    }
+
+    /// <summary>
+    /// Reset 后 0 executable candidates 时尝试受控恢复或受预算限制的 Recovery Reset。
     /// </summary>
     private void BeginNavigationRecovery(
         PhysicalRiskState riskState,
@@ -3066,8 +3116,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
-            var budget = Mathf.Clamp(navigationRecoveryResetBudget, 0, 1);
-            if (navigationRecoveryResetAttempts >= budget)
+            if (!TryConsumeNavigationRecoveryResetBudget())
             {
                 EnterNavigationRecoveryHold(
                     riskState,
@@ -3076,7 +3125,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
-            navigationRecoveryResetAttempts++;
             frozenRecoveryPlan = candidatePlan;
             taskController.PauseForReset();
             InvalidateRdwPlanning(
@@ -3091,7 +3139,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 recoveryResetReason,
                 RuntimeGuidanceSafetyDecision.PauseReset,
                 true,
-                navigationRecoveryResetAttempts + 1,
+                navigationRecoveryResetAttempts,
                 continuation.Level != PostResetContinuationLevel.HoldOnly));
 
             if (pauseResetController == null ||
@@ -3519,6 +3567,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             }
 
             var plan = new RecoveryHeadingPlan(validatedHeading, sample.ClearanceMeters);
+            if (plan.PhysicalTurnDegrees < MinimumMeaningfulResetTurnDegrees)
+            {
+                assessedHeadings.Add(validatedHeading);
+                assessedContinuations.Add(HoldContinuation(
+                    "reset_turn_below_minimum",
+                    false));
+                continue;
+            }
+
             var predictedVirtualYawDelta = pauseResetController != null
                 ? pauseResetController.PredictVirtualYawDelta(
                     riskState.user_physical_forward,
