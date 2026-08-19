@@ -160,6 +160,8 @@ public sealed class RouteCandidate
     public IReadOnlyList<RdwEdgeEvaluation> EdgeEvaluations => edgeEvaluations;
     /// <summary>路线归一化比较分数。</summary>
     public float RouteUtility { get; }
+    /// <summary>路线带来的未访问主题内容覆盖增量，范围 0-1。</summary>
+    public float SemanticProgress { get; }
     /// <summary>第一步所需叙事介入等级。</summary>
     public InterventionLevel InterventionLevel { get; }
     /// <summary>路线所属 Planning Snapshot ID。</summary>
@@ -178,13 +180,15 @@ public sealed class RouteCandidate
         InterventionLevel interventionLevel,
         string planningSnapshotId,
         string estimatorId,
-        string estimatorVersion)
+        string estimatorVersion,
+        float semanticProgress = 0f)
     {
         RouteId = routeId ?? string.Empty;
         orderedNodeIds = Array.AsReadOnly(new List<string>(nodeIds ?? Array.Empty<string>()).ToArray());
         edgeEvaluations = Array.AsReadOnly(new List<RdwEdgeEvaluation>(
             evaluations ?? Array.Empty<RdwEdgeEvaluation>()).ToArray());
         RouteUtility = routeUtility;
+        SemanticProgress = Mathf.Clamp01(semanticProgress);
         InterventionLevel = interventionLevel;
         PlanningSnapshotId = planningSnapshotId ?? string.Empty;
         EstimatorId = estimatorId ?? string.Empty;
@@ -362,7 +366,7 @@ public sealed class RdwBeamRoutePlanner
         {
             completed.AddRange(oneStepFallback);
         }
-        var routes = SelectDiverseTopK(snapshot, completed);
+        var routes = SelectDiverseTopK(snapshot, enrichedGraph, completed);
         return new RdwRoutePlanningResult(snapshot, enrichedGraph, routes, rejected);
     }
 
@@ -387,6 +391,7 @@ public sealed class RdwBeamRoutePlanner
 
     private List<RouteCandidate> SelectDiverseTopK(
         RdwPlanningSnapshot snapshot,
+        LocalNavigationGraph graph,
         List<BeamState> beams)
     {
         beams.Sort(CompareBeams);
@@ -430,9 +435,24 @@ public sealed class RdwBeamRoutePlanner
                 intervention,
                 snapshot.SnapshotId,
                 estimator.EstimatorId,
-                estimator.EstimatorVersion));
+                estimator.EstimatorVersion,
+                CalculateSemanticProgress(beam, graph)));
         }
         return routes;
+    }
+
+    private static float CalculateSemanticProgress(BeamState beam, LocalNavigationGraph graph)
+    {
+        if (beam == null || graph == null || beam.NodeIds.Count == 0) return 0f;
+        var unvisited = 0;
+        foreach (var nodeId in beam.NodeIds)
+        {
+            if (graph.TryGetNode(nodeId, out var node) && node != null && !node.Visited)
+            {
+                unvisited++;
+            }
+        }
+        return Mathf.Clamp01((float)unvisited / beam.NodeIds.Count);
     }
 
     private static InterventionLevel ResolveIntervention(float semanticImportance, float gainCost)

@@ -47,6 +47,27 @@ public interface IRdwRouteSelectionClient
     event Action<string> RouteSelectionRequestFailed;
 }
 
+/// <summary>
+/// Semantic-only 局部规划的独立传输契约；请求只包含语义图和主题上下文。
+/// </summary>
+public interface ISemanticPlanClient
+{
+    /// <summary>当前是否有语义规划请求等待响应。</summary>
+    bool SemanticPlanRequestInFlight { get; }
+
+    /// <summary>发送一份 Semantic-only 局部规划请求。</summary>
+    void RequestSemanticPlan(SemanticPlanRequest request);
+
+    /// <summary>废弃当前语义规划请求，使旧 generation 永久失效。</summary>
+    void CancelPendingSemanticPlan();
+
+    /// <summary>后端返回并完成协议校验的语义计划。</summary>
+    event Action<SemanticPlanResponse> SemanticPlanReceived;
+
+    /// <summary>语义规划网络、HTTP 或协议失败。</summary>
+    event Action<string> SemanticPlanRequestFailed;
+}
+
 /// <summary>表示后端健康检查的容错状态。</summary>
 public enum BackendHealthStatus
 {
@@ -93,7 +114,7 @@ public sealed class BackendHealthStatusInfo
 /// <summary>
 /// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
-public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRouteSelectionClient
+public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRouteSelectionClient, ISemanticPlanClient
 {
     private static readonly HashSet<string> ResponseFieldNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -132,6 +153,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     [Tooltip("后端 RDW route-selection endpoint 地址。")]
     [SerializeField] private string routeSelectionEndpoint =
         "http://127.0.0.1:8000/api/planning/route-selection";
+    [Tooltip("后端 Semantic-only 局部规划 endpoint 地址。")]
+    [SerializeField] private string semanticPlanEndpoint =
+        "http://127.0.0.1:8000/api/planning/semantic-local";
     [Tooltip("请求超时时间，单位：秒。")]
     [SerializeField] private int requestTimeoutSeconds = 8;
     [Tooltip("后端健康检查地址。")]
@@ -193,6 +217,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     public event Action<RdwRouteSelectionResponse> RouteSelectionReceived;
     /// <summary>路线选择网络、HTTP 或协议失败。</summary>
     public event Action<string> RouteSelectionRequestFailed;
+    /// <summary>严格验证后的 Semantic-only 规划响应。</summary>
+    public event Action<SemanticPlanResponse> SemanticPlanReceived;
+    /// <summary>Semantic-only 规划网络、HTTP 或协议失败。</summary>
+    public event Action<string> SemanticPlanRequestFailed;
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
@@ -203,6 +231,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     private bool routeSelectionRequestInFlight;
     private int routeSelectionRequestGeneration;
     private UnityWebRequest activeRouteSelectionRequest;
+    private bool semanticPlanRequestInFlight;
+    private int semanticPlanRequestGeneration;
+    private UnityWebRequest activeSemanticPlanRequest;
     private Coroutine healthLoop;
     private BackendHealthStatus backendHealthStatus = BackendHealthStatus.Unknown;
     private int consecutiveHealthCheckFailures;
@@ -215,6 +246,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     public bool RequestInFlight => requestInFlight;
     /// <summary>当前是否有路线选择请求等待响应。</summary>
     public bool RouteSelectionRequestInFlight => routeSelectionRequestInFlight;
+    /// <summary>当前是否有语义规划请求等待响应。</summary>
+    public bool SemanticPlanRequestInFlight => semanticPlanRequestInFlight;
     /// <summary>后端是否已成功连接且尚未超过离线判定阈值。</summary>
     public bool BackendOnline => backendOnline;
     /// <summary>当前后端健康状态。</summary>
@@ -247,6 +280,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
 
         CancelPendingRequest();
         CancelPendingRouteSelection();
+        CancelPendingSemanticPlan();
         healthRequestInFlight = false;
         ResetHealthTracking();
     }
@@ -378,6 +412,37 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
         }
     }
 
+    /// <summary>发送独立的 Semantic-only 局部规划请求。</summary>
+    public void RequestSemanticPlan(SemanticPlanRequest request)
+    {
+        if (request == null)
+        {
+            SemanticPlanRequestFailed?.Invoke("Semantic plan request is missing.");
+            return;
+        }
+        if (semanticPlanRequestInFlight)
+        {
+            SemanticPlanRequestFailed?.Invoke("Semantic plan request is already in progress.");
+            return;
+        }
+
+        var generation = ++semanticPlanRequestGeneration;
+        semanticPlanRequestInFlight = true;
+        StartCoroutine(SendSemanticPlanRequest(request, generation));
+    }
+
+    /// <summary>中止独立语义规划请求，并推进传输 generation。</summary>
+    public void CancelPendingSemanticPlan()
+    {
+        semanticPlanRequestGeneration++;
+        semanticPlanRequestInFlight = false;
+        if (activeSemanticPlanRequest != null)
+        {
+            activeSemanticPlanRequest.Abort();
+            activeSemanticPlanRequest = null;
+        }
+    }
+
     /// <summary>立即触发一次后端健康检查。</summary>
     public void CheckHealth()
     {
@@ -506,12 +571,12 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
             risk_snapshot_id = EmptyFallback(
                 context.risk_snapshot_id,
                 riskState.risk_snapshot_id),
-            condition = EmptyFallback(context.condition, "ours_full"),
+            condition = EmptyFallback(context.condition, "B1_semantic_only"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
             physical_space_id = EmptyFallback(physicalSpaceManager.CurrentSpaceId, "wide_room"),
             current_exhibit = EmptyFallback(context.current_exhibit, "E1"),
-            final_target = EmptyFallback(context.final_target, "E5"),
-            preferred_task_target = EmptyFallback(context.preferred_task_target, "E5"),
+            final_target = context.final_target ?? string.Empty,
+            preferred_task_target = context.preferred_task_target ?? string.Empty,
             candidate_ids = context.candidate_ids,
             model_candidate_ids = context.model_candidate_ids,
             allowed_candidate_ids = context.allowed_candidate_ids ?? Array.Empty<string>(),
@@ -807,6 +872,67 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
 
             RouteSelectionReceived?.Invoke(response);
         }
+    }
+
+    private IEnumerator SendSemanticPlanRequest(
+        SemanticPlanRequest request,
+        int transportGeneration)
+    {
+        var json = SemanticPlanProtocol.SerializeRequest(request);
+        using (var webRequest = new UnityWebRequest(
+                   semanticPlanEndpoint,
+                   UnityWebRequest.kHttpVerbPOST))
+        {
+            activeSemanticPlanRequest = webRequest;
+            webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+            webRequest.downloadHandler = new DownloadHandlerBuffer();
+            webRequest.timeout = Mathf.Max(1, requestTimeoutSeconds);
+            webRequest.SetRequestHeader("Content-Type", "application/json");
+
+            yield return webRequest.SendWebRequest();
+            if (activeSemanticPlanRequest == webRequest)
+            {
+                activeSemanticPlanRequest = null;
+            }
+            if (transportGeneration != semanticPlanRequestGeneration)
+            {
+                yield break;
+            }
+
+            semanticPlanRequestInFlight = false;
+            var responseText = webRequest.downloadHandler != null
+                ? webRequest.downloadHandler.text
+                : string.Empty;
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                SemanticPlanRequestFailed?.Invoke(
+                    FormatSemanticPlanRequestFailure(webRequest.error, responseText));
+                yield break;
+            }
+
+            if (!SemanticPlanProtocol.TryParseResponse(
+                    responseText,
+                    request,
+                    out var response,
+                    out var failureReason))
+            {
+                SemanticPlanRequestFailed?.Invoke(
+                    $"Semantic plan response rejected: {failureReason}.");
+                yield break;
+            }
+
+            SemanticPlanReceived?.Invoke(response);
+        }
+    }
+
+    /// <summary>格式化 Semantic-only 请求的 HTTP 与 Backend 诊断。</summary>
+    public static string FormatSemanticPlanRequestFailure(string transportError, string responseBody)
+    {
+        var guidanceFailure = FormatGuidanceRequestFailure(transportError, responseBody);
+        return guidanceFailure.StartsWith("Guidance request failed", StringComparison.Ordinal)
+            ? "Semantic plan request failed" +
+              guidanceFailure.Substring("Guidance request failed".Length)
+            : guidanceFailure;
     }
 
     /// <summary>

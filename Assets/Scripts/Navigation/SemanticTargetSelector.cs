@@ -99,35 +99,57 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                                      runtimeState.phase == GuidanceRuntimePhase.PausedForReset));
         if (!canInspectCandidates || navigationTargets == null ||
             !string.Equals(runtimeState.taskId, "T2_main_target", StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
+            string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
         {
             return new NavigationCandidateSet(null, null, null, null, 0);
         }
 
         var candidates = new List<NavigationCandidate>();
         var assessments = new List<CandidateAssessment>();
-        TryAddCandidate(
-            candidates,
-            assessments,
-            runtimeState,
-            riskState,
-            runtimeState.finalTargetId,
-            NavigationTargetRole.FinalTarget);
+        if (!string.IsNullOrWhiteSpace(runtimeState.finalTargetId))
+        {
+            TryAddCandidate(
+                candidates,
+                assessments,
+                runtimeState,
+                riskState,
+                runtimeState.finalTargetId,
+                NavigationTargetRole.FinalTarget);
+        }
         var graph = navigationTargets.SemanticGraph;
         if (graph != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
         {
-            foreach (var neighborId in graph.GetSpatialNeighbors(runtimeState.currentExhibitId))
+            var included = new HashSet<string>(StringComparer.Ordinal)
             {
-                if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
+                runtimeState.currentExhibitId
+            };
+            var frontier = new List<string> { runtimeState.currentExhibitId };
+            var routeRole = policy != null &&
+                            policy.UseRdwAffordance == ConditionCapabilityMode.Enabled
+                ? NavigationTargetRole.RouteSubgoal
+                : NavigationTargetRole.NavigableDetour;
+            for (var hop = 0; hop < 3 && frontier.Count > 0; hop++)
+            {
+                var nextFrontier = new List<string>();
+                foreach (var sourceId in frontier)
                 {
-                    TryAddCandidate(
-                        candidates,
-                        assessments,
-                        runtimeState,
-                        riskState,
-                        neighborId,
-                        NavigationTargetRole.NavigableDetour);
+                    foreach (var neighborId in graph.GetSpatialNeighbors(sourceId))
+                    {
+                        if (!included.Add(neighborId)) continue;
+                        nextFrontier.Add(neighborId);
+                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
+                        {
+                            TryAddCandidate(
+                                candidates,
+                                assessments,
+                                runtimeState,
+                                riskState,
+                                neighborId,
+                                routeRole);
+                        }
+                    }
                 }
+                frontier = nextFrontier;
             }
         }
 
@@ -512,6 +534,17 @@ public sealed class SemanticTargetSelector : MonoBehaviour
 
         if (role != NavigationTargetRole.NavigableDetour)
         {
+            if (role == NavigationTargetRole.RouteSubgoal &&
+                runtimeState.visitedExhibitIds != null)
+            {
+                foreach (var visitedId in runtimeState.visitedExhibitIds)
+                {
+                    if (string.Equals(visitedId, targetId, StringComparison.Ordinal))
+                    {
+                        return "exhibit_visited";
+                    }
+                }
+            }
             return string.Empty;
         }
 

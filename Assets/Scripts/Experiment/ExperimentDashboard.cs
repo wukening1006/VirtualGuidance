@@ -11,8 +11,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
 {
     [Header("Configuration")]
     [SerializeField] private string participantId = "P001";
-    [SerializeField] private int conditionIndex = 5;
-    [SerializeField] private int taskIndex = 1;
+    [SerializeField] private int conditionIndex = 0;
+    [SerializeField] private int taskIndex = 0;
     [SerializeField] private int physicalSpaceIndex = 1;
     [SerializeField, Min(1f)] private float completionCountdownSeconds = 10f;
 
@@ -34,6 +34,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     [SerializeField] private RotationGainController rotationGainController;
     [SerializeField] private GuidanceExecutor guidanceExecutor;
     [SerializeField] private PauseResetController pauseResetController;
+    [SerializeField] private SystemBootstrapper systemBootstrapper;
     [SerializeField] private ParticipantUiController participantUiController;
     [SerializeField] private TMP_Text statusText;
 
@@ -277,8 +278,20 @@ public sealed class ExperimentDashboard : MonoBehaviour
         stateBeforeSafetyHold = ExperimentRunState.Running;
         completionSecondsRemaining = 0f;
         agentClient.CancelPendingRequest();
+        agentClient.CancelPendingSemanticPlan();
         activeGuidanceTrace = LogTraceContext.Empty;
         currentSpec = ExperimentConditionMatrix.Build(conditionIndex, taskIndex, physicalSpaceIndex, participantId);
+        var profile = ExperimentConditionMatrix.GetProfile(currentSpec.condition);
+        if (profile == null)
+        {
+            EnterError("Formal experiment condition is not supported by the three-condition profile.");
+            return;
+        }
+        if (systemBootstrapper == null)
+        {
+            systemBootstrapper = FindObjectOfType<SystemBootstrapper>();
+        }
+        systemBootstrapper?.ApplyExperimentProfile(profile);
         TransitionTo(ExperimentRunState.Starting, "Starting session");
         participantUiController?.ShowStarting();
 

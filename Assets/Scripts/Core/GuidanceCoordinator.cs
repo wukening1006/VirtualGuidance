@@ -324,9 +324,16 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private bool hasLastCompletedRecoveryForward;
     private PostResetContinuationAssessment latestPostResetContinuation;
     private RdwPlanningSettings rdwPlanningSettings;
+    private ExperimentProfile experimentProfile;
     private RdwPlanningPipeline rdwPlanningPipeline;
     private RdwFrameCoordinator rdwPlanningFrameCoordinator;
     private IRdwRouteSelectionClient routeSelectionClient;
+    private ISemanticPlanClient semanticPlanClient;
+    private StaticSceneSemanticGraph semanticPlanningGraph;
+    private readonly SemanticLocalGraphBuilder semanticLocalGraphBuilder = new SemanticLocalGraphBuilder();
+    private GuidanceExecutionSafetyEvaluator executionSafetyEvaluator;
+    private SemanticPlanRequest pendingSemanticPlanRequest;
+    private string pendingSemanticPlanId = string.Empty;
     private ExperimentLogger rdwPlanningLogger;
     private readonly PlanCache rdwPlanCache = new PlanCache();
     private readonly PlanningCallGate rdwPlanningCallGate = new PlanningCallGate();
@@ -421,6 +428,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public RdwPlanningMode CurrentRdwPlanningMode => rdwPlanningSettings != null
         ? rdwPlanningSettings.Mode
         : RdwPlanningMode.Legacy;
+    /// <summary>当前正式实验 Profile；未配置时为空。</summary>
+    public ExperimentProfile CurrentExperimentProfile => experimentProfile;
     /// <summary>当前已选择路线缓存；缓存本身不代表安全许可。</summary>
     public PlanCache RdwPlanCache => rdwPlanCache;
     /// <summary>当前路线选择调用门。</summary>
@@ -477,6 +486,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindRecoveryController();
         BindMotionDetector();
         BindRdwPlanningClient();
+        BindSemanticPlanningClient();
         ConfigureTurnCueTracker();
     }
 
@@ -489,6 +499,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         UnbindRecoveryController();
         UnbindMotionDetector();
         UnbindRdwPlanningClient();
+        UnbindSemanticPlanningClient();
     }
 
     /// <summary>
@@ -538,6 +549,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         BindRuntimeSafety();
         BindRecoveryController();
         BindMotionDetector();
+        BindSemanticPlanningClient();
         ConfigureTurnCueTracker();
     }
 
@@ -566,6 +578,32 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         routeSelectionClient = selectionClient;
         rdwPlanningLogger = logger;
         BindRdwPlanningClient();
+    }
+
+    /// <summary>注入 Semantic-only 的静态图和独立局部规划客户端。</summary>
+    public void ConfigureSemanticPlanning(
+        StaticSceneSemanticGraph graph,
+        ISemanticPlanClient planClient)
+    {
+        UnbindSemanticPlanningClient();
+        semanticPlanningGraph = graph;
+        semanticPlanClient = planClient;
+        executionSafetyEvaluator = new GuidanceExecutionSafetyEvaluator(
+            navigationTargets,
+            riskEvaluator);
+        BindSemanticPlanningClient();
+    }
+
+    /// <summary>
+    /// 应用正式三条件 Profile；Planner 类型由上层请求链读取，RDW 模式在此统一切换。
+    /// </summary>
+    public void ApplyExperimentProfile(ExperimentProfile profile)
+    {
+        experimentProfile = profile?.Clone();
+        if (rdwPlanningSettings != null && profile != null)
+        {
+            rdwPlanningSettings.SetMode(profile.rdwPlanningMode);
+        }
     }
 
     /// <summary>
@@ -604,7 +642,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             requestClient = agentClient;
         }
 
-        if (taskController == null || requestClient == null || semanticTargetSelector == null || riskEvaluator == null)
+        if (taskController == null || requestClient == null)
         {
             TriggerRuntimeIntervention(null, "Guidance planning dependencies are unavailable.");
             return;
@@ -612,6 +650,28 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (!taskController.RuntimeState.IsNavigating || requestClient.RequestInFlight)
         {
+            return;
+        }
+
+        if (experimentProfile != null &&
+            experimentProfile.plannerMode == ExperimentPlannerMode.SemanticOnly)
+        {
+            RequestSemanticOnlyPlan(reason);
+            return;
+        }
+
+        if (experimentProfile != null &&
+            experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
+            taskController.RuntimeState.HasReachedThemeCompletionThreshold)
+        {
+            taskController.CompleteTheme();
+            TaskCompleted?.Invoke(taskController.RuntimeState);
+            return;
+        }
+
+        if (semanticTargetSelector == null || riskEvaluator == null)
+        {
+            TriggerRuntimeIntervention(null, "Guidance planning dependencies are unavailable.");
             return;
         }
 
@@ -647,6 +707,16 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         var hasExecutableCandidates = candidateSet.AllowedCandidateIds != null &&
                                        candidateSet.AllowedCandidateIds.Count > 0;
+        if (!candidateSet.HasModelCandidates &&
+            experimentProfile != null &&
+            experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
+            !HasUnvisitedThemeNode(taskController.RuntimeState))
+        {
+            taskController.CompleteTheme();
+            TaskCompleted?.Invoke(taskController.RuntimeState);
+            return;
+        }
+
         if (!candidateSet.HasModelCandidates ||
             (postResetNavigationRecoveryPending && !hasExecutableCandidates))
         {
@@ -784,6 +854,244 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             BeginRdwRouteSelection(rdwPlanningResult, null);
         }
         requestClient.RequestGuidance(context);
+    }
+
+    private void RequestSemanticOnlyPlan(SemanticReplanReason reason)
+    {
+        var state = taskController != null ? taskController.RuntimeState : null;
+        if (state == null || !state.IsNavigating || semanticPlanClient == null ||
+            semanticPlanClient.SemanticPlanRequestInFlight || semanticPlanningGraph == null)
+        {
+            TriggerRuntimeIntervention(null, "Semantic-only planning dependencies are unavailable.");
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(state.activePlanId) || state.HasLockedSemanticGoal)
+        {
+            return;
+        }
+        if (state.HasReachedThemeCompletionThreshold)
+        {
+            taskController.CompleteTheme();
+            TaskCompleted?.Invoke(state);
+            return;
+        }
+
+        var themeGoal = ThemeGoal.From(semanticPlanningGraph, state.themeGoalId);
+        if (themeGoal == null)
+        {
+            TriggerRuntimeIntervention(null, "ThemeGoal is not present in the static semantic graph.");
+            return;
+        }
+
+        var sessionId = rdwPlanningLogger != null && rdwPlanningLogger.Session != null
+            ? rdwPlanningLogger.Session.sessionId
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            sessionId = "pre-session-" + Guid.NewGuid().ToString("N");
+        }
+
+        var requestId = Guid.NewGuid().ToString("N");
+        var generation = Math.Max(1, state.planGeneration);
+        var request = semanticLocalGraphBuilder.Build(
+            semanticPlanningGraph,
+            themeGoal,
+            state.currentExhibitId,
+            state.visitedExhibitIds,
+            new Dictionary<string, float>(StringComparer.Ordinal)
+            {
+                [state.themeGoalId ?? string.Empty] = state.themeCoverage
+            },
+            sessionId,
+            requestId,
+            generation,
+            state.stateVersion,
+            3);
+        if (!HasUnvisitedSemanticCandidate(request, state.visitedExhibitIds))
+        {
+            taskController.CompleteTheme();
+            TaskCompleted?.Invoke(state);
+            return;
+        }
+
+        pendingSemanticPlanRequest = request;
+        pendingSemanticPlanId = requestId;
+        rdwPlanningLogger?.LogSemanticPlan(
+            "semantic_plan_requested",
+            request,
+            null,
+            state,
+            "semantic-only local plan requested");
+        SemanticReplanning?.Invoke(new SemanticReplanInfo(reason, state));
+        SetRequestPhase(GuidanceRequestPhase.Requested);
+        semanticPlanClient.RequestSemanticPlan(request);
+    }
+
+    private static bool HasUnvisitedSemanticCandidate(
+        SemanticPlanRequest request,
+        IEnumerable<string> visitedExhibitIds)
+    {
+        var visited = new HashSet<string>(visitedExhibitIds ?? Array.Empty<string>(), StringComparer.Ordinal);
+        foreach (var node in request?.local_semantic_nodes ?? Array.Empty<SemanticPlanningNode>())
+        {
+            if (node != null && !visited.Contains(node.id)) return true;
+        }
+        return false;
+    }
+
+    private bool HasUnvisitedThemeNode(GuidanceRuntimeState state)
+    {
+        if (state == null || semanticPlanningGraph == null ||
+            string.IsNullOrWhiteSpace(state.currentExhibitId)) return false;
+
+        var visited = new HashSet<string>(state.visitedExhibitIds ?? Array.Empty<string>(), StringComparer.Ordinal);
+        var included = new HashSet<string>(StringComparer.Ordinal) { state.currentExhibitId };
+        var frontier = new List<string> { state.currentExhibitId };
+        for (var hop = 0; hop < 3 && frontier.Count > 0; hop++)
+        {
+            var next = new List<string>();
+            foreach (var source in frontier)
+            {
+                foreach (var neighbor in semanticPlanningGraph.GetSpatialNeighbors(source))
+                {
+                    if (!included.Add(neighbor)) continue;
+                    if (!visited.Contains(neighbor)) return true;
+                    next.Add(neighbor);
+                }
+            }
+            frontier = next;
+        }
+        return false;
+    }
+
+    private void HandleSemanticPlanReceived(SemanticPlanResponse response)
+    {
+        var request = pendingSemanticPlanRequest;
+        var state = taskController != null ? taskController.RuntimeState : null;
+        if (request == null || state == null || response == null ||
+            !string.Equals(response.request_id, pendingSemanticPlanId, StringComparison.Ordinal) ||
+            request.task_state_version != state.stateVersion ||
+            state.planGeneration != request.generation ||
+            !response.TryValidate(request, out _))
+        {
+            return;
+        }
+
+        pendingSemanticPlanRequest = null;
+        pendingSemanticPlanId = string.Empty;
+        rdwPlanningLogger?.LogSemanticPlan(
+            "semantic_plan_received",
+            request,
+            response,
+            state,
+            "semantic-only local plan verified");
+        SetRequestPhase(GuidanceRequestPhase.Received);
+        var targetId = response.ordered_node_ids[0];
+        var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
+        executionSafetyEvaluator = new GuidanceExecutionSafetyEvaluator(navigationTargets, riskEvaluator);
+        if (!executionSafetyEvaluator.TryEvaluate(
+                targetId,
+                NavigationTargetRole.RouteSubgoal,
+                riskState,
+                out _,
+                out var safetyReason))
+        {
+            state.InvalidateSemanticPlan();
+            SetRequestPhase(GuidanceRequestPhase.Failed);
+            TriggerSemanticPlanRejection(
+                response,
+                "Semantic plan first target failed local Physical Safety: " + safetyReason);
+            if (riskState != null)
+            {
+                TriggerPauseReset(
+                    null,
+                    riskState,
+                    "Semantic plan first target is not physically safe; starting heading recovery.");
+            }
+            return;
+        }
+
+        state.SetActiveSemanticPlan(response.request_id, response.ordered_node_ids);
+        var target = new GuidanceTarget(targetId, NavigationTargetRole.RouteSubgoal);
+        if (!state.TryReserveGuidanceTarget(target, response.request_id) ||
+            !taskController.CommitReservation(state.ActiveReservation))
+        {
+            state.InvalidateSemanticPlan();
+            TriggerSemanticPlanRejection(response, "Semantic target reservation could not be committed.");
+            return;
+        }
+
+        if (!navigationTargets.TryGetTargetBearing(targetId, out var bearing))
+        {
+            TriggerSemanticPlanRejection(response, "Semantic target bearing is unavailable.");
+            return;
+        }
+
+        var actionPlanner = new GuidanceActionPlanner();
+        var guidanceResponse = new GuidanceResponse
+        {
+            task_definition_version = "semantic-local-planning-v1",
+            guidance_schema_version = "semantic-local-planning-v1",
+            candidate_policy_version = "semantic-local-planning-v1",
+            risk_policy_version = string.Empty,
+            session_id = request.session_id,
+            calibration_id = riskState != null ? riskState.calibration_id : string.Empty,
+            request_id = request.request_id,
+            decision_id = request.request_id,
+            candidate_set_id = string.Empty,
+            state_version = request.task_state_version,
+            risk_snapshot_id = riskState != null ? riskState.risk_snapshot_id : string.Empty,
+            risk_revision = riskState != null ? riskState.risk_revision : 0,
+            target_role = GuidanceTypeUtility.TargetRoleToProtocol(NavigationTargetRole.RouteSubgoal),
+            selected_target = targetId,
+            route_decision = "semantic_local",
+            narration = response.narration,
+            gaze_cue = BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel),
+            gaze_target_id = targetId,
+            movement_instruction = GuidanceActionProtocolMapper.ToMovementInstruction(
+                actionPlanner.Plan(bearing)),
+            physical_intent = "unity_execution_safety",
+            verifier = new VerifierResult { approved = true, reason = "semantic_plan_verified" }
+        };
+
+        SetRequestPhase(GuidanceRequestPhase.Verified);
+        guidanceExecutor?.Apply(guidanceResponse);
+        arrivalDetector?.WatchReservation(state.ActiveReservation);
+        activeResponse = guidanceResponse;
+        ResetRuntimeSafetySampling();
+        SetRequestPhase(GuidanceRequestPhase.Executing);
+        GuidanceTargetSelected?.Invoke(target);
+        GuidanceExecuted?.Invoke(guidanceResponse);
+    }
+
+    private void HandleSemanticPlanFailed(string reason)
+    {
+        rdwPlanningLogger?.LogSemanticPlan(
+            "semantic_plan_failed",
+            pendingSemanticPlanRequest,
+            null,
+            taskController != null ? taskController.RuntimeState : null,
+            reason);
+        pendingSemanticPlanRequest = null;
+        pendingSemanticPlanId = string.Empty;
+        SetRequestPhase(GuidanceRequestPhase.Failed);
+        TriggerRuntimeIntervention(null, string.IsNullOrWhiteSpace(reason)
+            ? "Semantic-only planning request failed."
+            : reason);
+    }
+
+    private void TriggerSemanticPlanRejection(SemanticPlanResponse response, string reason)
+    {
+        guidanceExecutor?.Clear();
+        arrivalDetector?.WatchReservation(null);
+        AbandonReservations();
+        RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
+            null,
+            reason,
+            RuntimeGuidanceSafetyDecision.HardStop,
+            false,
+            0,
+            false));
     }
 
     /// <summary>
@@ -1132,7 +1440,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        var request = RdwRouteSelectionRequest.From(sessionId, identity, result);
+        var runtimeState = taskController != null ? taskController.RuntimeState : null;
+        var request = RdwRouteSelectionRequest.From(
+            sessionId,
+            identity,
+            result,
+            semanticPlanningGraph != null && runtimeState != null
+                ? ThemeGoal.From(semanticPlanningGraph, runtimeState.themeGoalId)
+                : null,
+            runtimeState != null ? runtimeState.visitedExhibitIds : null,
+            runtimeState != null
+                ? new Dictionary<string, float>(StringComparer.Ordinal)
+                {
+                    [runtimeState.themeGoalId ?? string.Empty] = runtimeState.themeCoverage
+                }
+                : null);
         if (request == null)
         {
             rdwPlanningCallGate.Invalidate();
@@ -1424,6 +1746,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         routeSelectionClient.RouteSelectionRequestFailed -= HandleRdwRouteSelectionFailed;
     }
 
+    private void BindSemanticPlanningClient()
+    {
+        if (semanticPlanClient == null) return;
+        semanticPlanClient.SemanticPlanReceived -= HandleSemanticPlanReceived;
+        semanticPlanClient.SemanticPlanReceived += HandleSemanticPlanReceived;
+        semanticPlanClient.SemanticPlanRequestFailed -= HandleSemanticPlanFailed;
+        semanticPlanClient.SemanticPlanRequestFailed += HandleSemanticPlanFailed;
+    }
+
+    private void UnbindSemanticPlanningClient()
+    {
+        if (semanticPlanClient == null) return;
+        semanticPlanClient.SemanticPlanReceived -= HandleSemanticPlanReceived;
+        semanticPlanClient.SemanticPlanRequestFailed -= HandleSemanticPlanFailed;
+    }
+
     private void InvalidateRdwPlanning(
         RoutePlanInvalidationReason reason,
         string message)
@@ -1431,6 +1769,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var result = pendingRdwPlanningResult;
         var plan = rdwPlanCache.ActivePlan;
         routeSelectionClient?.CancelPendingRouteSelection();
+        semanticPlanClient?.CancelPendingSemanticPlan();
+        pendingSemanticPlanRequest = null;
+        pendingSemanticPlanId = string.Empty;
         rdwPlanningCallGate.Invalidate();
         rdwPlanCache.Invalidate(reason);
         ClearPendingRdwPlanning();
@@ -1494,6 +1835,32 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
             TargetReached?.Invoke(guidanceTarget);
             DetourCompleted?.Invoke(guidanceTarget);
+            Replanning?.Invoke(state);
+            RequestNextGuidance(SemanticReplanReason.TargetArrived);
+            return;
+        }
+
+        var dynamicThemePlanner = experimentProfile != null &&
+                                  experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK;
+        if (dynamicThemePlanner)
+        {
+            if (!taskController.HandleThemeTargetArrived(reservation.TargetId))
+            {
+                return;
+            }
+
+            ConfirmCompletedRdwStep(reservation.TargetId, state.stateVersion);
+            TargetReached?.Invoke(guidanceTarget);
+            if (state.IsCompleted)
+            {
+                InvalidateRdwPlanning(
+                    RoutePlanInvalidationReason.RouteExhausted,
+                    "Theme coverage threshold reached after the active RDW route step arrived.");
+                arrivalDetector?.WatchReservation(null);
+                TaskCompleted?.Invoke(state);
+                return;
+            }
+
             Replanning?.Invoke(state);
             RequestNextGuidance(SemanticReplanReason.TargetArrived);
             return;
@@ -1572,6 +1939,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             RoutePlanInvalidationReason.GuidanceCancelled,
             "Active guidance was cancelled.");
         requestClient?.CancelPendingRequest();
+        semanticPlanClient?.CancelPendingSemanticPlan();
+        pendingSemanticPlanRequest = null;
+        pendingSemanticPlanId = string.Empty;
+        taskController?.RuntimeState.InvalidateSemanticPlan();
         guidanceExecutor?.Clear();
         rotationGainController?.CancelGain("guidance_cancelled");
         arrivalDetector?.WatchReservation(null);
@@ -1998,12 +2369,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (state == ResetLifecycleState.Required ||
             state == ResetLifecycleState.TurningToSafeHeading)
         {
+            taskController?.RuntimeState.InvalidateSemanticPlan();
             InvalidateRdwPlanning(
                 RoutePlanInvalidationReason.ResetStarted,
                 "Reset started; all previous route identities are stale.");
         }
         else if (state == ResetLifecycleState.Completed)
         {
+            taskController?.RuntimeState.InvalidateSemanticPlan();
             InvalidateRdwPlanning(
                 RoutePlanInvalidationReason.ResetCompleted,
                 "Reset completed; waiting for fresh post-reset planning facts.");
@@ -2977,6 +3350,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 true)
             : null;
         var candidates = candidateSet != null ? candidateSet.Candidates : null;
+        if (experimentProfile != null &&
+            experimentProfile.resetMode == ExperimentResetMode.SemanticContextualized)
+        {
+            var semanticContext = BuildSemanticResetContext();
+            candidates = OrderSemanticResetCandidates(candidates, semanticContext);
+        }
         RecoveryHeadingPlan bestPlan = null;
         var samples = new List<HeadingSample>(searchResult.Evaluations ?? Array.Empty<HeadingSample>());
         if (searchResult.Plan != null && searchResult.Plan.IsSuccess)
@@ -3079,6 +3458,73 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             planningFingerprint,
             headingSelections);
         return bestPlan;
+    }
+
+    private SemanticResetContext BuildSemanticResetContext()
+    {
+        var state = taskController != null ? taskController.RuntimeState : null;
+        var remaining = new List<string>();
+        if (state != null && state.activePlanNodes != null)
+        {
+            remaining.AddRange(state.activePlanNodes);
+        }
+        var activeRoute = rdwPlanCache.ActivePlan;
+        if (activeRoute != null)
+        {
+            foreach (var nodeId in activeRoute.RemainingSteps)
+            {
+                if (!remaining.Contains(nodeId)) remaining.Add(nodeId);
+            }
+        }
+        return new SemanticResetContext(
+            state != null ? state.themeGoalId : string.Empty,
+            state != null ? state.activePlanId : string.Empty,
+            activeRoute != null ? activeRoute.SelectedRouteId : string.Empty,
+            state != null ? state.currentExhibitId : string.Empty,
+            state != null ? state.nextTargetId : string.Empty,
+            remaining);
+    }
+
+    private static IReadOnlyList<NavigationCandidate> OrderSemanticResetCandidates(
+        IReadOnlyList<NavigationCandidate> candidates,
+        SemanticResetContext context)
+    {
+        var ordered = new List<NavigationCandidate>();
+        if (context != null)
+        {
+            foreach (var preferredId in context.RemainingPlanNodeIds)
+            {
+                foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
+                {
+                    if (candidate != null &&
+                        string.Equals(candidate.TargetId, preferredId, StringComparison.Ordinal) &&
+                        !ordered.Contains(candidate))
+                    {
+                        ordered.Add(candidate);
+                    }
+                }
+            }
+        }
+        if (context != null && !string.IsNullOrWhiteSpace(context.ThemeGoalId))
+        {
+            foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
+            {
+                if (candidate != null &&
+                    candidate.Definition != null &&
+                    candidate.Definition.knowledge != null &&
+                    candidate.Definition.knowledge.themes != null &&
+                    Array.IndexOf(candidate.Definition.knowledge.themes, context.ThemeGoalId) >= 0 &&
+                    !ordered.Contains(candidate))
+                {
+                    ordered.Add(candidate);
+                }
+            }
+        }
+        foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
+        {
+            if (candidate != null && !ordered.Contains(candidate)) ordered.Add(candidate);
+        }
+        return ordered.AsReadOnly();
     }
 
     private static PostResetContinuationAssessment HoldContinuation(

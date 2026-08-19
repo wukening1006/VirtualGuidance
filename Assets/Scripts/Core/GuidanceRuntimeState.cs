@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 [Serializable]
 /// <summary>
@@ -15,10 +16,26 @@ public sealed class GuidanceRuntimeState
     public string taskId = "T2_main_target";
     /// <summary>用户当前已到达的展品 ID。</summary>
     public string currentExhibitId = "E1";
-    /// <summary>路线中的下一目标 ID；为空表示路线已完成。</summary>
-    public string nextTargetId = "E5";
-    /// <summary>本次任务的最终目标展品 ID。</summary>
-    public string finalTargetId = "E5";
+    /// <summary>当前局部计划的第一步目标 ID；未生成计划时为空。</summary>
+    public string nextTargetId = string.Empty;
+    /// <summary>兼容旧请求的最终目标 ID；正式主题导览不固定终点。</summary>
+    public string finalTargetId = string.Empty;
+    /// <summary>当前主题目标 ID；正式三条件 Planner 的任务语义入口。</summary>
+    public string themeGoalId = "TH_RITUAL";
+    /// <summary>已参观展品 ID，按首次到达顺序保存。</summary>
+    public string[] visitedExhibitIds = new[] { "E1" };
+    /// <summary>主题覆盖进度，范围 0-1。</summary>
+    public float themeCoverage;
+    /// <summary>主题完成覆盖阈值，范围 0-1。</summary>
+    public float themeCoverageThreshold = 0.6f;
+    /// <summary>主题导览最大展品步数。</summary>
+    public int maxThemeSteps = 8;
+    /// <summary>当前有效语义计划 ID。</summary>
+    public string activePlanId = string.Empty;
+    /// <summary>当前语义计划代际。</summary>
+    public int planGeneration;
+    /// <summary>当前计划节点快照。</summary>
+    public string[] activePlanNodes = Array.Empty<string>();
     /// <summary>状态转换版本，用于检测请求与响应之间的竞态。</summary>
     public int stateVersion;
     /// <summary>当前 Guidance Target ID。</summary>
@@ -99,6 +116,14 @@ public sealed class GuidanceRuntimeState
         currentExhibitId = EmptyFallback(startExhibitId, "E1");
         nextTargetId = EmptyFallback(firstTargetId, finalTarget);
         finalTargetId = EmptyFallback(finalTarget, nextTargetId);
+        visitedExhibitIds = string.IsNullOrWhiteSpace(currentExhibitId)
+            ? Array.Empty<string>()
+            : new[] { currentExhibitId };
+        themeCoverage = 0f;
+        activePlanId = string.Empty;
+        // 规划代际从 1 开始，便于跨端请求身份校验。
+        planGeneration = 1;
+        activePlanNodes = Array.Empty<string>();
         guidanceTargetId = string.Empty;
         activeDetourId = string.Empty;
         visitedDetourIds = Array.Empty<string>();
@@ -123,10 +148,112 @@ public sealed class GuidanceRuntimeState
     {
         CompleteActiveReservation();
         currentExhibitId = EmptyFallback(arrivedTargetId, currentExhibitId);
+        visitedExhibitIds = AppendUnique(visitedExhibitIds, currentExhibitId);
+        activePlanId = string.Empty;
+        activePlanNodes = Array.Empty<string>();
+        planGeneration++;
         nextTargetId = followingTargetId;
         ClearRedirectionHistory();
         phase = string.IsNullOrWhiteSpace(nextTargetId) ? GuidanceRuntimePhase.Completed : GuidanceRuntimePhase.Navigating;
         stateVersion++;
+    }
+
+    /// <summary>配置主题目标；不改变当前导航阶段。</summary>
+    public void ConfigureTheme(
+        string goalId,
+        float coverage = 0f,
+        float coverageThreshold = 0.6f,
+        int maximumSteps = 8)
+    {
+        themeGoalId = string.IsNullOrWhiteSpace(goalId) ? themeGoalId : goalId;
+        themeCoverage = Math.Max(0f, Math.Min(1f, coverage));
+        themeCoverageThreshold = Math.Max(0f, Math.Min(1f, coverageThreshold));
+        maxThemeSteps = Math.Max(1, maximumSteps);
+    }
+
+    /// <summary>冻结一份当前语义计划，使旧计划在代际变化后失效。</summary>
+    public void SetActiveSemanticPlan(string planId, IEnumerable<string> nodeIds)
+    {
+        activePlanId = planId ?? string.Empty;
+        activePlanNodes = new List<string>(nodeIds ?? Array.Empty<string>()).ToArray();
+        nextTargetId = activePlanNodes.Length > 0 ? activePlanNodes[0] : string.Empty;
+    }
+
+    /// <summary>清除当前语义计划并递增计划代际。</summary>
+    public void InvalidateSemanticPlan()
+    {
+        var hadActivePlan = !string.IsNullOrWhiteSpace(activePlanId) ||
+                            (activePlanNodes != null && activePlanNodes.Length > 0);
+        activePlanId = string.Empty;
+        activePlanNodes = Array.Empty<string>();
+        planGeneration++;
+        if (hadActivePlan)
+        {
+            // 计划失效必须同时使旧目标响应的 task_state_version 失效。
+            stateVersion++;
+        }
+    }
+
+    /// <summary>确认语义计划第一步到达，并保持任务进入下一轮局部规划。</summary>
+    public void AdvanceSemanticTo(string arrivedTargetId)
+    {
+        CompleteActiveReservation();
+        currentExhibitId = EmptyFallback(arrivedTargetId, currentExhibitId);
+        visitedExhibitIds = AppendUnique(visitedExhibitIds, currentExhibitId);
+        activePlanId = string.Empty;
+        activePlanNodes = Array.Empty<string>();
+        nextTargetId = string.Empty;
+        planGeneration++;
+        ClearRedirectionHistory();
+        phase = GuidanceRuntimePhase.Navigating;
+        stateVersion++;
+    }
+
+    /// <summary>按覆盖阈值、最大步数或无候选条件结束主题导览。</summary>
+    public void CompleteTheme()
+    {
+        CompleteActiveReservation();
+        activePlanId = string.Empty;
+        activePlanNodes = Array.Empty<string>();
+        nextTargetId = string.Empty;
+        phase = GuidanceRuntimePhase.Completed;
+        stateVersion++;
+    }
+
+    /// <summary>当前覆盖度或已访问步数是否达到主题完成阈值。</summary>
+    public bool HasReachedThemeCompletionThreshold =>
+        themeCoverage >= themeCoverageThreshold ||
+        (visitedExhibitIds != null && visitedExhibitIds.Length >= maxThemeSteps);
+
+    /// <summary>按已访问展品数量更新确定性主题覆盖进度。</summary>
+    public void UpdateThemeCoverage(int totalExhibitCount)
+    {
+        if (totalExhibitCount <= 0)
+        {
+            themeCoverage = 0f;
+            return;
+        }
+
+        themeCoverage = Math.Max(0f, Math.Min(1f,
+            (float)(visitedExhibitIds != null ? visitedExhibitIds.Length : 0) / totalExhibitCount));
+    }
+
+    /// <summary>按主题包含关系更新已访问主题覆盖度。</summary>
+    public void UpdateThemeCoverage(IEnumerable<string> themeExhibitIds)
+    {
+        var themeIds = new HashSet<string>(themeExhibitIds ?? Array.Empty<string>(), StringComparer.Ordinal);
+        if (themeIds.Count == 0)
+        {
+            themeCoverage = 0f;
+            return;
+        }
+
+        var covered = 0;
+        foreach (var exhibitId in visitedExhibitIds ?? Array.Empty<string>())
+        {
+            if (themeIds.Contains(exhibitId)) covered++;
+        }
+        themeCoverage = Math.Max(0f, Math.Min(1f, (float)covered / themeIds.Count));
     }
 
     /// <summary>

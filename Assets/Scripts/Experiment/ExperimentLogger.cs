@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -222,6 +223,40 @@ public sealed class ExperimentLogger : MonoBehaviour
         var trace = LogTraceContext.FromResponse(response, riskState);
         Write("guidance_received", null, null, response, riskState, null, "guidance received", trace, "pending");
         return trace;
+    }
+
+    private static string ComputeStableJsonHash(object value)
+    {
+        if (value == null) return string.Empty;
+        var json = JsonConvert.SerializeObject(value, Formatting.None);
+        using (var sha = SHA256.Create())
+        {
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(json));
+            var builder = new StringBuilder(bytes.Length * 2);
+            foreach (var item in bytes) builder.Append(item.ToString("x2", CultureInfo.InvariantCulture));
+            return builder.ToString();
+        }
+    }
+
+    /// <summary>记录 Semantic-only 规划请求、Verifier 结果和计划身份。</summary>
+    public void LogSemanticPlan(
+        string eventType,
+        SemanticPlanRequest request,
+        SemanticPlanResponse response,
+        GuidanceRuntimeState runtimeState,
+        string reason = "")
+    {
+        Write(
+            string.IsNullOrWhiteSpace(eventType) ? "semantic_plan" : eventType,
+            null,
+            null,
+            null,
+            null,
+            runtimeState,
+            string.IsNullOrWhiteSpace(reason) ? "semantic plan" : reason,
+            LogTraceContext.Empty,
+            semanticPlanRequest: request,
+            semanticPlanResponse: response);
     }
 
     /// <summary>记录 Guidance 已通过条件与运行时验证。</summary>
@@ -692,7 +727,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         PlanningCallIdentity rdwPlanningIdentity = null,
         RdwRouteSelectionResponse rdwRouteSelectionResponse = null,
         RoutePlan rdwRoutePlan = null,
-        RoutePlanInvalidationReason rdwPlanInvalidationReason = RoutePlanInvalidationReason.None)
+        RoutePlanInvalidationReason rdwPlanInvalidationReason = RoutePlanInvalidationReason.None,
+        SemanticPlanRequest semanticPlanRequest = null,
+        SemanticPlanResponse semanticPlanResponse = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -777,6 +814,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             };
             var data = new JObject
             {
+                ["log_schema_version"] = "theme-driven-experiment-v2",
                 ["participant_id"] = participantId,
                 ["condition"] = condition,
                 ["policy_version"] = ExperimentConditionPolicy.CurrentVersion,
@@ -801,9 +839,42 @@ public sealed class ExperimentLogger : MonoBehaviour
                     riskState != null ? riskState.current_heading : default(HeadingSample))
             };
 
+            var profile = ExperimentConditionMatrix.GetProfile(condition);
+            data["condition_id"] = condition;
+            data["planner_mode"] = profile != null ? profile.plannerMode.ToString() : string.Empty;
+            data["continuous_rdw_enabled"] = profile != null && profile.continuousRdwEnabled;
+            data["reset_mode"] = profile != null ? profile.resetMode.ToString() : string.Empty;
+            data["theme_goal_id"] = runtimeState != null ? runtimeState.themeGoalId : string.Empty;
+            data["theme_progress"] = runtimeState != null ? runtimeState.themeCoverage : 0f;
+            data["visited_exhibit_ids"] = new JArray(runtimeState?.visitedExhibitIds ?? Array.Empty<string>());
+            data["plan_id"] = runtimeState != null ? runtimeState.activePlanId : string.Empty;
+            data["plan_generation"] = runtimeState != null ? runtimeState.planGeneration : 0;
+            data["active_plan_nodes"] = new JArray(runtimeState?.activePlanNodes ?? Array.Empty<string>());
+
             if (request != null)
             {
                 data["request"] = JToken.FromObject(request);
+            }
+            if (semanticPlanRequest != null)
+            {
+                data["semantic_plan_request"] = JToken.FromObject(semanticPlanRequest);
+                data["planner_input_hash"] = ComputeStableJsonHash(new
+                {
+                    semanticPlanRequest.theme_goal,
+                    semanticPlanRequest.current_exhibit_id,
+                    semanticPlanRequest.visited_exhibit_ids,
+                    semanticPlanRequest.theme_progress,
+                    semanticPlanRequest.local_semantic_nodes,
+                    semanticPlanRequest.local_spatial_edges,
+                    semanticPlanRequest.local_semantic_edges
+                });
+            }
+            if (semanticPlanResponse != null)
+            {
+                data["semantic_plan_response"] = JToken.FromObject(semanticPlanResponse);
+                data["proposed_node_ids"] = new JArray(semanticPlanResponse.ordered_node_ids ?? Array.Empty<string>());
+                data["semantic_verifier_result"] = semanticPlanResponse.verifier != null &&
+                    semanticPlanResponse.verifier.approved ? "approved" : "rejected";
             }
             if (candidateReservation != null)
             {
@@ -1513,6 +1584,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["first_target_id"] = route.FirstTargetId,
                 ["ordered_node_ids"] = new JArray(route.OrderedNodeIds),
                 ["route_utility"] = route.RouteUtility,
+                ["semantic_progress"] = route.SemanticProgress,
                 ["intervention_level"] = route.InterventionLevel.ToString().ToLowerInvariant(),
                 ["estimator_id"] = route.EstimatorId,
                 ["estimator_version"] = route.EstimatorVersion,

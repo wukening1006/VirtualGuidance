@@ -11,7 +11,7 @@ public sealed class ExperimentConditionSpec
     /// <summary>参与者 ID，默认 P001，仅用于开发和调试。</summary>
     public string participantId = "P001";
     /// <summary>实验条件标签，必须与后端和日志分析约定一致。</summary>
-    public string condition = "ours_full";
+    public string condition = "B1_semantic_only";
     /// <summary>任务 ID，必须存在于 ExperimentConditionMatrix.TaskIds。</summary>
     public string taskId = "T2_main_target";
     /// <summary>physical space 配置 ID。</summary>
@@ -19,13 +19,19 @@ public sealed class ExperimentConditionSpec
     /// <summary>任务开始时的展品 ID。</summary>
     public string startExhibitId = "E1";
     /// <summary>初次请求建议使用的语义目标 ID。</summary>
-    public string semanticNextTargetId = "E5";
-    /// <summary>任务最终目标展品 ID。</summary>
-    public string finalTargetId = "E5";
+    public string semanticNextTargetId = string.Empty;
+    /// <summary>兼容旧路线字段；正式三条件不固定最终展品。</summary>
+    public string finalTargetId = string.Empty;
     /// <summary>提供给后端的自然语言任务描述。</summary>
     public string userTask;
+    /// <summary>静态语义图中的主题目标 ID。</summary>
+    public string themeGoalId = "TH_RITUAL";
+    /// <summary>完成主题目标所需的最小覆盖比例。</summary>
+    [Range(0f, 1f)] public float themeCoverageThreshold = 0.6f;
+    /// <summary>主题导览允许执行的最大展品步数。</summary>
+    [Min(1)] public int maxThemeSteps = 8;
     /// <summary>包含起点在内的有序路线展品 ID。</summary>
-    public string[] routeTargetIds = { "E1", "E5" };
+    public string[] routeTargetIds = { "E1" };
     /// <summary>模拟用户在 physical XZ 平面的位置，单位：米。</summary>
     public Vector2 simulatedPhysicalPosition = new Vector2(1.8f, 4.3f);
     /// <summary>模拟用户以 physical +Z 为 0 度的水平朝向，单位：度。</summary>
@@ -43,6 +49,9 @@ public sealed class ExperimentConditionSpec
             participantId = participantId,
             condition = condition,
             userTask = userTask,
+            themeGoalId = themeGoalId,
+            themeCoverageThreshold = themeCoverageThreshold,
+            maxThemeSteps = maxThemeSteps,
             startExhibitId = startExhibitId,
             finalTargetId = finalTargetId,
             maxConsecutiveDetours = 2,

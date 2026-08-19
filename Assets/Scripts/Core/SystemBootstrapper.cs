@@ -44,7 +44,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Header("Continuous RDW - 基础设置")]
     [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
     [InspectorName("启用 Continuous RDW")]
-    [SerializeField] private bool continuousRdwEnabled = true;
+    [SerializeField] private bool continuousRdwEnabled = false;
     [Tooltip("Continuous Redirector 模式；None、S2C、S2O 或 ThomasAPF 可用于同一实验配置切换。")]
     [InspectorName("重定向算法")]
     [SerializeField] private ContinuousRedirectorMode continuousRedirectorMode = ContinuousRedirectorMode.S2C;
@@ -160,6 +160,22 @@ public sealed class SystemBootstrapper : MonoBehaviour
     public SceneReadinessReport Readiness { get; private set; } = SceneReadinessReport.NotEvaluated;
     /// <summary>Step 2A 当前使用的统一 RDW 帧事务入口。</summary>
     public RdwFrameCoordinator RdwFrameCoordinator => rdwFrameCoordinator;
+
+    /// <summary>
+    /// 在正式 Session 启动前应用三条件 Profile，统一切换 Continuous RDW 与 Top-K 模式。
+    /// </summary>
+    public void ApplyExperimentProfile(ExperimentProfile profile)
+    {
+        if (profile == null)
+        {
+            return;
+        }
+
+        continuousRdwEnabled = profile.continuousRdwEnabled;
+        rdwPlanningSettings?.SetMode(profile.rdwPlanningMode);
+        rdwFrameCoordinator?.SetContinuousEnabled(profile.continuousRdwEnabled);
+        guidanceCoordinator?.ApplyExperimentProfile(profile);
+    }
     /// <summary>启动时加载的唯一静态场景语义图。</summary>
     public StaticSceneSemanticGraph SemanticGraph => semanticGraph;
 
@@ -310,6 +326,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
         xrTrackingAdapter.Configure(userPoseTracker, physicalSpaceCalibration);
         boundaryVisualizer.Configure(physicalSpaceManager, userPoseTracker, riskEvaluator, physicalSpaceCalibration);
         navigationTargetManager.Configure(userPoseTracker, semanticGraph);
+        taskController.ConfigureSemanticGraph(semanticGraph);
         navigationTargetManager.RebuildIndex();
         semanticTargetSelector.Configure(navigationTargetManager, riskEvaluator);
         arrivalDetector.Configure(userPoseTracker, navigationTargetManager);
@@ -412,6 +429,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rdwFrameCoordinator,
             agentClient,
             experimentLogger);
+        guidanceCoordinator.ConfigureSemanticPlanning(
+            semanticGraph,
+            agentClient);
         motionDetector.SetExternallyDriven(true);
         rotationGainController.ConfigureRdwCommandSink(rdwFrameCoordinator);
         BindRdwPipeline();

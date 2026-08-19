@@ -144,7 +144,6 @@ public sealed class RdwPlanningSnapshot
         !string.IsNullOrWhiteSpace(PhysicalSpaceId) &&
         !string.IsNullOrWhiteSpace(RiskSnapshotId) &&
         !string.IsNullOrWhiteSpace(CurrentNodeId) &&
-        !string.IsNullOrWhiteSpace(FinalTargetId) &&
         RiskState != null &&
         Capability != null &&
         Geometry.IsValid;

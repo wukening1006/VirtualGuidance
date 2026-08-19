@@ -9,10 +9,13 @@ from fastapi import FastAPI
 from backend.agents.guide_llm import GuideDraftGenerator
 from backend.pipeline import GuidancePipeline
 from backend.route_selection import RouteSelectionGenerator, RouteSelectionPipeline
+from backend.semantic_planning import SemanticPlanGenerator, SemanticPlanPipeline
 from backend.schemas import (
     GuidanceRequest,
     GuidanceResponse,
     HealthResponse,
+    SemanticPlanRequest,
+    SemanticPlanResponse,
     RouteSelectionRequest,
     RouteSelectionResponse,
 )
@@ -29,6 +32,7 @@ def create_app(
     log_dir: Path = DEFAULT_LOG_DIR,
     draft_generator: GuideDraftGenerator | None = None,
     route_selector: RouteSelectionGenerator | None = None,
+    semantic_planner: SemanticPlanGenerator | None = None,
 ) -> FastAPI:
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
     application.state.pipeline = GuidancePipeline(
@@ -37,6 +41,7 @@ def create_app(
         guide=draft_generator,
     )
     application.state.route_selection_pipeline = RouteSelectionPipeline(route_selector)
+    application.state.semantic_plan_pipeline = SemanticPlanPipeline(semantic_planner)
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -66,6 +71,16 @@ def create_app(
         request: RouteSelectionRequest,
     ) -> RouteSelectionResponse:
         pipeline: RouteSelectionPipeline = application.state.route_selection_pipeline
+        return await pipeline.handle(request)
+
+    @application.post(
+        "/api/planning/semantic-local",
+        response_model=SemanticPlanResponse,
+    )
+    async def semantic_local_planning(
+        request: SemanticPlanRequest,
+    ) -> SemanticPlanResponse:
+        pipeline: SemanticPlanPipeline = application.state.semantic_plan_pipeline
         return await pipeline.handle(request)
 
     return application

@@ -4,16 +4,76 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+import json
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 TASK_DEFINITION_VERSION = "t2-main-target-v2"
 GUIDANCE_SCHEMA_VERSION = "guidance-schema-v3"
 CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
+SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v1"
+RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v2"
+
+
+class ExperimentProfile(BaseModel):
+    """Unity 与 Backend 共用的三条件能力 Profile。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    condition_id: Literal[
+        "B1_semantic_only",
+        "B2_semantic_only_continuous",
+        "ours_rdw_grounded_topk",
+    ]
+    planner_mode: Literal["SemanticOnly", "RdwGroundedTopK"]
+    continuous_rdw_enabled: bool
+    rdw_planning_mode: Literal["Legacy", "RdwConstrained"]
+    reset_mode: Literal["Normal", "SemanticContextualized"]
+
+
+FORMAL_EXPERIMENT_PROFILES: dict[str, ExperimentProfile] = {
+    "B1_semantic_only": ExperimentProfile(
+        condition_id="B1_semantic_only",
+        planner_mode="SemanticOnly",
+        continuous_rdw_enabled=False,
+        rdw_planning_mode="Legacy",
+        reset_mode="Normal",
+    ),
+    "B2_semantic_only_continuous": ExperimentProfile(
+        condition_id="B2_semantic_only_continuous",
+        planner_mode="SemanticOnly",
+        continuous_rdw_enabled=True,
+        rdw_planning_mode="Legacy",
+        reset_mode="Normal",
+    ),
+    "ours_rdw_grounded_topk": ExperimentProfile(
+        condition_id="ours_rdw_grounded_topk",
+        planner_mode="RdwGroundedTopK",
+        continuous_rdw_enabled=True,
+        rdw_planning_mode="RdwConstrained",
+        reset_mode="SemanticContextualized",
+    ),
+}
+
+
+def formal_experiment_profile(condition_id: str) -> ExperimentProfile:
+    """返回正式三条件 Profile；历史条件不会静默映射进正式实验。"""
+
+    try:
+        return FORMAL_EXPERIMENT_PROFILES[condition_id].model_copy(deep=True)
+    except KeyError as exc:
+        raise ValueError(f"Unknown formal experiment condition: {condition_id}") from exc
 
 
 class SceneLayoutSize(BaseModel):
@@ -651,6 +711,188 @@ class VerifierResult(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class ThemeGoal(BaseModel):
+    """Semantic-only Planner 使用的静态主题目标。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    theme_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class SemanticPlanningNode(BaseModel):
+    """不包含 Physical Risk 的语义规划节点。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    culture: str = Field(min_length=1)
+    chronology: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_features: list[str]
+    cultural_significance: list[str]
+    key_concepts: list[str]
+    themes: list[str]
+    interpretation_notes: list[CandidateInterpretationNote]
+    semantic_edges: list[CandidateSemanticEdge]
+    spatial_edges: list[CandidateSpatialEdge]
+
+
+class SemanticPlanRequest(BaseModel):
+    """Semantic-only 局部规划请求；协议上不存在物理状态字段。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    planning_schema_version: Literal["semantic-local-planning-v1"]
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    task_state_version: int = Field(ge=0)
+    theme_goal: ThemeGoal
+    current_exhibit_id: str = Field(min_length=1)
+    visited_exhibit_ids: list[str]
+    theme_progress: dict[str, float]
+    local_semantic_nodes: list[SemanticPlanningNode] = Field(min_length=1)
+    local_spatial_edges: list[CandidateSpatialEdge]
+    local_semantic_edges: list[CandidateSemanticEdge]
+
+    @field_validator("theme_progress")
+    @classmethod
+    def validate_theme_progress(cls, value: dict[str, float]) -> dict[str, float]:
+        if any(not math.isfinite(progress) or progress < 0.0 or progress > 1.0
+               for progress in value.values()):
+            raise ValueError("theme_progress values must be finite numbers in [0, 1].")
+        return value
+
+    @model_validator(mode="after")
+    def validate_local_graph(self) -> "SemanticPlanRequest":
+        node_ids = [node.id for node in self.local_semantic_nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("local_semantic_nodes ids must be unique.")
+        if self.current_exhibit_id not in node_ids:
+            raise ValueError("current_exhibit_id must belong to local_semantic_nodes.")
+        if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
+            raise ValueError("visited_exhibit_ids must be unique.")
+        node_set = set(node_ids)
+        for edge in [*self.local_spatial_edges, *self.local_semantic_edges]:
+            if edge.source not in node_set or edge.target not in node_set:
+                raise ValueError("local graph edges must reference local_semantic_nodes.")
+        return self
+
+
+class SemanticPlanDraft(BaseModel):
+    """LLM 唯一可控制的语义计划字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ordered_node_ids: list[str] = Field(min_length=1, max_length=3)
+    narration: str = Field(min_length=1, max_length=200)
+
+    @classmethod
+    def parse_model_json(
+        cls,
+        content: str,
+        request: SemanticPlanRequest,
+    ) -> "SemanticPlanDraft":
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Semantic plan output is not valid JSON.") from exc
+        try:
+            draft = cls.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(f"Semantic plan schema validation failed: {exc}") from exc
+        if any(node_id not in {node.id for node in request.local_semantic_nodes} for node_id in draft.ordered_node_ids):
+            raise ValueError("Semantic plan contains a node outside local_semantic_nodes.")
+        return draft
+
+
+class SemanticPlanResponse(BaseModel):
+    """经过确定性 Verifier 后返回给 Unity 的语义计划。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    planning_schema_version: Literal["semantic-local-planning-v1"]
+    session_id: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    generation: int = Field(ge=1)
+    ordered_node_ids: list[str] = Field(min_length=1, max_length=3)
+    narration: str = Field(min_length=1, max_length=200)
+    verifier: VerifierResult
+
+
+def verify_semantic_plan(
+    request: SemanticPlanRequest,
+    draft: SemanticPlanDraft,
+) -> VerifierResult:
+    """只验证静态节点和 Spatial Edge，不读取 Physical Risk。"""
+
+    node_ids = {node.id for node in request.local_semantic_nodes}
+    if any(node_id not in node_ids for node_id in draft.ordered_node_ids):
+        return VerifierResult(approved=False, reason="node_outside_local_graph")
+    if len(set(draft.ordered_node_ids)) != len(draft.ordered_node_ids):
+        return VerifierResult(approved=False, reason="plan_contains_cycle")
+    if request.current_exhibit_id in draft.ordered_node_ids:
+        return VerifierResult(approved=False, reason="plan_starts_at_current_exhibit")
+    visited = set(request.visited_exhibit_ids)
+    if any(node_id in visited for node_id in draft.ordered_node_ids):
+        return VerifierResult(approved=False, reason="plan_targets_visited_exhibit")
+    spatial_pairs = {
+        (edge.source, edge.target)
+        for edge in request.local_spatial_edges
+    }
+    spatial_pairs.update(
+        (edge.target, edge.source)
+        for edge in request.local_spatial_edges
+        if edge.bidirectional
+    )
+    for source, target in zip(
+        [request.current_exhibit_id, *draft.ordered_node_ids],
+        draft.ordered_node_ids,
+    ):
+        if (source, target) not in spatial_pairs:
+            return VerifierResult(
+                approved=False,
+                reason=f"missing_spatial_edge:{source}->{target}",
+            )
+
+    node_by_id = {node.id: node for node in request.local_semantic_nodes}
+    planned_nodes = [node_by_id[node_id] for node_id in draft.ordered_node_ids]
+    theme_id = request.theme_goal.theme_id
+    semantic_edges = {
+        (edge.source, edge.target)
+        for edge in request.local_semantic_edges
+    }
+    semantic_edges.update(
+        (edge.target, edge.source)
+        for edge in request.local_semantic_edges
+        if not edge.directed
+    )
+    for node in planned_nodes:
+        if not node.themes or theme_id in node.themes:
+            continue
+        connected_to_theme_node = any(
+            other is not node
+            and other.themes
+            and theme_id in other.themes
+            and ((node.id, other.id) in semantic_edges or (other.id, node.id) in semantic_edges)
+            for other in planned_nodes
+        )
+        if not connected_to_theme_node:
+            return VerifierResult(approved=False, reason="plan_leaves_theme_context")
+    for left, right in zip(planned_nodes, planned_nodes[1:]):
+        shares_theme = bool(set(left.themes).intersection(right.themes))
+        if semantic_edges and not shares_theme and (left.id, right.id) not in semantic_edges:
+            return VerifierResult(
+                approved=False,
+                reason=f"semantic_discontinuity:{left.id}->{right.id}",
+            )
+    return VerifierResult(approved=True, reason="semantic_plan_is_graph_valid")
+
+
 class PlanningRouteEdge(BaseModel):
     """Unity 已完成 Exact Safety 后发布的单条通用路线边代价。"""
 
@@ -674,6 +916,7 @@ class PlanningRouteCandidate(BaseModel):
     ordered_node_ids: list[str] = Field(min_length=1)
     first_target_id: str = Field(min_length=1)
     route_utility: float
+    semantic_progress: float = Field(default=0.0, ge=0.0, le=1.0)
     intervention_level: Literal["low", "medium", "high"]
     estimator_id: str = Field(min_length=1)
     estimator_version: str = Field(min_length=1)
@@ -697,7 +940,7 @@ class RouteSelectionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    planning_schema_version: Literal["rdw-route-selection-v1"]
+    planning_schema_version: Literal["rdw-route-selection-v1", "rdw-route-selection-v2"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)
@@ -709,13 +952,22 @@ class RouteSelectionRequest(BaseModel):
     risk_snapshot_id: str = Field(min_length=1)
     risk_revision: int = Field(ge=1)
     current_node_id: str = Field(min_length=1)
-    final_target_id: str = Field(min_length=1)
+    final_target_id: str = ""
     estimator_id: str = Field(min_length=1)
     estimator_version: str = Field(min_length=1)
     route_candidates: list[PlanningRouteCandidate] = Field(min_length=1, max_length=5)
+    theme_goal: ThemeGoal | None = None
+    visited_exhibit_ids: list[str] = Field(default_factory=list)
+    theme_progress: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_candidate_identity(self) -> "RouteSelectionRequest":
+        if self.planning_schema_version == RDW_ROUTE_SELECTION_SCHEMA_VERSION and self.theme_goal is None:
+            raise ValueError("rdw-route-selection-v2 requires theme_goal.")
+        if self.planning_schema_version == "rdw-route-selection-v1" and not self.final_target_id:
+            raise ValueError("rdw-route-selection-v1 requires final_target_id.")
+        if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
+            raise ValueError("visited_exhibit_ids must be unique.")
         route_ids = [candidate.route_id for candidate in self.route_candidates]
         if len(route_ids) != len(set(route_ids)):
             raise ValueError("route_candidates route_id values must be unique.")
@@ -741,7 +993,7 @@ class RouteSelectionResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    planning_schema_version: Literal["rdw-route-selection-v1"]
+    planning_schema_version: Literal["rdw-route-selection-v1", "rdw-route-selection-v2"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)

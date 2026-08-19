@@ -66,7 +66,7 @@ public sealed class RdwPlanningSnapshotFactory
                 riskState.user_radius_meters)
             : default;
         var visited = runtimeState != null
-            ? runtimeState.visitedDetourIds
+            ? runtimeState.visitedExhibitIds
             : Array.Empty<string>();
         var poseIdentityMatches = pose.IsValid && riskState != null &&
                                   string.Equals(

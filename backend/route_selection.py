@@ -93,6 +93,9 @@ class MLLMRouteSelectionGenerator:
                 "current_node_id": request.current_node_id,
                 "final_target_id": request.final_target_id,
             },
+            "theme_goal": request.theme_goal.model_dump(mode="json") if request.theme_goal else None,
+            "visited_exhibit_ids": list(request.visited_exhibit_ids),
+            "theme_progress": dict(request.theme_progress),
             "route_candidates": [
                 candidate.model_dump(mode="json")
                 for candidate in request.route_candidates

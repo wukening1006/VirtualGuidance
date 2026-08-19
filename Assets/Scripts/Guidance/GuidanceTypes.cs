@@ -361,9 +361,9 @@ public sealed class GuidanceRequest
     public string risk_snapshot_id;
 
     /// <summary>
-    /// 当前实验条件，例如 ours_full 或 baseline 条件名。
+    /// 当前实验条件，正式运行使用三条件协议中的 condition_id。
     /// </summary>
-    public string condition = "ours_full";
+    public string condition = "B1_semantic_only";
 
     /// <summary>
     /// 当前任务 ID，用于后端区分任务阶段和目标。
@@ -399,11 +399,11 @@ public sealed class GuidanceRequest
     /// </summary>
     public string user_task;
 
-    /// <summary>T2 不可被模型修改的最终目标。</summary>
-    public string final_target = "E5";
+    /// <summary>兼容旧 Guidance 请求的最终目标；主题导览正式请求为空。</summary>
+    public string final_target = string.Empty;
 
-    /// <summary>任务层优先目标；T2 固定为 E5，但不约束模型必须原样返回。</summary>
-    public string preferred_task_target = "E5";
+    /// <summary>局部主题计划的第一步目标；未生成计划时为空。</summary>
+    public string preferred_task_target = string.Empty;
 
     /// <summary>Candidate Policy 生成的完整基础候选。</summary>
     public string[] candidate_ids = Array.Empty<string>();
@@ -559,10 +559,10 @@ public sealed class GuidanceRequestContext
     public string risk_snapshot_id;
 
     /// <summary>
-    /// 默认实验条件，例如 B1_mllm_only 或 ours_full。
+    /// 默认实验条件，正式运行默认使用 B1 Semantic-only。
     /// </summary>
-    [Tooltip("实验条件，例如 B1_mllm_only 或 ours_full。")]
-    public string condition = "ours_full";
+    [Tooltip("实验条件，例如 B1_semantic_only。")]
+    public string condition = "B1_semantic_only";
 
     /// <summary>
     /// 默认任务 ID，例如 T2_main_target。
@@ -576,11 +576,11 @@ public sealed class GuidanceRequestContext
     [Tooltip("当前展品 ID，例如 E1。")]
     public string current_exhibit = "E1";
 
-    /// <summary>T2 不可变 Final Goal。</summary>
-    public string final_target = "E5";
+    /// <summary>兼容旧 Guidance 请求的 Final Goal；主题导览不固定终点。</summary>
+    public string final_target = string.Empty;
 
-    /// <summary>T2 任务优先目标。</summary>
-    public string preferred_task_target = "E5";
+    /// <summary>当前局部主题计划第一步目标；未生成计划时为空。</summary>
+    public string preferred_task_target = string.Empty;
 
     /// <summary>完整基础候选 ID。</summary>
     public string[] candidate_ids = Array.Empty<string>();

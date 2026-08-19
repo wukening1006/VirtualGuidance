@@ -487,13 +487,15 @@ MonoBehaviour:
   defaultTask:
     taskId: T2_main_target
     participantId: P001
-    condition: ours_full
+    condition: B1_semantic_only
     userTask: 
+    themeGoalId: TH_RITUAL
+    themeCoverageThreshold: 0.6
+    maxThemeSteps: 8
     startExhibitId: E1
-    finalTargetId: E5
+    finalTargetId:
     routeTargetIds:
     - E1
-    - E5
     maxConsecutiveDetours: 2
 --- !u!1 &67052782
 GameObject:
@@ -12931,20 +12933,14 @@ MonoBehaviour:
   m_Placeholder: {fileID: 0}
   m_ItemText: {fileID: 1064010299}
   m_ItemImage: {fileID: 0}
-  m_Value: 5
+  m_Value: 0
   m_Options:
     m_Options:
-    - m_Text: B1_mllm_only
+    - m_Text: B1_semantic_only
       m_Image: {fileID: 0}
-    - m_Text: B2_raw_physical_data
+    - m_Text: B2_semantic_only_continuous
       m_Image: {fileID: 0}
-    - m_Text: B3_risk_labels
-      m_Image: {fileID: 0}
-    - m_Text: B4_scripted_reset
-      m_Image: {fileID: 0}
-    - m_Text: B5_ours_without_verifier
-      m_Image: {fileID: 0}
-    - m_Text: ours_full
+    - m_Text: ours_rdw_grounded_topk
       m_Image: {fileID: 0}
   m_OnValueChanged:
     m_PersistentCalls:
@@ -13639,16 +13635,10 @@ MonoBehaviour:
   m_Placeholder: {fileID: 0}
   m_ItemText: {fileID: 97040799}
   m_ItemImage: {fileID: 0}
-  m_Value: 1
+  m_Value: 0
   m_Options:
     m_Options:
-    - m_Text: T1_overview
-      m_Image: {fileID: 0}
     - m_Text: T2_main_target
-      m_Image: {fileID: 0}
-    - m_Text: T3_compare
-      m_Image: {fileID: 0}
-    - m_Text: T4_next_step
       m_Image: {fileID: 0}
   m_OnValueChanged:
     m_PersistentCalls:
@@ -14574,7 +14564,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3598fdd5c8d34185b5ecc132b3eb4ac9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  logFolderRelativeToProject: Logs/TestRuns
+  logFolderRelativeToProject: Logs/ThemeDrivenV2
   autoFlush: 1
   bufferSizeBytes: 65536
   flushIntervalSeconds: 1
@@ -14594,8 +14584,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   participantId: P001
-  conditionIndex: 5
-  taskIndex: 1
+  conditionIndex: 0
+  taskIndex: 0
   physicalSpaceIndex: 1
   completionCountdownSeconds: 10
   trackingRecoveryTimeoutSeconds: 5
@@ -14612,6 +14602,7 @@ MonoBehaviour:
   rotationGainController: {fileID: 1039273993}
   guidanceExecutor: {fileID: 1780042341}
   pauseResetController: {fileID: 1039273992}
+  systemBootstrapper: {fileID: 1761135464}
   participantUiController: {fileID: 1094502200}
   statusText: {fileID: 1967346973}
 --- !u!1 &895805143
@@ -14805,7 +14796,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: ours_full
+  m_text: B1_semantic_only
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
   m_sharedMaterial: {fileID: 3361940478459683118, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
@@ -25968,12 +25959,14 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: 'Condition: ours_full
+  m_text: 'Condition: B1_semantic_only
 
-    Logger: placeholder
 
-    Backend: mock/rule-based
-    later'
+    Logger: theme-driven-experiment-v2
+
+
+    Backend:
+    semantic-local / route-selection'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
   m_sharedMaterial: {fileID: 2180264, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
@@ -28421,6 +28414,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   guidanceEndpoint: http://127.0.0.1:8000/api/guidance
   routeSelectionEndpoint: http://127.0.0.1:8000/api/planning/route-selection
+  semanticPlanEndpoint: http://127.0.0.1:8000/api/planning/semantic-local
   requestTimeoutSeconds: 8
   healthEndpoint: http://127.0.0.1:8000/health
   healthCheckIntervalSeconds: 2
@@ -28440,11 +28434,11 @@ MonoBehaviour:
     candidate_set_id: 
     state_version: 0
     risk_snapshot_id: 
-    condition: ours_full
+    condition: B1_semantic_only
     task_id: T2_main_target
     current_exhibit: E1
-    final_target: E5
-    preferred_task_target: E5
+    final_target:
+    preferred_task_target:
     candidate_ids: []
     model_candidate_ids: []
     allowed_candidate_ids: []
@@ -31224,6 +31218,7 @@ MonoBehaviour:
   rotationGainController: {fileID: 0}
   motionDetector: {fileID: 0}
   rejectionPanel: {fileID: 0}
+  enableSoftRerouteSafetyPolicy: 0
   turnCueNoCueToleranceDegrees: 12
   turnCueReverseAbortDegrees: 5
   turnCueStableCompletionSeconds: 0.25
@@ -31276,7 +31271,7 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   rotationGainController: {fileID: 1039273993}
-  continuousRdwEnabled: 1
+  continuousRdwEnabled: 0
   continuousRedirectorMode: 1
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5

@@ -64,7 +64,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     private readonly RdwGainLimiter gainLimiter;
     private readonly RdwGainApplier gainApplier;
     private readonly ExperimentDashboard sessionDashboard;
-    private readonly bool continuousRdwEnabled;
+    private bool continuousRdwEnabled;
     private readonly float poseJumpDistanceMeters;
     private readonly float poseJumpYawDegrees;
 
@@ -89,6 +89,16 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     public long CurrentSequence => sequence;
     /// <summary>当前帧使用的 Continuous Redirector。</summary>
     public IRdwRedirector Redirector => redirector;
+
+    /// <summary>当前会话是否允许 Continuous RDW owner 参与仲裁。</summary>
+    public bool ContinuousRdwEnabled => continuousRdwEnabled;
+
+    /// <summary>按正式实验 Profile 切换 Continuous RDW；不会改变当前物理事实。</summary>
+    public void SetContinuousEnabled(bool enabled)
+    {
+        continuousRdwEnabled = enabled;
+        if (!enabled) ResetRedirectorSmoothing();
+    }
 
     /// <summary>创建 Step 2A 的帧协调器；Redirector 缺省为 NullRedirector。</summary>
     public RdwFrameCoordinator(

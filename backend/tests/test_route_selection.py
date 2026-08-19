@@ -45,6 +45,7 @@ def route_selection_payload() -> dict:
                 "ordered_node_ids": ["E3", "E5"],
                 "first_target_id": "E3",
                 "route_utility": 0.65,
+                "semantic_progress": 0.5,
                 "intervention_level": "medium",
                 "estimator_id": "s2c",
                 "estimator_version": "1",
@@ -74,6 +75,7 @@ def route_selection_payload() -> dict:
                 "ordered_node_ids": ["E4", "E5"],
                 "first_target_id": "E4",
                 "route_utility": 0.85,
+                "semantic_progress": 0.75,
                 "intervention_level": "low",
                 "estimator_id": "s2c",
                 "estimator_version": "1",
@@ -100,6 +102,22 @@ def route_selection_payload() -> dict:
             },
         ],
     }
+
+
+def test_route_selection_v2_requires_theme_context() -> None:
+    payload = route_selection_payload()
+    payload["planning_schema_version"] = "rdw-route-selection-v2"
+    payload["final_target_id"] = ""
+    payload["theme_goal"] = {
+        "theme_id": "TH_RITUAL",
+        "name": "祭祀",
+        "description": "主题描述",
+    }
+    payload["visited_exhibit_ids"] = ["E1"]
+    payload["theme_progress"] = {"TH_RITUAL": 0.0}
+    request = RouteSelectionRequest.model_validate(payload)
+    assert request.theme_goal is not None
+    assert request.final_target_id == ""
 
 
 class FixedRouteSelector:

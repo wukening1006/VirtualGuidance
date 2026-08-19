@@ -9,7 +9,7 @@ using Newtonsoft.Json.Linq;
 public static class RdwPlanningProtocolVersions
 {
     /// <summary>规划路线选择协议版本。</summary>
-    public const string RouteSelectionSchema = "rdw-route-selection-v1";
+    public const string RouteSelectionSchema = "rdw-route-selection-v2";
 }
 
 /// <summary>
@@ -48,6 +48,8 @@ public sealed class RdwRouteCandidateDto
     public string first_target_id;
     /// <summary>路线 Utility。</summary>
     public float route_utility;
+    /// <summary>路线带来的主题语义覆盖增量，范围 0-1。</summary>
+    public float semantic_progress;
     /// <summary>叙事介入等级。</summary>
     public string intervention_level;
     /// <summary>估计器 ID。</summary>
@@ -84,6 +86,7 @@ public sealed class RdwRouteCandidateDto
             ordered_node_ids = nodes,
             first_target_id = route.FirstTargetId,
             route_utility = route.RouteUtility,
+            semantic_progress = route.SemanticProgress,
             intervention_level = route.InterventionLevel.ToString().ToLowerInvariant(),
             estimator_id = route.EstimatorId,
             estimator_version = route.EstimatorVersion,
@@ -130,12 +133,21 @@ public sealed class RdwRouteSelectionRequest
     public string estimator_version;
     /// <summary>可供模型选择的 Top-K 路线。</summary>
     public RdwRouteCandidateDto[] route_candidates = Array.Empty<RdwRouteCandidateDto>();
+    /// <summary>当前主题目标上下文。</summary>
+    public ThemeGoal theme_goal;
+    /// <summary>已访问展品 ID。</summary>
+    public string[] visited_exhibit_ids = Array.Empty<string>();
+    /// <summary>主题覆盖进度。</summary>
+    public Dictionary<string, float> theme_progress = new Dictionary<string, float>();
 
     /// <summary>从 Planning result 与 Call identity 创建严格请求。</summary>
     public static RdwRouteSelectionRequest From(
         string sessionId,
         PlanningCallIdentity identity,
-        RdwRoutePlanningResult result)
+        RdwRoutePlanningResult result,
+        ThemeGoal themeGoal = null,
+        IEnumerable<string> visitedExhibitIds = null,
+        IDictionary<string, float> themeProgress = null)
     {
         if (identity == null || result?.Snapshot == null) return null;
         var routes = new RdwRouteCandidateDto[result.Routes.Count];
@@ -160,7 +172,12 @@ public sealed class RdwRouteSelectionRequest
             final_target_id = snapshot.FinalTargetId,
             estimator_id = snapshot.Capability.EstimatorId,
             estimator_version = snapshot.Capability.EstimatorVersion,
-            route_candidates = routes
+            route_candidates = routes,
+            theme_goal = themeGoal,
+            visited_exhibit_ids = new List<string>(visitedExhibitIds ?? Array.Empty<string>()).ToArray(),
+            theme_progress = themeProgress != null
+                ? new Dictionary<string, float>(themeProgress, StringComparer.Ordinal)
+                : new Dictionary<string, float>(StringComparer.Ordinal)
         };
     }
 

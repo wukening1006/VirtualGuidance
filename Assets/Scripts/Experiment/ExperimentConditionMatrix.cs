@@ -73,12 +73,9 @@ public static class ExperimentConditionMatrix
     /// <summary>后端与日志共用的实验条件标签集合。</summary>
     public static readonly string[] Conditions =
     {
-        "B1_mllm_only",
-        "B2_raw_physical_data",
-        "B3_risk_labels",
-        "B4_scripted_reset",
-        "B5_ours_without_verifier",
-        "ours_full"
+        "B1_semantic_only",
+        "B2_semantic_only_continuous",
+        "ours_rdw_grounded_topk"
     };
 
     /// <summary>当前正式实验允许启动的任务 ID 集合。</summary>
@@ -147,6 +144,7 @@ public static class ExperimentConditionMatrix
         for (var taskIndex = 0; taskIndex < TaskIds.Length; taskIndex++)
         {
             var spec = Build(0, taskIndex, 0, "semantic_validation");
+            ValidateThemeReference(graph, errors, spec.themeGoalId, spec.taskId);
             ValidateExhibitReference(graph, errors, spec.startExhibitId, spec.taskId, "start_exhibit_id");
             ValidateExhibitReference(graph, errors, spec.semanticNextTargetId, spec.taskId, "semantic_next_target_id");
             ValidateExhibitReference(graph, errors, spec.finalTargetId, spec.taskId, "final_target_id");
@@ -167,6 +165,37 @@ public static class ExperimentConditionMatrix
     /// <summary>条件、任务与 physical space 的组合总数。</summary>
     public static int TotalCombinations => Conditions.Length * TaskIds.Length * PhysicalSpaces.Length;
 
+    /// <summary>返回正式三条件的统一能力 Profile。</summary>
+    public static ExperimentProfile GetProfile(string condition)
+    {
+        switch (condition)
+        {
+            case "B1_semantic_only":
+                return new ExperimentProfile(
+                    condition,
+                    ExperimentPlannerMode.SemanticOnly,
+                    false,
+                    RdwPlanningMode.Legacy,
+                    ExperimentResetMode.Normal);
+            case "B2_semantic_only_continuous":
+                return new ExperimentProfile(
+                    condition,
+                    ExperimentPlannerMode.SemanticOnly,
+                    true,
+                    RdwPlanningMode.Legacy,
+                    ExperimentResetMode.Normal);
+            case "ours_rdw_grounded_topk":
+                return new ExperimentProfile(
+                    condition,
+                    ExperimentPlannerMode.RdwGroundedTopK,
+                    true,
+                    RdwPlanningMode.RdwConstrained,
+                    ExperimentResetMode.SemanticContextualized);
+            default:
+                return null;
+        }
+    }
+
     /// <summary>
     /// 获取指定 Condition 的冻结能力策略；未知值按最保守的全部禁用策略处理。
     /// </summary>
@@ -174,6 +203,13 @@ public static class ExperimentConditionMatrix
     {
         switch (condition)
         {
+            case "B1_semantic_only":
+                return Policy(condition, false, false, ConditionCapabilityMode.Disabled, false, false, false, true);
+            case "B2_semantic_only_continuous":
+                // B1/B2 仅允许 Continuous RDW 开关不同，不能额外开启 Guidance Rotation Gain。
+                return Policy(condition, false, false, ConditionCapabilityMode.Disabled, false, false, false, true);
+            case "ours_rdw_grounded_topk":
+                return Policy(condition, true, true, ConditionCapabilityMode.Enabled, true, true, true, true);
             case "B1_mllm_only":
                 return Policy(condition, false, false, ConditionCapabilityMode.Disabled, false, false, false, false);
             case "B2_raw_physical_data":
@@ -215,14 +251,29 @@ public static class ExperimentConditionMatrix
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
     {
         spec.startExhibitId = "E1";
-        spec.semanticNextTargetId = "E5";
-        spec.finalTargetId = "E5";
-        spec.routeTargetIds = new[] { "E1", "E5" };
+        // 正式三条件不再固定最终展品；语义 Planner 负责逐步生成主题路线。
+        spec.semanticNextTargetId = string.Empty;
+        spec.finalTargetId = string.Empty;
+        spec.routeTargetIds = new[] { "E1" };
     }
 
     private static string UserTaskFor(string taskId)
     {
-        return "请带我前往展厅中最重要的展品。";
+        return "请围绕当前主题进行局部展厅导览。";
+    }
+
+    private static void ValidateThemeReference(
+        StaticSceneSemanticGraph graph,
+        IList<string> errors,
+        string themeId,
+        string taskId)
+    {
+        if (string.IsNullOrWhiteSpace(themeId) || graph.GetTheme(themeId) == null)
+        {
+            errors?.Add(
+                "unknown_theme_reference:experiment_matrix." + taskId + ".theme_goal_id:" +
+                (themeId ?? string.Empty));
+        }
     }
 
     /// <summary>检查任务是否属于当前正式实验允许启动的 T2 范围。</summary>
@@ -238,7 +289,7 @@ public static class ExperimentConditionMatrix
         string taskId,
         string field)
     {
-        if (string.IsNullOrWhiteSpace(exhibitId) || !graph.TryGetExhibit(exhibitId, out _))
+        if (!string.IsNullOrWhiteSpace(exhibitId) && !graph.TryGetExhibit(exhibitId, out _))
         {
             errors?.Add(
                 "unknown_exhibit_reference:experiment_matrix." + taskId + "." + field + ":" +
