@@ -37,7 +37,10 @@ SEMANTIC_PLAN_SYSTEM_PROMPT = (
     "只能依据 task、task_state 和给定的语义/虚拟空间图生成 1-3 个展品节点。"
     "final_goal 是不可更改的最终目标；达到 minimum_visits 前不得选择它，"
     "达到 maximum_visits 或进入 final_approach 后必须只选择它。"
-    "探索阶段只能选择尚未参观、且通过 Semantic Edge 与 final_goal 相关的中间展品。"
+    "Choose from the allowed exhibit candidates based on semantic relevance "
+    "and narrative coherence. "
+    "Semantic edges are supporting relationship evidence. "
+    "A missing direct semantic edge does not make an exhibit unavailable. "
     "narration 应自然说明所选展品与最终目标之间的联系。"
     "必须返回 ordered_node_ids 与 narration。"
     "不得使用、推断或输出 Physical Risk、Clearance、RDW、Gain、Reset 或执行方向。"
@@ -112,33 +115,7 @@ class DeterministicSemanticPlanGenerator:
         policy = request.task.intermediate_policy
         final_target_id = request.task.final_goal.exhibit_id
         visited = set(progress.visited_exhibit_ids)
-        adjacency: dict[str, list[str]] = {
-            node.id: [] for node in request.local_semantic_nodes
-        }
-        for edge in request.local_spatial_edges:
-            adjacency.setdefault(edge.source, []).append(edge.target)
-            if edge.bidirectional:
-                adjacency.setdefault(edge.target, []).append(edge.source)
-        for values in adjacency.values():
-            values.sort()
-
-        semantic_adjacency: dict[str, set[str]] = {
-            node.id: set() for node in request.local_semantic_nodes
-        }
-        for edge in request.local_semantic_edges:
-            semantic_adjacency.setdefault(edge.source, set()).add(edge.target)
-            semantic_adjacency.setdefault(edge.target, set()).add(edge.source)
-
-        def is_related_to_final(node_id: str) -> bool:
-            frontier = [node_id]
-            reached = {node_id}
-            while frontier and final_target_id not in reached:
-                current_node = frontier.pop(0)
-                for neighbor in semantic_adjacency.get(current_node, set()):
-                    if neighbor not in reached:
-                        reached.add(neighbor)
-                        frontier.append(neighbor)
-            return final_target_id in reached
+        candidate_ids = sorted(node.id for node in request.local_semantic_nodes)
 
         final_ready = progress.intermediate_visit_count >= policy.minimum_visits
         final_required = (
@@ -146,27 +123,26 @@ class DeterministicSemanticPlanGenerator:
             or progress.intermediate_visit_count >= policy.maximum_visits
         )
         current = progress.current_exhibit_id
-        if final_ready and final_target_id in adjacency.get(current, []):
+        if final_ready:
             return SemanticPlanDraft(
                 ordered_node_ids=[final_target_id],
                 narration="前面的参观已经建立了理解线索，现在前往最终目标展品。",
             )
         if final_required:
-            raise ValueError("final goal is required but has no executable spatial edge")
+            return SemanticPlanDraft(
+                ordered_node_ids=[final_target_id],
+                narration="前面的参观已经建立了理解线索，现在前往最终目标展品。",
+            )
 
         path: list[str] = []
         seen = {current}
         for _ in range(3):
             candidates = [
                 node_id
-                for node_id in adjacency.get(current, [])
+                for node_id in candidate_ids
                 if node_id != final_target_id
                 and node_id not in seen
                 and node_id not in visited
-                and (
-                    not policy.require_semantic_connection
-                    or is_related_to_final(node_id)
-                )
             ]
             if not candidates:
                 break

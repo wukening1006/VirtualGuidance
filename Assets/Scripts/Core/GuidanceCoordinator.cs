@@ -287,7 +287,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private PhysicalRiskState deferredNavigationRecoveryRiskState;
     private string deferredNavigationRecoveryPlanningFingerprint = string.Empty;
     private int automaticResetAttempts;
-    private string resetAbandonedTargetId = string.Empty;
+    private string resetTargetId = string.Empty;
+    private NavigationTargetRole resetTargetRole = NavigationTargetRole.RouteSubgoal;
+    private string resetPlanId = string.Empty;
+    private int resetPlanGeneration;
+    private TargetReservation resetTargetReservation;
+    private GuidanceResponse resetInterruptedResponse;
     private readonly RecoveryHeadingPlanner recoveryHeadingPlanner = new RecoveryHeadingPlanner();
     private readonly PostResetContinuationEvaluator postResetContinuationEvaluator =
         new PostResetContinuationEvaluator();
@@ -846,7 +851,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         ExitReplanHold("executable_candidate_reserved");
-        CompletePostResetNavigationRecovery("executable_candidate_reserved");
         SetRequestPhase(GuidanceRequestPhase.Requested);
         if (CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained)
         {
@@ -969,12 +973,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 if (state.intermediate_visit_count >= policy.minimum_visits) return true;
                 continue;
             }
-            if (state.intermediate_visit_count < policy.maximum_visits &&
-                (!policy.require_semantic_connection ||
-                 SemanticPlanVerifier.HasSemanticPath(
-                     request.local_semantic_edges,
-                     node.id,
-                     finalTargetId))) return true;
+            if (state.intermediate_visit_count < policy.maximum_visits) return true;
         }
         return false;
     }
@@ -996,11 +995,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 {
                     if (!included.Add(neighbor)) continue;
                     if (!visited.Contains(neighbor) &&
-                        !string.Equals(neighbor, state.finalTargetId, StringComparison.Ordinal) &&
-                        SemanticPlanVerifier.HasSemanticPath(
-                            semanticPlanningGraph.SemanticEdges,
-                            neighbor,
-                            state.finalTargetId)) return true;
+                        !string.Equals(neighbor, state.finalTargetId, StringComparison.Ordinal)) return true;
                     next.Add(neighbor);
                 }
             }
@@ -1048,29 +1043,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             ? NavigationTargetRole.FinalTarget
             : NavigationTargetRole.RouteSubgoal;
         var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
-        executionSafetyEvaluator = new GuidanceExecutionSafetyEvaluator(navigationTargets, riskEvaluator);
-        if (!executionSafetyEvaluator.TryEvaluate(
-                targetId,
-                targetRole,
-                riskState,
-                out _,
-                out var safetyReason))
-        {
-            state.InvalidateSemanticPlan();
-            SetRequestPhase(GuidanceRequestPhase.Failed);
-            TriggerSemanticPlanRejection(
-                response,
-                "Semantic plan first target failed local Physical Safety: " + safetyReason);
-            if (riskState != null)
-            {
-                TriggerPauseReset(
-                    null,
-                    riskState,
-                    "Semantic plan first target is not physically safe; starting heading recovery.");
-            }
-            return;
-        }
-
         state.SetActiveSemanticPlan(response.request_id, response.ordered_node_ids);
         var target = new GuidanceTarget(targetId, targetRole);
         if (!state.TryReserveGuidanceTarget(target, response.request_id) ||
@@ -1083,6 +1055,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (!navigationTargets.TryGetTargetBearing(targetId, out var bearing))
         {
+            state.InvalidateSemanticPlan();
             TriggerSemanticPlanRejection(response, "Semantic target bearing is unavailable.");
             return;
         }
@@ -1099,7 +1072,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             request_id = request.request_id,
             decision_id = request.request_id,
             candidate_set_id = string.Empty,
-            state_version = request.task_state_version,
+            state_version = state.ActiveReservation.TaskStateVersion,
             risk_snapshot_id = riskState != null ? riskState.risk_snapshot_id : string.Empty,
             risk_revision = riskState != null ? riskState.risk_revision : 0,
             target_role = GuidanceTypeUtility.TargetRoleToProtocol(targetRole),
@@ -1114,6 +1087,28 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             verifier = new VerifierResult { approved = true, reason = "semantic_plan_verified" }
         };
 
+        executionSafetyEvaluator = new GuidanceExecutionSafetyEvaluator(navigationTargets, riskEvaluator);
+        if (!executionSafetyEvaluator.TryEvaluate(
+                targetId,
+                targetRole,
+                riskState,
+                out _,
+                out var safetyReason))
+        {
+            if (riskState != null)
+            {
+                TriggerPauseReset(
+                    guidanceResponse,
+                    riskState,
+                    "Locked semantic target is not physically safe; starting heading recovery: " +
+                    safetyReason);
+                return;
+            }
+            TriggerRecoveryHardStop(
+                "Locked semantic target is unsafe and current Physical Risk facts are unavailable.");
+            return;
+        }
+
         SetRequestPhase(GuidanceRequestPhase.Verified);
         guidanceExecutor?.Apply(guidanceResponse);
         arrivalDetector?.WatchReservation(state.ActiveReservation);
@@ -1122,6 +1117,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         SetRequestPhase(GuidanceRequestPhase.Executing);
         GuidanceTargetSelected?.Invoke(target);
         GuidanceExecuted?.Invoke(guidanceResponse);
+        // 只有 Guidance 真正进入执行，才算完成 Reset 后的导航恢复。
+        CompletePostResetNavigationRecovery("executable_guidance_started");
     }
 
     private void HandleSemanticPlanFailed(string reason)
@@ -1341,6 +1338,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Executing);
         GuidanceExecuted?.Invoke(response);
+        // Candidate Set 存在不等于物理动作可执行；执行状态成立后才结束恢复门控。
+        CompletePostResetNavigationRecovery("executable_guidance_started");
         if (CurrentGuidanceTarget != null &&
             CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor)
         {
@@ -2032,7 +2031,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
         automaticResetAttempts = 0;
-        resetAbandonedTargetId = string.Empty;
+        ClearResetTargetContext();
         postResetNavigationRecoveryPending = false;
         navigationRecoveryResetAttempts = 0;
         navigationRecoveryHoldStartedAt = float.PositiveInfinity;
@@ -2117,7 +2116,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 return;
             }
 
-            CompleteResetAndReplan();
+            CompleteResetAndResumeFixedTarget(riskState);
         }
         finally
         {
@@ -2126,15 +2125,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
-    private void CompleteResetAndReplan()
+    private void CompleteResetAndResumeFixedTarget(PhysicalRiskState riskState)
     {
+        if (!TryPrepareFixedTargetGuidance(riskState, out var resumedResponse, out var failureReason))
+        {
+            EnterRecoveryHold(
+                riskState,
+                string.IsNullOrWhiteSpace(failureReason)
+                    ? "The locked target is not executable from the actual post-Reset pose."
+                    : failureReason);
+            return;
+        }
+
         if (frozenRecoveryPlan != null && frozenRecoveryPlan.IsSuccess)
         {
             lastCompletedRecoveryForward = frozenRecoveryPlan.SafePhysicalForward;
             hasLastCompletedRecoveryForward = true;
         }
 
-        TransitionRecoveryTo(GuidanceRecoveryState.Replanning, "recovery_heading_revalidated");
         if (!pauseResetController.ResumeAfterReset())
         {
             TriggerRecoveryHardStop("Reset completed but could not be released.");
@@ -2149,16 +2157,35 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        InvalidateRdwPlanning(
+            RoutePlanInvalidationReason.ResetCompleted,
+            "Reset completed; local movement was rebuilt for the locked target.");
+        SetRequestPhase(GuidanceRequestPhase.Verified);
+        guidanceExecutor?.Apply(resumedResponse);
+        if (resetTargetRole != NavigationTargetRole.TurnCueAnchor)
+        {
+            arrivalDetector?.WatchReservation(resetTargetReservation);
+        }
+        activeResponse = resumedResponse;
+        ResetRuntimeSafetySampling();
+        SetRequestPhase(GuidanceRequestPhase.Executing);
+        GuidanceTargetSelected?.Invoke(new GuidanceTarget(resetTargetId, resetTargetRole));
+        GuidanceExecuted?.Invoke(resumedResponse);
+        if (resetTargetRole == NavigationTargetRole.TurnCueAnchor)
+        {
+            BeginTurnCueTracking(resumedResponse);
+        }
+        else
+        {
+            turnCueCompletionTracker.Cancel();
+        }
+
         automaticResetAttempts = 0;
-        resetAbandonedTargetId = string.Empty;
         ExitReplanHold("reset_recovery_completed");
         TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
         frozenRecoveryPlan = null;
-        InvalidateRdwPlanning(
-            RoutePlanInvalidationReason.ResetCompleted,
-            "Reset completed; the next request must capture a fresh PlanningSnapshot.");
-        Replanning?.Invoke(state);
-        RequestNextGuidance(SemanticReplanReason.ResetCompleted);
+        CompletePostResetNavigationRecovery("fixed_target_guidance_resumed");
+        ClearResetTargetContext();
     }
 
     private void TriggerRecoveryHardStop(string reason)
@@ -2170,6 +2197,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         TransitionRecoveryTo(GuidanceRecoveryState.Terminated, reason);
         pauseResetController?.CancelReset(reason);
         taskController?.EndTask();
+        ClearResetTargetContext();
         TriggerRuntimeIntervention(null, reason);
     }
 
@@ -2596,9 +2624,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var resolvedReason = string.IsNullOrWhiteSpace(reason)
             ? "Planned movement is physically unsafe; starting automatic heading recovery."
             : reason;
-        if (string.IsNullOrWhiteSpace(resetAbandonedTargetId) && response != null)
+        if (!TryCaptureResetTargetContext(response))
         {
-            resetAbandonedTargetId = response.selected_target ?? string.Empty;
+            TriggerRecoveryHardStop(
+                "Reset cannot start because the active local target is not locked consistently.");
+            return;
         }
 
         TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance, resolvedReason);
@@ -2611,7 +2641,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         rotationGainController?.AbortGain("pause_reset");
         handlingGainTermination = false;
         arrivalDetector?.WatchReservation(null);
-        AbandonReservations();
+        // Reset 只丢弃尚未提交的候选集；当前目标预留和 nextTargetId 必须保持不变。
+        taskController.AbandonCandidateSetReservation();
         activeSnapshot = null;
         activeResponse = null;
         turnCueCompletionTracker.Cancel();
@@ -2625,16 +2656,19 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             searchResult,
             null,
             out _);
-        var nextPlan = selectedPostResetPlan ?? searchResult.Plan;
-        if (!nextPlan.IsSuccess ||
+        var nextPlan = selectedPostResetPlan;
+        if (nextPlan == null || !nextPlan.IsSuccess ||
             !TryEvaluateRecoveryPlanHeading(riskState, nextPlan, out var exactRecoveryHeading) ||
             !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(exactRecoveryHeading))
         {
             EnterRecoveryHold(
                 riskState,
-                nextPlan.IsSuccess
+                nextPlan != null && nextPlan.IsSuccess
                     ? "Selected recovery heading failed exact final validation."
-                    : RecoveryFailureReason(nextPlan.Failure));
+                    : RecoveryFailureReason(
+                        searchResult != null && searchResult.Plan != null
+                            ? searchResult.Plan.Failure
+                            : RecoveryHeadingFailure.InvalidSearchContext));
             return;
         }
 
@@ -2771,8 +2805,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 searchResult,
                 null,
                 out _);
-            var plan = selectedPostResetPlan ?? searchResult.Plan;
-            if (!plan.IsSuccess ||
+            var plan = selectedPostResetPlan;
+            if (plan == null || !plan.IsSuccess ||
                 !TryEvaluateRecoveryPlanHeading(riskState, plan, out var selectedHeading) ||
                 !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(selectedHeading))
             {
@@ -3422,19 +3456,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return null;
         }
 
-        var candidateSet = semanticTargetSelector != null && taskController != null
-            ? semanticTargetSelector.BuildCandidateSet(
-                taskController.RuntimeState,
-                riskState,
-                ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition),
-                true)
-            : null;
-        var candidates = candidateSet != null ? candidateSet.Candidates : null;
-        if (experimentProfile != null &&
-            experimentProfile.resetMode == ExperimentResetMode.SemanticContextualized)
+        if (!TryGetResetTargetCandidate(riskState, out var fixedTarget))
         {
-            var semanticContext = BuildSemanticResetContext();
-            candidates = OrderSemanticResetCandidates(candidates, semanticContext);
+            bestContinuation = HoldContinuation("fixed_target_unavailable", false);
+            return null;
         }
         RecoveryHeadingPlan bestPlan = null;
         var samples = new List<HeadingSample>(searchResult.Evaluations ?? Array.Empty<HeadingSample>());
@@ -3504,16 +3529,22 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             }
 
             var plan = new RecoveryHeadingPlan(validatedHeading, sample.ClearanceMeters);
-            var continuation = postResetContinuationEvaluator.EvaluateHeading(
+            var predictedVirtualYawDelta = pauseResetController != null
+                ? pauseResetController.PredictVirtualYawDelta(
+                    riskState.user_physical_forward,
+                    validatedHeading.PhysicalForward)
+                : validatedHeading.RelativeYawDegrees;
+            var continuation = postResetContinuationEvaluator.EvaluateFixedTarget(
                 riskState,
                 validatedHeading.PhysicalForward,
-                plan.Score,
-                candidates,
+                predictedVirtualYawDelta,
+                fixedTarget,
                 riskEvaluator,
-                false);
+                plan.Score);
             assessedHeadings.Add(validatedHeading);
             assessedContinuations.Add(continuation);
-            if (bestPlan == null || IsBetterContinuation(plan, continuation, bestPlan, bestContinuation))
+            if (continuation.Level == PostResetContinuationLevel.DirectTarget &&
+                (bestPlan == null || IsBetterContinuation(plan, continuation, bestPlan, bestContinuation)))
             {
                 bestPlan = plan;
                 bestContinuation = continuation;
@@ -3540,70 +3571,144 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return bestPlan;
     }
 
-    private SemanticResetContext BuildSemanticResetContext()
+    private bool TryCaptureResetTargetContext(GuidanceResponse response)
     {
         var state = taskController != null ? taskController.RuntimeState : null;
-        var remaining = new List<string>();
-        if (state != null && state.activePlanNodes != null)
+        var target = state != null ? state.CurrentGuidanceTarget : null;
+        var reservation = state != null ? state.ActiveReservation : null;
+        var interruptedResponse = response ?? activeResponse ?? resetInterruptedResponse;
+        if (state == null || target == null || reservation == null || interruptedResponse == null ||
+            !state.MatchesActiveReservation(reservation) ||
+            !string.Equals(target.TargetId, reservation.TargetId, StringComparison.Ordinal) ||
+            !string.Equals(interruptedResponse.selected_target, target.TargetId, StringComparison.Ordinal))
         {
-            remaining.AddRange(state.activePlanNodes);
+            return false;
         }
-        var activeRoute = rdwPlanCache.ActivePlan;
-        if (activeRoute != null)
+
+        if ((target.TargetRole == NavigationTargetRole.RouteSubgoal ||
+             target.TargetRole == NavigationTargetRole.FinalTarget) &&
+            !string.Equals(state.nextTargetId, target.TargetId, StringComparison.Ordinal))
         {
-            foreach (var nodeId in activeRoute.RemainingSteps)
-            {
-                if (!remaining.Contains(nodeId)) remaining.Add(nodeId);
-            }
+            return false;
         }
-        return new SemanticResetContext(
-            state != null ? state.finalTargetId : string.Empty,
-            state != null ? state.activePlanId : string.Empty,
-            activeRoute != null ? activeRoute.SelectedRouteId : string.Empty,
-            state != null ? state.currentExhibitId : string.Empty,
-            state != null ? state.nextTargetId : string.Empty,
-            remaining);
+
+        resetTargetId = target.TargetId;
+        resetTargetRole = target.TargetRole;
+        resetPlanId = state.activePlanId ?? string.Empty;
+        resetPlanGeneration = state.planGeneration;
+        resetTargetReservation = reservation;
+        resetInterruptedResponse = interruptedResponse;
+        return true;
     }
 
-    private static IReadOnlyList<NavigationCandidate> OrderSemanticResetCandidates(
-        IReadOnlyList<NavigationCandidate> candidates,
-        SemanticResetContext context)
+    private bool ResetTargetContextMatches()
     {
-        var ordered = new List<NavigationCandidate>();
-        if (context != null)
+        var state = taskController != null ? taskController.RuntimeState : null;
+        var target = state != null ? state.CurrentGuidanceTarget : null;
+        if (state == null || target == null || resetTargetReservation == null ||
+            string.IsNullOrWhiteSpace(resetTargetId) ||
+            !state.MatchesActiveReservation(resetTargetReservation) ||
+            !string.Equals(target.TargetId, resetTargetId, StringComparison.Ordinal) ||
+            target.TargetRole != resetTargetRole ||
+            !string.Equals(state.activePlanId ?? string.Empty, resetPlanId, StringComparison.Ordinal) ||
+            state.planGeneration != resetPlanGeneration)
         {
-            foreach (var preferredId in context.RemainingPlanNodeIds)
-            {
-                foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
-                {
-                    if (candidate != null &&
-                        string.Equals(candidate.TargetId, preferredId, StringComparison.Ordinal) &&
-                        !ordered.Contains(candidate))
-                    {
-                        ordered.Add(candidate);
-                    }
-                }
-            }
+            return false;
         }
-        if (context != null &&
-            !string.IsNullOrWhiteSpace(context.FinalGoalId) &&
-            string.Equals(context.NextSemanticTargetId, context.FinalGoalId, StringComparison.Ordinal))
+
+        return (resetTargetRole != NavigationTargetRole.RouteSubgoal &&
+                resetTargetRole != NavigationTargetRole.FinalTarget) ||
+               string.Equals(state.nextTargetId, resetTargetId, StringComparison.Ordinal);
+    }
+
+    private bool TryGetResetTargetCandidate(
+        PhysicalRiskState riskState,
+        out NavigationCandidate candidate)
+    {
+        candidate = null;
+        return ResetTargetContextMatches() && semanticTargetSelector != null &&
+               semanticTargetSelector.TryAssessCandidate(
+                   resetTargetId,
+                   resetTargetRole,
+                   riskState,
+                   out var assessment) &&
+               assessment != null &&
+               (candidate = assessment.Candidate) != null;
+    }
+
+    private bool TryPrepareFixedTargetGuidance(
+        PhysicalRiskState riskState,
+        out GuidanceResponse response,
+        out string reason)
+    {
+        response = null;
+        reason = string.Empty;
+        if (!ResetTargetContextMatches() || resetInterruptedResponse == null)
         {
-            foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
-            {
-                if (candidate != null &&
-                    string.Equals(candidate.TargetId, context.FinalGoalId, StringComparison.Ordinal) &&
-                    !ordered.Contains(candidate))
-                {
-                    ordered.Add(candidate);
-                }
-            }
+            reason = "The locked Reset target identity changed before recovery completed.";
+            return false;
         }
-        foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
+
+        if (semanticTargetSelector == null ||
+            !semanticTargetSelector.TryAssessCandidate(
+                resetTargetId,
+                resetTargetRole,
+                riskState,
+                out var assessment) ||
+            assessment == null || assessment.Candidate == null || assessment.Bearing == null)
         {
-            if (candidate != null && !ordered.Contains(candidate)) ordered.Add(candidate);
+            reason = "The locked target could not be evaluated from the actual post-Reset pose.";
+            return false;
         }
-        return ordered.AsReadOnly();
+
+        if (!assessment.IsExecutable)
+        {
+            reason = "The locked target is not executable from the actual post-Reset pose: " +
+                     assessment.Reason;
+            return false;
+        }
+
+        response = resetInterruptedResponse;
+        response.calibration_id = riskState != null ? riskState.calibration_id : string.Empty;
+        response.risk_snapshot_id = riskState != null ? riskState.risk_snapshot_id : string.Empty;
+        response.risk_revision = riskState != null ? riskState.risk_revision : 0;
+        response.state_version = resetTargetReservation.TaskStateVersion;
+        response.target_role = GuidanceTypeUtility.TargetRoleToProtocol(resetTargetRole);
+        response.selected_target = resetTargetId;
+        response.gaze_cue = BearingLabelProtocolMapper.ToProtocol(assessment.Bearing.DisplayLabel);
+        response.gaze_target_id = resetTargetId;
+        response.movement_instruction = GuidanceActionProtocolMapper.ToMovementInstruction(
+            assessment.SuggestedAction);
+        response.physical_intent = "fixed_target_post_reset_revalidation";
+        if (response.verifier == null)
+        {
+            response.verifier = new VerifierResult();
+        }
+        response.verifier.approved = true;
+        response.verifier.reason = "fixed_target_revalidated_after_reset";
+
+        if (!TryValidateExecutablePhysicalAction(
+                response,
+                riskState,
+                out _,
+                out _,
+                out reason))
+        {
+            response = null;
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ClearResetTargetContext()
+    {
+        resetTargetId = string.Empty;
+        resetTargetRole = NavigationTargetRole.RouteSubgoal;
+        resetPlanId = string.Empty;
+        resetPlanGeneration = 0;
+        resetTargetReservation = null;
+        resetInterruptedResponse = null;
     }
 
     private static PostResetContinuationAssessment HoldContinuation(

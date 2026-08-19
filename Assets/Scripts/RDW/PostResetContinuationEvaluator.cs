@@ -109,6 +109,45 @@ public sealed class NavigationRecoveryDiagnosticInfo
 public sealed class PostResetContinuationEvaluator
 {
     /// <summary>
+    /// 只评估 Reset 前已经锁定的目标。Reset 不得借此选择其他语义候选。
+    /// </summary>
+    public PostResetContinuationAssessment EvaluateFixedTarget(
+        PhysicalRiskState riskState,
+        Vector2 safePhysicalForward,
+        float predictedVirtualYawDelta,
+        NavigationCandidate fixedTarget,
+        IPhysicalHeadingEvaluator physicalEvaluator,
+        float baseScore = 0f)
+    {
+        if (riskState == null || physicalEvaluator == null ||
+            safePhysicalForward.sqrMagnitude <= 0.0001f || fixedTarget == null ||
+            string.IsNullOrWhiteSpace(fixedTarget.TargetId))
+        {
+            return Hold("fixed_target_facts_unavailable");
+        }
+
+        var postResetRelativeYaw = Mathf.DeltaAngle(
+            0f,
+            fixedTarget.RelativeYawDegrees - predictedVirtualYawDelta);
+        var predictedDirection = Rotate(safePhysicalForward, postResetRelativeYaw);
+        if (!physicalEvaluator.TryEvaluateAbsoluteHeading(
+                riskState,
+                predictedDirection,
+                out var heading) ||
+            !PhysicalRiskEvaluator.IsMovementSafe(heading))
+        {
+            return Hold("fixed_target_not_executable_after_reset", true);
+        }
+
+        return new PostResetContinuationAssessment(
+            PostResetContinuationLevel.DirectTarget,
+            fixedTarget.TargetId,
+            true,
+            baseScore,
+            "fixed_target_executable_after_reset");
+    }
+
+    /// <summary>
     /// 评估一个恢复计划；候选方向使用当前 Virtual Pose 的相对偏航预测 Reset 后的 Physical Heading。
     /// </summary>
     public PostResetContinuationAssessment Evaluate(

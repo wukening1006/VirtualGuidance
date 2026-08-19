@@ -144,6 +144,23 @@ public sealed class PauseResetController : MonoBehaviour
         ? 180f
         : Vector2.Angle(userPoseTracker.PhysicalForwardXZ, safePhysicalForward);
 
+    /// <summary>
+    /// 预测从当前 Physical Forward 转到目标朝向后，Virtual Forward 的总偏航变化。
+    /// 该值包含用户真实转身与 Mapping Reset 注入的 Virtual Root yaw。
+    /// </summary>
+    public float PredictVirtualYawDelta(
+        Vector2 currentPhysicalForward,
+        Vector2 targetPhysicalForward)
+    {
+        var physicalTurn = RdwYawConvention.SignedDeltaYaw(
+            NormalizeForward(currentPhysicalForward),
+            NormalizeForward(targetPhysicalForward));
+        var injectedYaw = mappingStrategy == RdwResetMappingStrategy.TwoOneTurnLike
+            ? DirectionSign(physicalTurn) * Mathf.Max(0f, twoOneTargetInjectedYawDegrees)
+            : physicalTurn * Mathf.Max(0f, mappingInjectionRatio);
+        return physicalTurn + injectedYaw;
+    }
+
     private void Update()
     {
         if (state == ResetLifecycleState.TurningToSafeHeading && userPoseTracker != null)
@@ -407,6 +424,11 @@ public sealed class PauseResetController : MonoBehaviour
     private static Vector2 NormalizeForward(Vector2 forward)
     {
         return forward.sqrMagnitude > 0.0001f ? forward.normalized : Vector2.up;
+    }
+
+    private static float DirectionSign(float signedTurnDegrees)
+    {
+        return Mathf.Abs(signedTurnDegrees) > 0.01f ? Mathf.Sign(signedTurnDegrees) : 1f;
     }
 
 }

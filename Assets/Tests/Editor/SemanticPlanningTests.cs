@@ -57,14 +57,21 @@ public sealed class SemanticPlanningTests
         Assert.That(reason, Is.EqualTo("semantic_plan_final_goal_required"));
     }
 
-    /// <summary>与最终目标不存在语义路径的中间展品不能进入计划。</summary>
+    /// <summary>没有 direct Spatial Edge 的中间展品仍允许进入计划。</summary>
     [Test]
-    public void SemanticPlanVerifierRejectsUnrelatedIntermediateExhibit()
+    public void SemanticPlanVerifierAllowsCandidateWithoutDirectSpatialEdge()
     {
         var request = CreateRequest(0, "exploring", "E1", new[] { "E1" }, string.Empty);
+        request.local_spatial_edges = new[]
+        {
+            Spatial("E1", "E2"),
+            Spatial("E2", "E3"),
+            Spatial("E3", "E4"),
+            Spatial("E4", "E5"),
+            Spatial("E1", "E5")
+        };
 
-        Assert.That(SemanticPlanVerifier.TryVerify(request, new[] { "E8" }, out var reason), Is.False);
-        Assert.That(reason, Is.EqualTo("semantic_plan_node_unrelated_to_final:E8"));
+        Assert.That(SemanticPlanVerifier.TryVerify(request, new[] { "E8" }, out var reason), Is.True, reason);
     }
 
     /// <summary>到达语义第一步后旧计划立即失效并累计唯一中间展品。</summary>

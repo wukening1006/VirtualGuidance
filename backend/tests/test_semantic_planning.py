@@ -204,11 +204,27 @@ def test_final_goal_is_required_after_four_intermediate_visits() -> None:
     assert result.reason == "semantic_plan_final_goal_required"
 
 
-def test_unrelated_intermediate_exhibit_is_rejected() -> None:
-    result = verify(semantic_payload(), ["E8"])
+def test_spatially_reachable_candidate_without_semantic_edge_is_allowed() -> None:
+    payload = semantic_payload()
+    payload["task_state"] = {
+        "phase": "exploring",
+        "current_exhibit_id": "E2",
+        "visited_exhibit_ids": ["E1", "E2"],
+        "intermediate_visit_count": 1,
+        "required_target_id": "",
+    }
+    candidate = dict(payload["local_semantic_nodes"][-1])
+    candidate["id"] = "E7"
+    candidate["name"] = "E7"
+    payload["local_semantic_nodes"].append(candidate)
+    spatial = dict(payload["local_spatial_edges"][0])
+    spatial.update(id="SP_27", source="E2", target="E7")
+    payload["local_spatial_edges"].append(spatial)
 
-    assert result.approved is False
-    assert result.reason == "semantic_plan_node_unrelated_to_final:E8"
+    result = verify(payload, ["E7"])
+
+    assert result.approved is True
+
 
 
 def test_semantic_plan_rejects_return_to_current_exhibit() -> None:
@@ -218,7 +234,7 @@ def test_semantic_plan_rejects_return_to_current_exhibit() -> None:
     assert result.reason == "semantic_plan_starts_at_current_exhibit"
 
 
-def test_semantic_plan_honors_directed_spatial_edges() -> None:
+def test_candidate_without_direct_spatial_edge_is_allowed() -> None:
     payload = semantic_payload()
     payload["local_spatial_edges"][0]["bidirectional"] = False
     payload["task_state"] = {
@@ -228,11 +244,16 @@ def test_semantic_plan_honors_directed_spatial_edges() -> None:
         "intermediate_visit_count": 0,
         "required_target_id": "",
     }
+    payload["local_semantic_edges"].append({
+        **payload["local_semantic_edges"][0],
+        "id": "SE_21",
+        "source": "E2",
+        "target": "E1",
+    })
 
     result = verify(payload, ["E1"])
 
-    assert result.approved is False
-    assert result.reason == "semantic_plan_missing_spatial_edge:E2->E1"
+    assert result.approved is True
 
 
 def test_formal_experiment_profiles_match_three_condition_matrix() -> None:

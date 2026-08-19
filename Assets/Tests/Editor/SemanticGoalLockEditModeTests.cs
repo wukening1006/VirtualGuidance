@@ -59,6 +59,71 @@ public sealed class SemanticGoalLockEditModeTests
         Assert.That(ReserveCandidateSet(state, "next-leg", out _), Is.True);
     }
 
+    /// <summary>Reset 暂停只改变执行阶段，不得释放当前目标或推进局部计划。</summary>
+    [Test]
+    public void PauseForReset_PreservesLockedTargetAndPlanStep()
+    {
+        var state = CreateCommittedState(out _);
+        var reservation = state.ActiveReservation;
+        var version = state.stateVersion;
+        var nextTargetId = state.nextTargetId;
+
+        state.PauseForReset();
+
+        Assert.That(state.phase, Is.EqualTo(GuidanceRuntimePhase.PausedForReset));
+        Assert.That(state.stateVersion, Is.EqualTo(version));
+        Assert.That(state.nextTargetId, Is.EqualTo(nextTargetId));
+        Assert.That(state.ActiveReservation, Is.SameAs(reservation));
+        Assert.That(state.HasLockedSemanticGoal, Is.True);
+    }
+
+    /// <summary>SafeHeading Mapping 的 Virtual yaw 预测包含 Physical turn 与注入 yaw。</summary>
+    [Test]
+    public void ResetYawPrediction_IncludesPhysicalTurnAndInjectedYaw()
+    {
+        var root = new GameObject("ResetYawPredictionTest");
+        try
+        {
+            var controller = root.AddComponent<PauseResetController>();
+
+            Assert.That(
+                controller.PredictVirtualYawDelta(Vector2.up, Vector2.right),
+                Is.EqualTo(180f).Within(0.001f));
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
+    /// <summary>Reset 后延续评估只返回冻结目标，并应用 Mapping 修正后的相对偏航。</summary>
+    [Test]
+    public void FixedTargetContinuation_NeverSelectsAnotherSemanticTarget()
+    {
+        var evaluator = new CapturingHeadingEvaluator();
+        var fixedTarget = new NavigationCandidate(
+            "E5",
+            NavigationTargetRole.RouteSubgoal,
+            "right",
+            null,
+            Array.Empty<SemanticEdgeDefinition>(),
+            Array.Empty<SpatialEdgeDefinition>(),
+            relativeYawDegrees: 30f);
+
+        var assessment = new PostResetContinuationEvaluator().EvaluateFixedTarget(
+            CreateRisk(),
+            Vector2.right,
+            180f,
+            fixedTarget,
+            evaluator);
+
+        Assert.That(assessment.Level, Is.EqualTo(PostResetContinuationLevel.DirectTarget));
+        Assert.That(assessment.TargetId, Is.EqualTo("E5"));
+        Assert.That(
+            Vector2.Angle(evaluator.LastForward, RdwYawConvention.YawToForward(-60f)),
+            Is.LessThan(0.01f));
+    }
+
     /// <summary>验证安全策略默认不选择 SoftReroute。</summary>
     [Test]
     public void RuntimeSafetyPolicy_DefaultsSoftRerouteToDisabled()
@@ -193,5 +258,20 @@ public sealed class SemanticGoalLockEditModeTests
         var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.That(method, Is.Not.Null, methodName);
         return method.Invoke(target, arguments);
+    }
+
+    private sealed class CapturingHeadingEvaluator : IPhysicalHeadingEvaluator
+    {
+        public Vector2 LastForward { get; private set; }
+
+        public bool TryEvaluateAbsoluteHeading(
+            PhysicalRiskState riskState,
+            Vector2 absolutePhysicalForward,
+            out HeadingSample sample)
+        {
+            LastForward = absolutePhysicalForward.normalized;
+            sample = new HeadingSample(0f, LastForward, 2f, HeadingSafety.Safe);
+            return true;
+        }
     }
 }

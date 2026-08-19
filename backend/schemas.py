@@ -889,24 +889,7 @@ def verify_semantic_plan(
     visited = set(progress.visited_exhibit_ids)
     if any(node_id in visited for node_id in draft.ordered_node_ids):
         return VerifierResult(approved=False, reason="semantic_plan_targets_visited_exhibit")
-    spatial_pairs = {
-        (edge.source, edge.target)
-        for edge in request.local_spatial_edges
-    }
-    spatial_pairs.update(
-        (edge.target, edge.source)
-        for edge in request.local_spatial_edges
-        if edge.bidirectional
-    )
-    for source, target in zip(
-        [progress.current_exhibit_id, *draft.ordered_node_ids],
-        draft.ordered_node_ids,
-    ):
-        if (source, target) not in spatial_pairs:
-            return VerifierResult(
-                approved=False,
-                reason=f"semantic_plan_missing_spatial_edge:{source}->{target}",
-            )
+    # Spatial Edge 只提供虚拟距离、方向和空间上下文，不作为 Planner 候选门禁。
 
     final_index = next(
         (index for index, node_id in enumerate(draft.ordered_node_ids)
@@ -930,28 +913,7 @@ def verify_semantic_plan(
     if final_required and final_index != 0:
         return VerifierResult(approved=False, reason="semantic_plan_final_goal_required")
 
-    if policy.require_semantic_connection:
-        adjacency: dict[str, set[str]] = {}
-        for edge in request.local_semantic_edges:
-            # 与 Unity 端一致：关系只用于证明相关性，不作为有向导航边。
-            adjacency.setdefault(edge.source, set()).add(edge.target)
-            adjacency.setdefault(edge.target, set()).add(edge.source)
-        for node_id in draft.ordered_node_ids:
-            if node_id == final_target_id:
-                continue
-            frontier = [node_id]
-            reached = {node_id}
-            while frontier and final_target_id not in reached:
-                current = frontier.pop(0)
-                for neighbor in adjacency.get(current, set()):
-                    if neighbor not in reached:
-                        reached.add(neighbor)
-                        frontier.append(neighbor)
-            if final_target_id not in reached:
-                return VerifierResult(
-                    approved=False,
-                    reason=f"semantic_plan_node_unrelated_to_final:{node_id}",
-                )
+    # Semantic Edge 只提供相关性证据；Spatial Graph 才决定虚拟可达性。
     return VerifierResult(approved=True, reason="semantic_plan_is_graph_valid")
 
 

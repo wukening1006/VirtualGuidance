@@ -139,12 +139,9 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                     {
                         if (!included.Add(neighborId)) continue;
                         nextFrontier.Add(neighborId);
-                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal) &&
-                            SemanticPlanVerifier.HasSemanticPath(
-                                graph.SemanticEdges,
-                                neighborId,
-                                runtimeState.finalTargetId))
+                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
                         {
+                            // 没有直接 Semantic Edge 仍允许作为候选；Spatial Graph 才决定虚拟可达性。
                             TryAddCandidate(
                                 candidates,
                                 assessments,

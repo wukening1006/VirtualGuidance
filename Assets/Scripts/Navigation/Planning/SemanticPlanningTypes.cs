@@ -344,31 +344,7 @@ public static class SemanticPlanVerifier
             }
         }
 
-        for (var index = 0; index < orderedNodeIds.Count; index++)
-        {
-            var source = index == 0 ? request.task_state.current_exhibit_id : orderedNodeIds[index - 1];
-            var target = orderedNodeIds[index];
-            var connected = false;
-            foreach (var edge in request.local_spatial_edges ?? Array.Empty<SpatialEdgeDefinition>())
-            {
-                if (edge == null) continue;
-                var forward = string.Equals(edge.source, source, StringComparison.Ordinal) &&
-                              string.Equals(edge.target, target, StringComparison.Ordinal);
-                var reverse = edge.bidirectional == true &&
-                              string.Equals(edge.source, target, StringComparison.Ordinal) &&
-                              string.Equals(edge.target, source, StringComparison.Ordinal);
-                if (forward || reverse)
-                {
-                    connected = true;
-                    break;
-                }
-            }
-            if (!connected)
-            {
-                failureReason = $"semantic_plan_missing_spatial_edge:{source}->{target}";
-                return false;
-            }
-        }
+        // Spatial Edge 只提供虚拟距离、方向和空间上下文，不作为 Planner 候选门禁。
 
         var finalTargetId = request.task?.final_goal?.exhibit_id ?? string.Empty;
         var policy = request.task?.intermediate_policy;
@@ -396,21 +372,7 @@ public static class SemanticPlanVerifier
             return false;
         }
 
-        if (policy.require_semantic_connection)
-        {
-            foreach (var nodeId in orderedNodeIds)
-            {
-                if (string.Equals(nodeId, finalTargetId, StringComparison.Ordinal)) continue;
-                if (!HasSemanticPath(
-                        request.local_semantic_edges,
-                        nodeId,
-                        finalTargetId))
-                {
-                    failureReason = $"semantic_plan_node_unrelated_to_final:{nodeId}";
-                    return false;
-                }
-            }
-        }
+        // Semantic Edge 只提供相关性上下文，不作为候选可达性门禁。
         return true;
     }
 
