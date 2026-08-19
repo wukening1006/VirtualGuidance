@@ -137,6 +137,30 @@ class QwenProviderSettings(OpenAICompatibleProviderSettings):
         )
 
 
+@dataclass(frozen=True)
+class DeepSeekProviderSettings(OpenAICompatibleProviderSettings):
+    """从运行时环境注入的 DeepSeek API 连接参数。"""
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "DeepSeekProviderSettings":
+        """读取 DeepSeek 连接参数，正式调用必须配置 API Key。"""
+
+        return cls._from_env(
+            env,
+            provider_name="DeepSeek",
+            require_api_key=True,
+        )
+
+    @property
+    def chat_completions_url(self) -> str:
+        """按 DeepSeek 官方端点拼接 Chat Completions URL。"""
+
+        normalized = self.base_url.rstrip("/")
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        return f"{normalized}/chat/completions"
+
+
 class _ChatMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -408,3 +432,79 @@ class QwenOpenAICompatibleProvider:
         if not chunk.choices:
             return None
         return chunk.choices[0].delta.content
+
+
+class DeepSeekOpenAICompatibleProvider:
+    """通过 DeepSeek OpenAI-compatible 接口生成结构化文本。"""
+
+    def __init__(
+        self,
+        settings: DeepSeekProviderSettings,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.settings = settings
+        self.transport = transport
+
+    async def complete_json(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        json_schema: dict[str, Any],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        # DeepSeek JSON Object 模式只保证合法 JSON，具体 Schema 由上层统一校验。
+        payload = {
+            "model": self.settings.model,
+            "messages": QwenOpenAICompatibleProvider._with_json_schema_instruction(
+                messages,
+                json_schema,
+            ),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.settings.api_key}",
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.settings.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(
+                    self.settings.chat_completions_url,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise MLLMTimeoutError(
+                f"DeepSeek request exceeded {self.settings.timeout_seconds:g} seconds."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise MLLMHTTPError(
+                f"DeepSeek returned HTTP {exc.response.status_code}."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise MLLMHTTPError(f"DeepSeek transport failed: {exc}.") from exc
+
+        try:
+            response_data = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise MLLMResponseError(
+                "DeepSeek response body is not valid JSON."
+            ) from exc
+
+        try:
+            completion = _ChatCompletion.model_validate(response_data)
+        except ValidationError as exc:
+            raise MLLMResponseError(
+                "DeepSeek response is missing choices[0].message.content."
+            ) from exc
+        return QwenOpenAICompatibleProvider._unwrap_json_code_fence(
+            completion.choices[0].message.content
+        )

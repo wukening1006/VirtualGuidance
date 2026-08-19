@@ -22,6 +22,8 @@ from backend.schemas import (
 from backend.services.mllm_provider import (
     MLLMConfigurationError,
     MLLMProvider,
+    DeepSeekOpenAICompatibleProvider,
+    DeepSeekProviderSettings,
     QwenOpenAICompatibleProvider,
     QwenProviderSettings,
     VLLMOpenAICompatibleProvider,
@@ -241,12 +243,15 @@ def create_draft_generator_from_env(
     if provider_name in {"qwen", "qwen_openai_compatible"}:
         settings = QwenProviderSettings.from_env(runtime_env)
         return MLLMDraftGenerator(QwenOpenAICompatibleProvider(settings))
+    if provider_name in {"deepseek", "deepseek_openai_compatible"}:
+        settings = DeepSeekProviderSettings.from_env(runtime_env)
+        return MLLMDraftGenerator(DeepSeekOpenAICompatibleProvider(settings))
     if provider_name in {"vllm", "vllm_openai_compatible"}:
         settings = VLLMProviderSettings.from_env(runtime_env)
         return MLLMDraftGenerator(VLLMOpenAICompatibleProvider(settings))
 
     raise MLLMConfigurationError(
-        "MLLM_PROVIDER must be qwen_openai_compatible or "
-        "vllm_openai_compatible for formal sessions, or mock for explicit "
-        "offline tests."
+        "MLLM_PROVIDER must be qwen_openai_compatible, "
+        "deepseek_openai_compatible, or vllm_openai_compatible for formal "
+        "sessions, or mock for explicit offline tests."
     )

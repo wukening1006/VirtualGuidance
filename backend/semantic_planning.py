@@ -23,6 +23,8 @@ from backend.services.mllm_provider import (
     MLLMProvider,
     MLLMResponseError,
     MLLMTimeoutError,
+    DeepSeekOpenAICompatibleProvider,
+    DeepSeekProviderSettings,
     QwenOpenAICompatibleProvider,
     QwenProviderSettings,
     VLLMOpenAICompatibleProvider,
@@ -166,6 +168,10 @@ def create_semantic_plan_generator_from_env(
     if provider_name in {"qwen", "qwen_openai_compatible"}:
         return MLLMSemanticPlanGenerator(
             QwenOpenAICompatibleProvider(QwenProviderSettings.from_env(runtime_env))
+        )
+    if provider_name in {"deepseek", "deepseek_openai_compatible"}:
+        return MLLMSemanticPlanGenerator(
+            DeepSeekOpenAICompatibleProvider(DeepSeekProviderSettings.from_env(runtime_env))
         )
     if provider_name in {"vllm", "vllm_openai_compatible"}:
         return MLLMSemanticPlanGenerator(

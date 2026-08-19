@@ -30,6 +30,8 @@ from backend.schemas import (
     MovementInstruction,
 )
 from backend.services.mllm_provider import (
+    DeepSeekOpenAICompatibleProvider,
+    DeepSeekProviderSettings,
     MLLMConfigurationError,
     MLLMHTTPError,
     MLLMResponseError,
@@ -207,6 +209,17 @@ def qwen_settings(**overrides: Any) -> QwenProviderSettings:
     }
     values.update(overrides)
     return QwenProviderSettings(**values)
+
+
+def deepseek_settings(**overrides: Any) -> DeepSeekProviderSettings:
+    values = {
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "api_key": "test-deepseek-key",
+        "timeout_seconds": 10.0,
+    }
+    values.update(overrides)
+    return DeepSeekProviderSettings(**values)
 
 
 def completion_response(content: str) -> httpx.Response:
@@ -544,6 +557,44 @@ async def test_qwen_provider_sends_streaming_json_object_payload() -> None:
 
 
 @pytest.mark.anyio
+async def test_deepseek_provider_sends_non_streaming_json_object_payload() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["payload"] = json.loads(request.content)
+        return completion_response(json.dumps(VALID_MODEL_DRAFT, ensure_ascii=False))
+
+    provider = DeepSeekOpenAICompatibleProvider(
+        deepseek_settings(),
+        transport=httpx.MockTransport(handler),
+    )
+    content = await provider.complete_json(
+        messages=[{"role": "system", "content": "Return JSON."}],
+        json_schema=MLLM_DRAFT_JSON_SCHEMA,
+        temperature=0.0,
+        max_tokens=MLLM_MAX_TOKENS,
+    )
+
+    assert json.loads(content) == VALID_MODEL_DRAFT
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    assert captured["authorization"] == "Bearer test-deepseek-key"
+    payload = captured["payload"]
+    assert payload["model"] == "deepseek-chat"
+    assert payload["temperature"] == 0.0
+    assert payload["max_tokens"] == MLLM_MAX_TOKENS
+    assert payload["stream"] is False
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "不要输出 Markdown" in payload["messages"][0]["content"]
+    assert json.dumps(
+        MLLM_DRAFT_JSON_SCHEMA,
+        ensure_ascii=False,
+        sort_keys=True,
+    ) in payload["messages"][0]["content"]
+
+
+@pytest.mark.anyio
 async def test_qwen_provider_unwraps_complete_json_code_fence() -> None:
     expected_content = json.dumps(VALID_MODEL_DRAFT, ensure_ascii=False)
     provider = QwenOpenAICompatibleProvider(
@@ -812,6 +863,20 @@ def test_factory_selects_qwen_openai_compatible_provider() -> None:
 
     assert isinstance(generator, MLLMDraftGenerator)
     assert isinstance(generator.provider, QwenOpenAICompatibleProvider)
+
+
+def test_factory_selects_deepseek_openai_compatible_provider() -> None:
+    generator = create_draft_generator_from_env(
+        {
+            "MLLM_PROVIDER": "deepseek_openai_compatible",
+            "MLLM_BASE_URL": "https://api.deepseek.com",
+            "MLLM_MODEL": "deepseek-chat",
+            "MLLM_API_KEY": "test-deepseek-key",
+        }
+    )
+
+    assert isinstance(generator, MLLMDraftGenerator)
+    assert isinstance(generator.provider, DeepSeekOpenAICompatibleProvider)
 
 
 def test_factory_allows_only_explicit_offline_mock() -> None:

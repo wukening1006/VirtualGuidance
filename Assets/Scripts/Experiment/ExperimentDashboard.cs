@@ -293,7 +293,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
         systemBootstrapper?.ApplyExperimentProfile(profile);
         TransitionTo(ExperimentRunState.Starting, "Starting session");
-        participantUiController?.ShowStarting();
+        participantUiController?.ShowTaskBriefing(currentSpec.userTask);
 
         if (!physicalSpaceManager.SetPhysicalSpace(currentSpec.physicalSpaceId))
         {
@@ -332,7 +332,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        participantUiController?.ShowGuidance();
         guidanceCoordinator.RequestNextGuidance(SemanticReplanReason.TaskStarted);
     }
 
