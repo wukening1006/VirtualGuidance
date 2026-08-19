@@ -48,17 +48,6 @@ def semantic_candidate(target_id: str) -> dict:
                 "evidence_status": "supported",
             }
         ],
-        "spatial_edges": [] if target_id == "E5" else [
-            {
-                "id": f"SP_TEST_{target_id}",
-                "source": "E1",
-                "target": target_id,
-                "relation_type": "adjacent_diagonal",
-                "bidirectional": True,
-                "virtual_distance_m": 4.63,
-                "relative_direction_from_source": "diagonal",
-            }
-        ],
     }
 
 
@@ -147,9 +136,9 @@ def test_health_reports_loaded_configs(tmp_path: Path) -> None:
     }
     assert body["exhibit_count"] == 8
     assert body["scene_id"] == "sanxingdui_gallery"
-    assert body["schema_version"] == 3
+    assert body["schema_version"] == 4
     assert body["semantic_edge_count"] == 14
-    assert body["spatial_edge_count"] == 14
+    assert "spatial_edge_count" not in body
     assert body["semantic_ready"] is True
 
 

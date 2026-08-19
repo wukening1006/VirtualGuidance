@@ -1,4 +1,4 @@
-"""scene_semantics.json v3 strict schema and graph validation tests."""
+"""scene_semantics.json v4 strict schema and graph validation tests."""
 
 from __future__ import annotations
 
@@ -27,17 +27,16 @@ def write_payload(directory: Path, payload: dict) -> None:
     )
 
 
-def test_valid_v3_loads_complete_sparse_graph(tmp_path: Path, valid_payload: dict) -> None:
+def test_valid_v4_loads_without_spatial_edges(tmp_path: Path, valid_payload: dict) -> None:
     write_payload(tmp_path, valid_payload)
 
     document = load_scene_semantics(tmp_path)
 
-    assert document.schema_version == 3
+    assert document.schema_version == 4
     assert document.scene_id == "sanxingdui_gallery"
     assert len(document.themes) == 7
     assert len(document.exhibits) == 8
     assert len(document.semantic_edges) == 14
-    assert len(document.spatial_edges) == 14
     assert {edge.evidence_status for edge in document.semantic_edges} == {
         "direct", "supported", "contextual", "interpretive"
     }
@@ -62,14 +61,10 @@ def test_missing_config_fails(tmp_path: Path) -> None:
         lambda data: data["semantic_edges"][0].pop("evidence_status"),
         lambda data: data["semantic_edges"][0].update(evidence_status="probable"),
         lambda data: data["semantic_edges"].append(deepcopy(data["semantic_edges"][0])),
-        lambda data: data["spatial_edges"][0].update(target="E99"),
-        lambda data: data["spatial_edges"][0].update(target="E1"),
-        lambda data: data["spatial_edges"][0].update(relation_type="near"),
-        lambda data: data["spatial_edges"][0].update(virtual_distance_m=0),
-        lambda data: data["spatial_edges"][0].update(virtual_distance_m=99),
+        lambda data: data.update(spatial_edges=[]),
     ],
 )
-def test_invalid_v3_graph_fails(
+def test_invalid_v4_graph_fails(
     tmp_path: Path,
     valid_payload: dict,
     mutate,
@@ -80,4 +75,3 @@ def test_invalid_v3_graph_fails(
 
     with pytest.raises((ValidationError, ValueError)):
         load_scene_semantics(tmp_path)
-

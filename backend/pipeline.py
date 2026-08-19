@@ -70,10 +70,6 @@ class GuidancePipeline:
         return len(self.scene_semantics.semantic_edges)
 
     @property
-    def spatial_edge_count(self) -> int:
-        return len(self.scene_semantics.spatial_edges)
-
-    @property
     def semantic_ready(self) -> bool:
         return True
 
@@ -170,7 +166,7 @@ def scripted_reset_draft(request: GuidanceRequest) -> GuideDraft:
 
 
 def load_scene_semantics(config_dir: Path) -> SceneSemanticsDocument:
-    """严格加载唯一 v3 场景语义配置；缺失或旧 schema 直接失败。"""
+    """严格加载唯一 v4 场景语义配置；缺失或旧 schema 直接失败。"""
 
     path = config_dir / "scene_semantics.json"
     if not path.exists():
@@ -180,4 +176,4 @@ def load_scene_semantics(config_dir: Path) -> SceneSemanticsDocument:
         try:
             return SceneSemanticsDocument.model_validate(json.load(handle))
         except ValueError as exc:
-            raise ValueError(f"scene_semantics.json failed strict v3 validation: {exc}") from exc
+            raise ValueError(f"scene_semantics.json failed strict v4 validation: {exc}") from exc

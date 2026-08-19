@@ -3,7 +3,7 @@ using System;
 /// <summary>正式实验使用的 Planner 类型。</summary>
 public enum ExperimentPlannerMode
 {
-    /// <summary>只使用静态语义和虚拟空间图。</summary>
+    /// <summary>只使用静态语义和运行时几何事实。</summary>
     SemanticOnly,
     /// <summary>使用 Unity RDW Top-K 路线后交给 LLM 选择。</summary>
     RdwGroundedTopK

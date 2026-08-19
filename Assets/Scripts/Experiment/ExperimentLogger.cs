@@ -869,7 +869,6 @@ public sealed class ExperimentLogger : MonoBehaviour
                     semanticPlanRequest.task,
                     semanticPlanRequest.task_state,
                     semanticPlanRequest.local_semantic_nodes,
-                    semanticPlanRequest.local_spatial_edges,
                     semanticPlanRequest.local_semantic_edges
                 });
             }

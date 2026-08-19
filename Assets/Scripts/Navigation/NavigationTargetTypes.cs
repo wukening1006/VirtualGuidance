@@ -134,12 +134,10 @@ public sealed class NavigationCandidate
     public BearingLabel DisplayLabel { get; }
     /// <summary>生成候选时的虚拟位姿修订号。</summary>
     public int PoseRevision { get; }
-    /// <summary>候选对应的 v3 静态知识节点。</summary>
+    /// <summary>候选对应的 v4 静态知识节点。</summary>
     public SceneExhibitDefinition Definition { get; }
     /// <summary>当前节点与候选节点之间的原始语义关系。</summary>
     public IReadOnlyList<SemanticEdgeDefinition> SemanticEdges { get; }
-    /// <summary>当前节点与候选节点之间的原始空间关系。</summary>
-    public IReadOnlyList<SpatialEdgeDefinition> SpatialEdges { get; }
     /// <summary>候选显示名称，来自 Definition。</summary>
     public string Name => Definition != null ? Definition.name : string.Empty;
     /// <summary>候选语义描述，来自 Definition。</summary>
@@ -154,7 +152,6 @@ public sealed class NavigationCandidate
         string relativeDirection,
         SceneExhibitDefinition definition,
         IEnumerable<SemanticEdgeDefinition> semanticEdges,
-        IEnumerable<SpatialEdgeDefinition> spatialEdges,
         float relativeYawDegrees = 0f,
         float distanceMeters = 0f,
         BearingLabel displayLabel = BearingLabel.Forward,
@@ -165,7 +162,6 @@ public sealed class NavigationCandidate
         RelativeDirection = relativeDirection ?? string.Empty;
         Definition = definition;
         SemanticEdges = ReadOnlyCopy(semanticEdges);
-        SpatialEdges = ReadOnlyCopy(spatialEdges);
         RelativeYawDegrees = relativeYawDegrees;
         DistanceMeters = Math.Max(0f, distanceMeters);
         DisplayLabel = displayLabel;

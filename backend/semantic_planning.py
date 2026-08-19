@@ -34,7 +34,7 @@ SEMANTIC_PLAN_TEMPERATURE = 0.0
 SEMANTIC_PLAN_MAX_TOKENS = 512
 SEMANTIC_PLAN_SYSTEM_PROMPT = (
     "你是博物馆自然语言任务的 Semantic-only Local Planner。"
-    "只能依据 task、task_state 和给定的语义/虚拟空间图生成 1-3 个展品节点。"
+    "只能依据 task、task_state 和冻结的任务候选节点生成 1-3 个展品节点。"
     "final_goal 是不可更改的最终目标；达到 minimum_visits 前不得选择它，"
     "达到 maximum_visits 或进入 final_approach 后必须只选择它。"
     "Choose from the allowed exhibit candidates based on semantic relevance "
@@ -44,7 +44,7 @@ SEMANTIC_PLAN_SYSTEM_PROMPT = (
     "narration 应自然说明所选展品与最终目标之间的联系。"
     "必须返回 ordered_node_ids 与 narration。"
     "不得使用、推断或输出 Physical Risk、Clearance、RDW、Gain、Reset 或执行方向。"
-    "只能使用给定的展品和 Spatial Edge，不能创建不存在的节点或连接。"
+    "只能使用给定的展品节点，不能创建不存在的节点。"
 )
 SEMANTIC_PLAN_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -85,9 +85,6 @@ class MLLMSemanticPlanGenerator:
             "local_semantic_nodes": [
                 node.model_dump(mode="json") for node in request.local_semantic_nodes
             ],
-            "local_spatial_edges": [
-                edge.model_dump(mode="json") for edge in request.local_spatial_edges
-            ],
             "local_semantic_edges": [
                 edge.model_dump(mode="json") for edge in request.local_semantic_edges
             ],
@@ -108,7 +105,7 @@ class MLLMSemanticPlanGenerator:
 
 
 class DeterministicSemanticPlanGenerator:
-    """离线测试用 Planner，按局部 Spatial Graph 稳定生成合法路径。"""
+    """离线测试用 Planner，按冻结任务候选节点稳定生成合法路径。"""
 
     async def generate(self, request: SemanticPlanRequest) -> SemanticPlanDraft:
         progress = request.task_state

@@ -195,29 +195,12 @@ class SceneSemanticEdge(BaseModel):
     evidence_status: Literal["direct", "supported", "contextual", "interpretive"]
 
 
-class SceneSpatialEdge(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-    id: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    target: str = Field(min_length=1)
-    relation_type: Literal[
-        "adjacent_central_axis",
-        "adjacent_diagonal",
-        "adjacent_branch",
-        "same_row",
-    ]
-    bidirectional: bool
-    virtual_distance_m: float = Field(gt=0)
-    relative_direction_from_source: str = Field(min_length=1)
-
-
 class SceneSemanticsDocument(BaseModel):
-    """scene_semantics.json schema_version=3 的唯一 Backend DTO。"""
+    """scene_semantics.json schema_version=4 的唯一 Backend DTO。"""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     scene_id: str = Field(min_length=1)
     scene_name: str = Field(min_length=1)
     coordinate_system: str = Field(min_length=1)
@@ -225,7 +208,6 @@ class SceneSemanticsDocument(BaseModel):
     themes: list[SceneTheme]
     exhibits: list[SceneExhibit]
     semantic_edges: list[SceneSemanticEdge]
-    spatial_edges: list[SceneSpatialEdge]
 
     @model_validator(mode="after")
     def validate_graph(self) -> "SceneSemanticsDocument":
@@ -258,43 +240,14 @@ class SceneSemanticsDocument(BaseModel):
                 raise ValueError(f"duplicate_semantic_logical_edge:{edge.relation_type}")
             semantic_logical.add(key)
 
-        positions = {exhibit.id: exhibit.scene_binding.position for exhibit in self.exhibits}
-        spatial_ids: set[str] = set()
-        spatial_logical: set[tuple[str, str, str]] = set()
-        for edge in self.spatial_edges:
-            if edge.id in spatial_ids:
-                raise ValueError(f"duplicate_spatial_edge_id:{edge.id}")
-            spatial_ids.add(edge.id)
-            if edge.source not in exhibit_set or edge.target not in exhibit_set:
-                raise ValueError(f"broken_spatial_edge:{edge.id}")
-            if edge.source == edge.target:
-                raise ValueError(f"spatial_edge_self_loop:{edge.id}")
-            source, target = (edge.source, edge.target) if edge.source < edge.target else (edge.target, edge.source)
-            key = (source, target, edge.relation_type) if edge.bidirectional else (edge.source, edge.target, edge.relation_type)
-            if key in spatial_logical:
-                raise ValueError(f"duplicate_spatial_logical_edge:{edge.relation_type}")
-            spatial_logical.add(key)
-            dx = positions[edge.source][0] - positions[edge.target][0]
-            dz = positions[edge.source][2] - positions[edge.target][2]
-            computed = math.sqrt(dx * dx + dz * dz)
-            if abs(computed - edge.virtual_distance_m) > 0.05:
-                raise ValueError(f"spatial_distance_mismatch:{edge.id}")
-
         if self.scene_id == "sanxingdui_gallery":
-            if (len(self.themes), len(self.exhibits), len(self.semantic_edges), len(self.spatial_edges)) != (7, 8, 14, 14):
+            if (len(self.themes), len(self.exhibits), len(self.semantic_edges)) != (7, 8, 14):
                 raise ValueError("sanxingdui_graph_counts_invalid")
             if self._counts(self.semantic_edges) != {
                 "context_of": 3, "same_category": 1, "variant_of": 1,
                 "compare_with": 3, "thematic_association": 3, "synthesis_into": 3,
             }:
                 raise ValueError("sanxingdui_semantic_relation_counts_invalid")
-            if self._counts(self.spatial_edges) != {
-                "adjacent_central_axis": 3, "adjacent_diagonal": 8,
-                "adjacent_branch": 2, "same_row": 1,
-            }:
-                raise ValueError("sanxingdui_spatial_relation_counts_invalid")
-            if any(not edge.bidirectional for edge in self.spatial_edges):
-                raise ValueError("sanxingdui_spatial_edges_must_be_bidirectional")
         return self
 
     @staticmethod
@@ -426,22 +379,8 @@ class CandidateSemanticEdge(BaseModel):
     evidence_status: Literal["direct", "supported", "contextual", "interpretive"]
 
 
-class CandidateSpatialEdge(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-    id: str = Field(min_length=1)
-    source: str = Field(min_length=1)
-    target: str = Field(min_length=1)
-    relation_type: Literal[
-        "adjacent_central_axis", "adjacent_diagonal", "adjacent_branch", "same_row",
-    ]
-    bidirectional: bool
-    virtual_distance_m: float = Field(gt=0)
-    relative_direction_from_source: str = Field(min_length=1)
-
-
 class SemanticCandidate(BaseModel):
-    """Unity 冻结并提供给模型的 v3 候选知识上下文。"""
+    """Unity 冻结并提供给模型的候选知识上下文。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -466,7 +405,6 @@ class SemanticCandidate(BaseModel):
     themes: list[str]
     interpretation_notes: list[CandidateInterpretationNote]
     semantic_edges: list[CandidateSemanticEdge]
-    spatial_edges: list[CandidateSpatialEdge]
 
 
 class MovementInstruction(str, Enum):
@@ -789,7 +727,6 @@ class SemanticPlanningNode(BaseModel):
     key_concepts: list[str]
     interpretation_notes: list[CandidateInterpretationNote]
     semantic_edges: list[CandidateSemanticEdge]
-    spatial_edges: list[CandidateSpatialEdge]
 
 
 class SemanticPlanRequest(BaseModel):
@@ -805,7 +742,6 @@ class SemanticPlanRequest(BaseModel):
     task: NaturalLanguageTaskContract
     task_state: NaturalLanguageTaskState
     local_semantic_nodes: list[SemanticPlanningNode] = Field(min_length=1)
-    local_spatial_edges: list[CandidateSpatialEdge]
     local_semantic_edges: list[CandidateSemanticEdge]
 
     @model_validator(mode="after")
@@ -823,7 +759,7 @@ class SemanticPlanRequest(BaseModel):
         ):
             raise ValueError("required_target_id must match final_goal during final_approach.")
         node_set = set(node_ids)
-        for edge in [*self.local_spatial_edges, *self.local_semantic_edges]:
+        for edge in self.local_semantic_edges:
             if edge.source not in node_set or edge.target not in node_set:
                 raise ValueError("local graph edges must reference local_semantic_nodes.")
         return self
@@ -874,7 +810,7 @@ def verify_semantic_plan(
     request: SemanticPlanRequest,
     draft: SemanticPlanDraft,
 ) -> VerifierResult:
-    """只验证静态节点和 Spatial Edge，不读取 Physical Risk。"""
+    """只验证冻结节点成员关系和任务策略，不读取 Physical Risk。"""
 
     node_ids = {node.id for node in request.local_semantic_nodes}
     if any(node_id not in node_ids for node_id in draft.ordered_node_ids):
@@ -889,8 +825,6 @@ def verify_semantic_plan(
     visited = set(progress.visited_exhibit_ids)
     if any(node_id in visited for node_id in draft.ordered_node_ids):
         return VerifierResult(approved=False, reason="semantic_plan_targets_visited_exhibit")
-    # Spatial Edge 只提供虚拟距离、方向和空间上下文，不作为 Planner 候选门禁。
-
     final_index = next(
         (index for index, node_id in enumerate(draft.ordered_node_ids)
          if node_id == final_target_id),
@@ -913,7 +847,7 @@ def verify_semantic_plan(
     if final_required and final_index != 0:
         return VerifierResult(approved=False, reason="semantic_plan_final_goal_required")
 
-    # Semantic Edge 只提供相关性证据；Spatial Graph 才决定虚拟可达性。
+    # Semantic Edge 只提供相关性证据；节点的动态几何与物理安全由 Unity 规划层处理。
     return VerifierResult(approved=True, reason="semantic_plan_is_graph_valid")
 
 
@@ -1157,7 +1091,6 @@ class HealthResponse(BaseModel):
     schema_version: int
     exhibit_count: int
     semantic_edge_count: int
-    spatial_edge_count: int
     semantic_ready: bool
 
 

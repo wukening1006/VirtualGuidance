@@ -935,8 +935,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             sessionId,
             requestId,
             generation,
-            state.stateVersion,
-            3);
+            state.stateVersion);
         if (!HasUnvisitedSemanticCandidate(request))
         {
             TriggerRuntimeIntervention(null, "No unvisited semantic candidate is available before the final goal.");
@@ -984,22 +983,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             string.IsNullOrWhiteSpace(state.currentExhibitId)) return false;
 
         var visited = new HashSet<string>(state.visitedExhibitIds ?? Array.Empty<string>(), StringComparer.Ordinal);
-        var included = new HashSet<string>(StringComparer.Ordinal) { state.currentExhibitId };
-        var frontier = new List<string> { state.currentExhibitId };
-        for (var hop = 0; hop < 3 && frontier.Count > 0; hop++)
+        foreach (var exhibit in semanticPlanningGraph.GetAllExhibits())
         {
-            var next = new List<string>();
-            foreach (var source in frontier)
-            {
-                foreach (var neighbor in semanticPlanningGraph.GetSpatialNeighbors(source))
-                {
-                    if (!included.Add(neighbor)) continue;
-                    if (!visited.Contains(neighbor) &&
-                        !string.Equals(neighbor, state.finalTargetId, StringComparison.Ordinal)) return true;
-                    next.Add(neighbor);
-                }
-            }
-            frontier = next;
+            if (exhibit == null ||
+                string.Equals(exhibit.id, state.currentExhibitId, StringComparison.Ordinal) ||
+                visited.Contains(exhibit.id) ||
+                string.Equals(exhibit.id, state.finalTargetId, StringComparison.Ordinal)) continue;
+            return true;
         }
         return false;
     }

@@ -17,7 +17,7 @@ public enum CandidateSafetyState
 
 /// <summary>
 /// 按 T2 Candidate Policy 从任务、虚拟空间拓扑、角色和访问历史构建候选集合。
-/// 静态候选拓扑只来自 scene_semantics.json 的 spatial_edges。
+/// 候选集合来自场景中全部展品，再由任务策略和运行时安全事实筛选。
 /// </summary>
 public sealed class SemanticTargetSelector : MonoBehaviour
 {
@@ -118,41 +118,27 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                 NavigationTargetRole.FinalTarget);
         }
         var graph = navigationTargets.SemanticGraph;
-        if (!runtimeState.MustSelectFinalGoal &&
-            graph != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
+        if (!runtimeState.MustSelectFinalGoal && graph != null)
         {
-            var included = new HashSet<string>(StringComparer.Ordinal)
-            {
-                runtimeState.currentExhibitId
-            };
-            var frontier = new List<string> { runtimeState.currentExhibitId };
             var routeRole = policy != null &&
                             policy.UseRdwAffordance == ConditionCapabilityMode.Enabled
                 ? NavigationTargetRole.RouteSubgoal
                 : NavigationTargetRole.NavigableDetour;
-            for (var hop = 0; hop < 3 && frontier.Count > 0; hop++)
+            foreach (var exhibit in graph.GetAllExhibits())
             {
-                var nextFrontier = new List<string>();
-                foreach (var sourceId in frontier)
+                if (exhibit == null ||
+                    string.Equals(exhibit.id, runtimeState.currentExhibitId, StringComparison.Ordinal) ||
+                    string.Equals(exhibit.id, runtimeState.finalTargetId, StringComparison.Ordinal))
                 {
-                    foreach (var neighborId in graph.GetSpatialNeighbors(sourceId))
-                    {
-                        if (!included.Add(neighborId)) continue;
-                        nextFrontier.Add(neighborId);
-                        if (!string.Equals(neighborId, runtimeState.finalTargetId, StringComparison.Ordinal))
-                        {
-                            // 没有直接 Semantic Edge 仍允许作为候选；Spatial Graph 才决定虚拟可达性。
-                            TryAddCandidate(
-                                candidates,
-                                assessments,
-                                runtimeState,
-                                riskState,
-                                neighborId,
-                                routeRole);
-                        }
-                    }
+                    continue;
                 }
-                frontier = nextFrontier;
+                TryAddCandidate(
+                    candidates,
+                    assessments,
+                    runtimeState,
+                    riskState,
+                    exhibit.id,
+                    routeRole);
             }
         }
 
@@ -384,7 +370,6 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             BearingLabelProtocolMapper.ToProtocol(bearing.DisplayLabel),
             definition,
             GetSemanticEdges(contextNodeId, targetId),
-            GetSpatialEdges(contextNodeId, targetId),
             bearing.RelativeYawDegrees,
             bearing.DistanceMeters,
             bearing.DisplayLabel,
@@ -398,19 +383,6 @@ public sealed class SemanticTargetSelector : MonoBehaviour
         if (graph == null || string.IsNullOrWhiteSpace(contextNodeId)) return Array.Empty<SemanticEdgeDefinition>();
         var result = new List<SemanticEdgeDefinition>();
         foreach (var edge in graph.GetOutgoingSemanticEdges(contextNodeId))
-        {
-            if (string.Equals(edge.source, targetId, StringComparison.Ordinal) ||
-                string.Equals(edge.target, targetId, StringComparison.Ordinal)) result.Add(edge);
-        }
-        return result;
-    }
-
-    private IReadOnlyList<SpatialEdgeDefinition> GetSpatialEdges(string contextNodeId, string targetId)
-    {
-        var graph = navigationTargets != null ? navigationTargets.SemanticGraph : null;
-        if (graph == null || string.IsNullOrWhiteSpace(contextNodeId)) return Array.Empty<SpatialEdgeDefinition>();
-        var result = new List<SpatialEdgeDefinition>();
-        foreach (var edge in graph.GetSpatialEdges(contextNodeId))
         {
             if (string.Equals(edge.source, targetId, StringComparison.Ordinal) ||
                 string.Equals(edge.target, targetId, StringComparison.Ordinal)) result.Add(edge);

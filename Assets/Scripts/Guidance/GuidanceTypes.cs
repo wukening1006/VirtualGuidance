@@ -117,7 +117,7 @@ public sealed class GuidanceRiskSnapshot
     }
 }
 
-/// <summary>发送给 Backend/MLLM 的 v3 场景知识上下文，不参与 Unity Candidate Membership 判定。</summary>
+/// <summary>发送给 Backend/MLLM 的 v4 场景知识上下文，不参与 Unity Candidate Membership 判定。</summary>
 [Serializable]
 public sealed class GuidanceSemanticCandidate
 {
@@ -157,8 +157,6 @@ public sealed class GuidanceSemanticCandidate
     public GuidanceInterpretationNote[] interpretation_notes = Array.Empty<GuidanceInterpretationNote>();
     /// <summary>当前节点与候选节点之间的原始语义关系。</summary>
     public GuidanceSemanticRelation[] semantic_edges = Array.Empty<GuidanceSemanticRelation>();
-    /// <summary>当前节点与候选节点之间的原始空间关系。</summary>
-    public GuidanceSpatialRelation[] spatial_edges = Array.Empty<GuidanceSpatialRelation>();
 
     /// <summary>从不可变导航候选创建独立协议副本。</summary>
     public static GuidanceSemanticCandidate From(NavigationCandidate candidate)
@@ -198,8 +196,7 @@ public sealed class GuidanceSemanticCandidate
                     ? candidate.Definition.knowledge.themes : null),
                 interpretation_notes = CopyNotes(candidate.Definition != null && candidate.Definition.knowledge != null
                     ? candidate.Definition.knowledge.interpretation_notes : null),
-                semantic_edges = CopySemanticEdges(candidate.SemanticEdges),
-                spatial_edges = CopySpatialEdges(candidate.SpatialEdges)
+                semantic_edges = CopySemanticEdges(candidate.SemanticEdges)
             };
     }
 
@@ -247,26 +244,6 @@ public sealed class GuidanceSemanticCandidate
         return result;
     }
 
-    private static GuidanceSpatialRelation[] CopySpatialEdges(System.Collections.Generic.IReadOnlyList<SpatialEdgeDefinition> values)
-    {
-        if (values == null) return Array.Empty<GuidanceSpatialRelation>();
-        var result = new GuidanceSpatialRelation[values.Count];
-        for (var i = 0; i < result.Length; i++)
-        {
-            var edge = values[i];
-            result[i] = new GuidanceSpatialRelation
-            {
-                id = edge.id,
-                source = edge.source,
-                target = edge.target,
-                relation_type = edge.relation_type,
-                bidirectional = edge.bidirectional.GetValueOrDefault(),
-                virtual_distance_m = edge.virtual_distance_m,
-                relative_direction_from_source = edge.relative_direction_from_source
-            };
-        }
-        return result;
-    }
 }
 
 /// <summary>模型可见的解释边界。</summary>
@@ -299,26 +276,6 @@ public sealed class GuidanceSemanticRelation
     public string description;
     /// <summary>原始证据状态，不映射为导航权重。</summary>
     public string evidence_status;
-}
-
-/// <summary>模型可见的空间关系。</summary>
-[Serializable]
-public sealed class GuidanceSpatialRelation
-{
-    /// <summary>空间边 ID。</summary>
-    public string id;
-    /// <summary>空间边源展品 ID。</summary>
-    public string source;
-    /// <summary>空间边目标展品 ID。</summary>
-    public string target;
-    /// <summary>原始虚拟空间关系类型。</summary>
-    public string relation_type;
-    /// <summary>该空间边是否双向可达。</summary>
-    public bool bidirectional;
-    /// <summary>虚拟空间距离，单位：米。</summary>
-    public float virtual_distance_m;
-    /// <summary>从源节点观察目标节点的相对方向。</summary>
-    public string relative_direction_from_source;
 }
 
 /// <summary>

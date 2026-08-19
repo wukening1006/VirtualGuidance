@@ -56,17 +56,6 @@ def semantic_candidate(target_id: str) -> dict:
                 "evidence_status": "supported",
             }
         ],
-        "spatial_edges": [] if target_id == "E5" else [
-            {
-                "id": f"SP_TEST_{target_id}",
-                "source": "E1",
-                "target": target_id,
-                "relation_type": "adjacent_diagonal",
-                "bidirectional": True,
-                "virtual_distance_m": 4.63,
-                "relative_direction_from_source": "diagonal",
-            }
-        ],
     }
 
 

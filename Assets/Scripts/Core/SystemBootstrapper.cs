@@ -24,7 +24,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [SerializeField] private XRTrackingAdapter xrTrackingAdapter;
 
     [Header("静态场景语义")]
-    [Tooltip("Build-safe 的 schema_version=3 场景语义配置；缺失时禁止启动正式会话。")]
+    [Tooltip("Build-safe 的 schema_version=4 场景语义配置；缺失时禁止启动正式会话。")]
     [SerializeField] private TextAsset sceneSemanticsJson;
     [Tooltip("JSON 场景位置与 MainScene Anchor 的校验容差，单位：米。")]
     [SerializeField, Min(0f)] private float semanticBindingToleranceMeters = 0.05f;
@@ -207,7 +207,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
             $"scene_semantics_loaded schema_version={semanticGraph.SchemaVersion} " +
             $"scene_id={semanticGraph.SceneId} exhibits={semanticGraph.Exhibits.Count} " +
             $"themes={semanticGraph.Themes.Count} semantic_edges={semanticGraph.SemanticEdges.Count} " +
-            $"spatial_edges={semanticGraph.SpatialEdges.Count} scene_bindings={semanticGraph.Exhibits.Count} " +
+            $"scene_bindings={semanticGraph.Exhibits.Count} " +
             $"semantic_ready={(Readiness.SemanticReady ? "true" : "false")}",
             this);
         ConfigureSystems();
@@ -240,7 +240,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
         else
         {
             semanticConfigLoaded = true;
-            semanticSchemaValid = semanticGraph.SchemaVersion == 3;
+            semanticSchemaValid = semanticGraph.SchemaVersion == 4;
             semanticGraphValid = semanticSchemaValid && semanticGraph.Exhibits.Count > 0;
             if (!semanticSchemaValid) missing.Add("semantic_schema_invalid");
 

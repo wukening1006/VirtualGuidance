@@ -17,14 +17,12 @@ public sealed class RdwHardSafetyFilter
         maximumGainCost = Mathf.Clamp01(maximumAllowedGainCost);
     }
 
-    /// <summary>检查静态可达性、Exact Safety、净空和标准化 Gain 代价。</summary>
+    /// <summary>检查 Exact Safety、净空和标准化 Gain 代价。</summary>
     public bool Allows(PlanningEdge edge, RdwEdgeEvaluation evaluation, out string reason)
     {
-        if (edge == null || !edge.Reachable)
+        if (edge == null)
         {
-            reason = edge != null && !string.IsNullOrWhiteSpace(edge.ReachabilityReason)
-                ? edge.ReachabilityReason
-                : "edge_unreachable";
+            reason = "edge_missing";
             return false;
         }
         if (evaluation == null || !evaluation.Feasible)

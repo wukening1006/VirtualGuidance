@@ -31,18 +31,6 @@ def semantic_payload() -> dict:
             "key_concepts": ["文化"],
             "interpretation_notes": [],
             "semantic_edges": [],
-            "spatial_edges": [],
-        }
-
-    def spatial(source: str, target: str, edge_id: str) -> dict:
-        return {
-            "id": edge_id,
-            "source": source,
-            "target": target,
-            "relation_type": "adjacent_diagonal",
-            "bidirectional": True,
-            "virtual_distance_m": 2.0,
-            "relative_direction_from_source": "diagonal",
         }
 
     def semantic(source: str, target: str, edge_id: str) -> dict:
@@ -83,13 +71,6 @@ def semantic_payload() -> dict:
         "local_semantic_nodes": [
             node("E1"), node("E2"), node("E3"), node("E4"), node("E5"), node("E8")
         ],
-        "local_spatial_edges": [
-            spatial("E1", "E2", "SP_12"),
-            spatial("E2", "E3", "SP_23"),
-            spatial("E3", "E4", "SP_34"),
-            spatial("E4", "E5", "SP_45"),
-            spatial("E1", "E8", "SP_18"),
-        ],
         "local_semantic_edges": [
             semantic("E2", "E5", "SE_25"),
             semantic("E3", "E5", "SE_35"),
@@ -115,7 +96,7 @@ def test_semantic_request_rejects_physical_fields() -> None:
 
 def test_semantic_request_rejects_unknown_node() -> None:
     payload = semantic_payload()
-    payload["local_spatial_edges"][0]["target"] = "E_UNKNOWN"
+    payload["local_semantic_edges"][0]["target"] = "E_UNKNOWN"
     with pytest.raises(ValidationError):
         SemanticPlanRequest.model_validate(payload)
 
@@ -165,10 +146,6 @@ def test_semantic_plan_endpoint_falls_back_when_model_fails_or_is_rejected(plann
 
 def test_final_goal_is_locked_before_three_intermediate_visits() -> None:
     payload = semantic_payload()
-    payload["local_spatial_edges"].append({
-        **payload["local_spatial_edges"][0], "id": "SP_15", "source": "E1", "target": "E5"
-    })
-
     result = verify(payload, ["E5"])
 
     assert result.approved is False
@@ -217,10 +194,6 @@ def test_spatially_reachable_candidate_without_semantic_edge_is_allowed() -> Non
     candidate["id"] = "E7"
     candidate["name"] = "E7"
     payload["local_semantic_nodes"].append(candidate)
-    spatial = dict(payload["local_spatial_edges"][0])
-    spatial.update(id="SP_27", source="E2", target="E7")
-    payload["local_spatial_edges"].append(spatial)
-
     result = verify(payload, ["E7"])
 
     assert result.approved is True
@@ -236,7 +209,6 @@ def test_semantic_plan_rejects_return_to_current_exhibit() -> None:
 
 def test_candidate_without_direct_spatial_edge_is_allowed() -> None:
     payload = semantic_payload()
-    payload["local_spatial_edges"][0]["bidirectional"] = False
     payload["task_state"] = {
         "phase": "exploring",
         "current_exhibit_id": "E2",

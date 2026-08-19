@@ -107,7 +107,6 @@ public sealed class SemanticGoalLockEditModeTests
             "right",
             null,
             Array.Empty<SemanticEdgeDefinition>(),
-            Array.Empty<SpatialEdgeDefinition>(),
             relativeYawDegrees: 30f);
 
         var assessment = new PostResetContinuationEvaluator().EvaluateFixedTarget(
@@ -197,8 +196,7 @@ public sealed class SemanticGoalLockEditModeTests
             NavigationTargetRole.FinalTarget,
             "forward",
             null,
-            Array.Empty<SemanticEdgeDefinition>(),
-            Array.Empty<SpatialEdgeDefinition>());
+            Array.Empty<SemanticEdgeDefinition>());
         var candidateSet = new NavigationCandidateSet(
             new[] { candidate.TargetId },
             new[] { candidate.TargetId },

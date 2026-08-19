@@ -12552,8 +12552,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0.5}
   m_AnchorMax: {x: 1, y: 0.5}
-  m_AnchoredPosition: {x: 0, y: -88.22}
-  m_SizeDelta: {x: -64, y: 80}
+  m_AnchoredPosition: {x: 0, y: -114.6}
+  m_SizeDelta: {x: -64, y: 60}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!222 &591438179
 CanvasRenderer:
@@ -28437,8 +28437,8 @@ MonoBehaviour:
     condition: B1_semantic_only
     task_id: T2_main_target
     current_exhibit: E1
-    final_target:
-    preferred_task_target:
+    final_target: 
+    preferred_task_target: 
     candidate_ids: []
     model_candidate_ids: []
     allowed_candidate_ids: []
@@ -31206,18 +31206,18 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2cb281b7dd9943959dbb84775e8d6f8b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  agentClient: {fileID: 0}
-  guidanceExecutor: {fileID: 0}
-  taskController: {fileID: 0}
-  navigationTargets: {fileID: 0}
-  semanticTargetSelector: {fileID: 0}
-  arrivalDetector: {fileID: 0}
-  riskEvaluator: {fileID: 0}
-  localValidator: {fileID: 0}
-  pauseResetController: {fileID: 0}
-  rotationGainController: {fileID: 0}
-  motionDetector: {fileID: 0}
-  rejectionPanel: {fileID: 0}
+  agentClient: {fileID: 1189476495}
+  guidanceExecutor: {fileID: 1780042341}
+  taskController: {fileID: 19950179}
+  navigationTargets: {fileID: 19950178}
+  semanticTargetSelector: {fileID: 19950177}
+  arrivalDetector: {fileID: 19950176}
+  riskEvaluator: {fileID: 2100100012}
+  localValidator: {fileID: 1039273995}
+  pauseResetController: {fileID: 1039273992}
+  rotationGainController: {fileID: 1039273993}
+  motionDetector: {fileID: 2100100006}
+  rejectionPanel: {fileID: 1780042335}
   enableSoftRerouteSafetyPolicy: 0
   turnCueNoCueToleranceDegrees: 12
   turnCueReverseAbortDegrees: 5
@@ -31295,7 +31295,6 @@ MonoBehaviour:
   thomasApfMaxForceMagnitude: 100
   rdwPlanningSettings:
     mode: 0
-    maximumGraphEdgeDistanceMeters: 12
     hardClearanceMeters: 1.2
     maximumGainCost: 1
     routeSearch:
@@ -33037,8 +33036,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: 0, y: -22.6}
-  m_SizeDelta: {x: -64, y: 160}
+  m_AnchoredPosition: {x: 0, y: -17.1}
+  m_SizeDelta: {x: -64, y: 200}
   m_Pivot: {x: 0.5, y: 1}
 --- !u!114 &1971076563
 MonoBehaviour:

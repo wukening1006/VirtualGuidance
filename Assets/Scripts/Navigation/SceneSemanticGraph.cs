@@ -4,12 +4,12 @@ using Newtonsoft.Json;
 using UnityEngine;
 
 /// <summary>
-/// scene_semantics.json 的严格 v3 文档 DTO。
+/// scene_semantics.json 的严格 v4 文档 DTO。
 /// </summary>
 [Serializable]
 public sealed class SceneSemanticsDocument
 {
-    /// <summary>语义契约版本，当前必须为 3。</summary>
+    /// <summary>语义契约版本，当前必须为 4。</summary>
     [JsonProperty("schema_version", Required = Required.Always)] public int schema_version;
     /// <summary>场景稳定 ID。</summary>
     [JsonProperty("scene_id", Required = Required.Always)] public string scene_id;
@@ -25,8 +25,6 @@ public sealed class SceneSemanticsDocument
     [JsonProperty("exhibits", Required = Required.Always)] public SceneExhibitDefinition[] exhibits;
     /// <summary>内容语义关系原始边。</summary>
     [JsonProperty("semantic_edges", Required = Required.Always)] public SemanticEdgeDefinition[] semantic_edges;
-    /// <summary>虚拟空间拓扑原始边。</summary>
-    [JsonProperty("spatial_edges", Required = Required.Always)] public SpatialEdgeDefinition[] spatial_edges;
 }
 
 /// <summary>场景布局快照，仅用于一致性校验和上下文。</summary>
@@ -175,26 +173,6 @@ public sealed class SemanticEdgeDefinition
     [JsonProperty("evidence_status", Required = Required.Always)] public string evidence_status;
 }
 
-/// <summary>虚拟展厅空间拓扑关系。</summary>
-[Serializable]
-public sealed class SpatialEdgeDefinition
-{
-    /// <summary>空间边稳定 ID。</summary>
-    [JsonProperty("id", Required = Required.Always)] public string id;
-    /// <summary>源展品 ID。</summary>
-    [JsonProperty("source", Required = Required.Always)] public string source;
-    /// <summary>目标展品 ID。</summary>
-    [JsonProperty("target", Required = Required.Always)] public string target;
-    /// <summary>虚拟空间拓扑关系类型。</summary>
-    [JsonProperty("relation_type", Required = Required.Always)] public string relation_type;
-    /// <summary>是否为双向拓扑；nullable 用于识别缺失字段。</summary>
-    [JsonProperty("bidirectional", Required = Required.Always)] public bool? bidirectional;
-    /// <summary>虚拟空间距离，单位：米。</summary>
-    [JsonProperty("virtual_distance_m", Required = Required.Always)] public float virtual_distance_m;
-    /// <summary>从源节点观察目标节点的相对方向。</summary>
-    [JsonProperty("relative_direction_from_source", Required = Required.Always)] public string relative_direction_from_source;
-}
-
 /// <summary>语义配置校验失败异常。</summary>
 public sealed class SceneSemanticValidationException : Exception
 {
@@ -209,7 +187,7 @@ public sealed class SceneSemanticValidationException : Exception
 public sealed class SceneSemanticsLoader : MonoBehaviour
 {
     [Header("场景语义配置")]
-    [Tooltip("Build-safe 的 v3 场景语义 JSON TextAsset；缺失时语义就绪失败。")]
+    [Tooltip("Build-safe 的 v4 场景语义 JSON TextAsset；缺失时语义就绪失败。")]
     [SerializeField] private TextAsset sceneSemanticsJson;
 
     /// <summary>当前绑定的 JSON TextAsset。</summary>
@@ -278,7 +256,7 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
     private static void ValidateDocument(SceneSemanticsDocument document)
     {
         if (document == null) Fail("semantic_config_not_object");
-        if (document.schema_version != 3) Fail("unsupported_schema_version:" + document.schema_version);
+        if (document.schema_version != 4) Fail("unsupported_schema_version:" + document.schema_version);
         Require(document.scene_id, "scene_id");
         Require(document.scene_name, "scene_name");
         Require(document.coordinate_system, "coordinate_system");
@@ -288,31 +266,17 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
         ValidateExhibits(document.exhibits);
         ValidateThemeReferences(document.themes, document.exhibits);
         ValidateSemanticEdges(document.semantic_edges, document.exhibits);
-        ValidateSpatialEdges(document.spatial_edges, document.exhibits);
 
         if (string.Equals(document.scene_id, "sanxingdui_gallery", StringComparison.Ordinal))
         {
             RequireCount(document.themes, 7, "themes");
             RequireCount(document.exhibits, 8, "exhibits");
             RequireCount(document.semantic_edges, 14, "semantic_edges");
-            RequireCount(document.spatial_edges, 14, "spatial_edges");
             RequireRelationCounts(document.semantic_edges, new Dictionary<string, int>(StringComparer.Ordinal)
             {
                 ["context_of"] = 3, ["same_category"] = 1, ["variant_of"] = 1,
                 ["compare_with"] = 3, ["thematic_association"] = 3, ["synthesis_into"] = 3
             }, "semantic relation_type");
-            RequireRelationCounts(document.spatial_edges, new Dictionary<string, int>(StringComparer.Ordinal)
-            {
-                ["adjacent_central_axis"] = 3, ["adjacent_diagonal"] = 8,
-                ["adjacent_branch"] = 2, ["same_row"] = 1
-            }, "spatial relation_type");
-            foreach (var edge in document.spatial_edges)
-            {
-                if (edge == null || edge.bidirectional != true)
-                {
-                    Fail("sanxingdui_spatial_edge_not_bidirectional");
-                }
-            }
         }
     }
 
@@ -439,46 +403,6 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
         }
     }
 
-    private static void ValidateSpatialEdges(SpatialEdgeDefinition[] edges, SceneExhibitDefinition[] exhibits)
-    {
-        if (edges == null) Fail("missing_spatial_edges");
-        var exhibitIds = ExhibitIds(exhibits);
-        var exhibitPositions = new Dictionary<string, float[]>(StringComparer.Ordinal);
-        foreach (var exhibit in exhibits) exhibitPositions[exhibit.id] = exhibit.scene_binding.position;
-        var edgeIds = new HashSet<string>(StringComparer.Ordinal);
-        var logical = new HashSet<string>(StringComparer.Ordinal);
-        var relationTypes = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "adjacent_central_axis", "adjacent_diagonal", "adjacent_branch", "same_row"
-        };
-        foreach (var edge in edges)
-        {
-            if (edge == null) Fail("null_spatial_edge");
-            Require(edge.id, "spatial_edge.id");
-            if (!edgeIds.Add(edge.id)) Fail("duplicate_spatial_edge_id:" + edge.id);
-            Require(edge.source, "spatial_edge.source:" + edge.id);
-            Require(edge.target, "spatial_edge.target:" + edge.id);
-            if (!exhibitIds.Contains(edge.source) || !exhibitIds.Contains(edge.target)) Fail("broken_spatial_edge:" + edge.id);
-            if (string.Equals(edge.source, edge.target, StringComparison.Ordinal)) Fail("spatial_edge_self_loop:" + edge.id);
-            Require(edge.relation_type, "spatial_edge.relation_type:" + edge.id);
-            if (!relationTypes.Contains(edge.relation_type)) Fail("unknown_spatial_relation_type:" + edge.relation_type);
-            if (!edge.bidirectional.HasValue) Fail("missing_spatial_bidirectional:" + edge.id);
-            if (edge.virtual_distance_m <= 0f || !IsFinite(edge.virtual_distance_m)) Fail("invalid_spatial_distance:" + edge.id);
-            Require(edge.relative_direction_from_source, "spatial_edge.relative_direction_from_source:" + edge.id);
-            var logicalKey = (edge.bidirectional.Value ? CanonicalPair(edge.source, edge.target) : edge.source + "->" + edge.target) + "|" + edge.relation_type;
-            if (!logical.Add(logicalKey)) Fail("duplicate_spatial_logical_edge:" + logicalKey);
-            var sourcePosition = exhibitPositions[edge.source];
-            var targetPosition = exhibitPositions[edge.target];
-            var dx = sourcePosition[0] - targetPosition[0];
-            var dz = sourcePosition[2] - targetPosition[2];
-            var computed = Mathf.Sqrt(dx * dx + dz * dz);
-            if (Mathf.Abs(computed - edge.virtual_distance_m) > 0.05f)
-            {
-                Fail("spatial_distance_mismatch:" + edge.id);
-            }
-        }
-    }
-
     private static HashSet<string> ExhibitIds(SceneExhibitDefinition[] exhibits)
     {
         var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -489,13 +413,12 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
         return ids;
     }
 
-    private static void RequireRelationCounts<T>(IEnumerable<T> edges, Dictionary<string, int> expected, string label)
+    private static void RequireRelationCounts(IEnumerable<SemanticEdgeDefinition> edges, Dictionary<string, int> expected, string label)
     {
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var edge in edges)
         {
-            var relation = edge is SemanticEdgeDefinition semantic ? semantic.relation_type : ((SpatialEdgeDefinition)(object)edge).relation_type;
-            counts[relation] = counts.TryGetValue(relation, out var count) ? count + 1 : 1;
+            counts[edge.relation_type] = counts.TryGetValue(edge.relation_type, out var count) ? count + 1 : 1;
         }
         foreach (var pair in expected)
         {
@@ -550,7 +473,7 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
 }
 
 /// <summary>
-/// v3 静态场景知识图谱。原始边只保存一份，双向查询通过索引展开。
+/// v4 静态场景语义图。只保存内容语义关系；导航几何来自运行时 ViewPoint。
 /// </summary>
 public sealed class StaticSceneSemanticGraph
 {
@@ -558,7 +481,6 @@ public sealed class StaticSceneSemanticGraph
     private readonly Dictionary<string, SceneThemeDefinition> themesById;
     private readonly Dictionary<string, SceneExhibitDefinition> exhibitsById;
     private readonly Dictionary<string, List<SemanticEdgeDefinition>> semanticByNode;
-    private readonly Dictionary<string, List<SpatialEdgeDefinition>> spatialByNode;
 
     /// <summary>创建已完成严格校验的静态图。</summary>
     public StaticSceneSemanticGraph(SceneSemanticsDocument source)
@@ -567,7 +489,6 @@ public sealed class StaticSceneSemanticGraph
         themesById = new Dictionary<string, SceneThemeDefinition>(StringComparer.Ordinal);
         exhibitsById = new Dictionary<string, SceneExhibitDefinition>(StringComparer.Ordinal);
         semanticByNode = new Dictionary<string, List<SemanticEdgeDefinition>>(StringComparer.Ordinal);
-        spatialByNode = new Dictionary<string, List<SpatialEdgeDefinition>>(StringComparer.Ordinal);
         foreach (var theme in document.themes)
         {
             themesById[theme.id] = theme;
@@ -581,11 +502,6 @@ public sealed class StaticSceneSemanticGraph
             AddSemanticIndex(edge.source, edge);
             if (!edge.directed.Value) AddSemanticIndex(edge.target, edge);
         }
-        foreach (var edge in document.spatial_edges)
-        {
-            AddSpatialIndex(edge.source, edge);
-            if (edge.bidirectional.Value) AddSpatialIndex(edge.target, edge);
-        }
     }
 
     /// <summary>场景 ID。</summary>
@@ -598,8 +514,6 @@ public sealed class StaticSceneSemanticGraph
     public IReadOnlyList<SceneExhibitDefinition> Exhibits => Array.AsReadOnly(document.exhibits);
     /// <summary>原始语义边集合，不含索引复制。</summary>
     public IReadOnlyList<SemanticEdgeDefinition> SemanticEdges => Array.AsReadOnly(document.semantic_edges);
-    /// <summary>原始空间边集合，不含索引复制。</summary>
-    public IReadOnlyList<SpatialEdgeDefinition> SpatialEdges => Array.AsReadOnly(document.spatial_edges);
 
     /// <summary>按 ID 获取展品。</summary>
     public SceneExhibitDefinition GetExhibit(string id)
@@ -643,38 +557,6 @@ public sealed class StaticSceneSemanticGraph
         return Array.AsReadOnly(result.ToArray());
     }
 
-    /// <summary>返回指定节点的空间边；双向边从两侧均可查询。</summary>
-    public IReadOnlyList<SpatialEdgeDefinition> GetSpatialEdges(string id)
-    {
-        return spatialByNode.TryGetValue(id ?? string.Empty, out var edges)
-            ? Array.AsReadOnly(edges.ToArray())
-            : Array.Empty<SpatialEdgeDefinition>();
-    }
-
-    /// <summary>返回指定节点的空间邻居 ID。</summary>
-    public IReadOnlyList<string> GetSpatialNeighbors(string id)
-    {
-        var result = new List<string>();
-        foreach (var edge in GetSpatialEdges(id))
-        {
-            var neighbor = string.Equals(edge.source, id, StringComparison.Ordinal) ? edge.target : edge.source;
-            if (!result.Contains(neighbor)) result.Add(neighbor);
-        }
-        result.Sort(StringComparer.Ordinal);
-        return Array.AsReadOnly(result.ToArray());
-    }
-
-    /// <summary>检查两个节点是否存在静态空间连接。</summary>
-    public bool HasSpatialConnection(string source, string target)
-    {
-        foreach (var edge in GetSpatialEdges(source))
-        {
-            if (string.Equals(edge.source, target, StringComparison.Ordinal) ||
-                string.Equals(edge.target, target, StringComparison.Ordinal)) return true;
-        }
-        return false;
-    }
-
     private void AddSemanticIndex(string id, SemanticEdgeDefinition edge)
     {
         if (!semanticByNode.TryGetValue(id, out var list))
@@ -685,13 +567,4 @@ public sealed class StaticSceneSemanticGraph
         list.Add(edge);
     }
 
-    private void AddSpatialIndex(string id, SpatialEdgeDefinition edge)
-    {
-        if (!spatialByNode.TryGetValue(id, out var list))
-        {
-            list = new List<SpatialEdgeDefinition>();
-            spatialByNode[id] = list;
-        }
-        list.Add(edge);
-    }
 }

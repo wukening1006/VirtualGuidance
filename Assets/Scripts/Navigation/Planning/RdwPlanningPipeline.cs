@@ -10,8 +10,6 @@ public sealed class RdwPlanningSettings
 {
     [SerializeField, Tooltip("规划运行模式；第一轮必须保持 Shadow。")]
     private RdwPlanningMode mode = RdwPlanningMode.Shadow;
-    [SerializeField, Min(0.1f), Tooltip("Local Graph 普通空间边最大距离，单位：米。")]
-    private float maximumGraphEdgeDistanceMeters = 12f;
     [SerializeField, Min(0f), Tooltip("Hard Filter 最小净空，单位：米。")]
     private float hardClearanceMeters = 1.2f;
     [SerializeField, Range(0f, 1f), Tooltip("Hard Filter 允许的最大归一化 Gain Cost。")]
@@ -24,7 +22,6 @@ public sealed class RdwPlanningSettings
     /// <summary>规划运行模式。</summary>
     public RdwPlanningMode Mode => mode;
     /// <summary>Local Graph 最大普通边距离。</summary>
-    public float MaximumGraphEdgeDistanceMeters => Mathf.Max(0.1f, maximumGraphEdgeDistanceMeters);
     /// <summary>Hard Filter 最小净空。</summary>
     public float HardClearanceMeters => Mathf.Max(0f, hardClearanceMeters);
     /// <summary>Hard Filter 最大 Gain Cost。</summary>
@@ -106,7 +103,7 @@ public sealed class RdwPlanningSnapshotFactory
 /// </summary>
 public sealed class RdwPlanningNodeFactory
 {
-    /// <summary>把 Candidate Set 与静态空间图转换为规划节点集合。</summary>
+    /// <summary>把 Candidate Set 与运行时 ViewPoint 转换为规划节点集合。</summary>
     public IReadOnlyList<PlanningNode> Capture(
             RdwPlanningSnapshot snapshot,
             NavigationCandidateSet candidateSet,
@@ -117,8 +114,6 @@ public sealed class RdwPlanningNodeFactory
         {
             return result.AsReadOnly();
         }
-
-        var graph = navigationTargets.SemanticGraph;
 
         foreach (var candidate in candidateSet.Candidates)
         {
@@ -137,8 +132,7 @@ public sealed class RdwPlanningNodeFactory
                 candidate.TargetRole,
                 ResolveSemanticImportance(candidate),
                 ResolveTaskRelevance(snapshot, candidate),
-                IsVisited(snapshot.VisitedNodeIds, candidate.TargetId),
-                graph != null ? graph.GetSpatialNeighbors(candidate.TargetId) : Array.Empty<string>()));
+                IsVisited(snapshot.VisitedNodeIds, candidate.TargetId)));
         }
         if (!string.IsNullOrWhiteSpace(snapshot.CurrentNodeId) &&
             !ContainsNode(result, snapshot.CurrentNodeId))
@@ -155,8 +149,7 @@ public sealed class RdwPlanningNodeFactory
                 NavigationTargetRole.RouteSubgoal,
                 0f,
                 0f,
-                true,
-                graph != null ? graph.GetSpatialNeighbors(snapshot.CurrentNodeId) : Array.Empty<string>()));
+                true));
         }
         return result.AsReadOnly();
     }
@@ -234,7 +227,7 @@ public sealed class RdwPlanningPipeline
         capability = capabilityProfile;
         snapshotFactory = new RdwPlanningSnapshotFactory();
         nodeFactory = new RdwPlanningNodeFactory();
-        graphBuilder = new RdwLocalGraphBuilder(resolvedSettings.MaximumGraphEdgeDistanceMeters);
+        graphBuilder = new RdwLocalGraphBuilder();
         routePlanner = new RdwBeamRoutePlanner(
             estimator,
             new RdwHardSafetyFilter(

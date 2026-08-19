@@ -142,14 +142,11 @@ public sealed class SemanticPlanningNode
     [JsonProperty("interpretation_notes", Required = Required.Always)] public InterpretationNote[] interpretation_notes = Array.Empty<InterpretationNote>();
     /// <summary>局部语义边。</summary>
     [JsonProperty("semantic_edges", Required = Required.Always)] public SemanticEdgeDefinition[] semantic_edges = Array.Empty<SemanticEdgeDefinition>();
-    /// <summary>局部虚拟空间边；只包含虚拟距离和虚拟方向。</summary>
-    [JsonProperty("spatial_edges", Required = Required.Always)] public SpatialEdgeDefinition[] spatial_edges = Array.Empty<SpatialEdgeDefinition>();
 
     /// <summary>从静态展品知识创建不带物理执行事实的 Planner 节点。</summary>
     public static SemanticPlanningNode From(
         SceneExhibitDefinition exhibit,
-        IEnumerable<SemanticEdgeDefinition> semanticEdges,
-        IEnumerable<SpatialEdgeDefinition> spatialEdges)
+        IEnumerable<SemanticEdgeDefinition> semanticEdges)
     {
         if (exhibit == null || exhibit.knowledge == null) return null;
         return new SemanticPlanningNode
@@ -164,8 +161,7 @@ public sealed class SemanticPlanningNode
             cultural_significance = Copy(exhibit.knowledge.cultural_significance),
             key_concepts = Copy(exhibit.knowledge.key_concepts),
             interpretation_notes = Copy(exhibit.knowledge.interpretation_notes),
-            semantic_edges = Copy(semanticEdges),
-            spatial_edges = Copy(spatialEdges)
+            semantic_edges = Copy(semanticEdges)
         };
     }
 
@@ -177,8 +173,6 @@ public sealed class SemanticPlanningNode
     private static SemanticEdgeDefinition[] Copy(IEnumerable<SemanticEdgeDefinition> values) =>
         new List<SemanticEdgeDefinition>(values ?? Array.Empty<SemanticEdgeDefinition>()).ToArray();
 
-    private static SpatialEdgeDefinition[] Copy(IEnumerable<SpatialEdgeDefinition> values) =>
-        new List<SpatialEdgeDefinition>(values ?? Array.Empty<SpatialEdgeDefinition>()).ToArray();
 }
 
 /// <summary>Semantic-only Planner 请求；不携带 Physical Risk 快照。</summary>
@@ -201,8 +195,6 @@ public sealed class SemanticPlanRequest
     public NaturalLanguageTaskState task_state;
     /// <summary>局部语义节点。</summary>
     public SemanticPlanningNode[] local_semantic_nodes = Array.Empty<SemanticPlanningNode>();
-    /// <summary>局部虚拟空间边。</summary>
-    public SpatialEdgeDefinition[] local_spatial_edges = Array.Empty<SpatialEdgeDefinition>();
     /// <summary>局部语义边。</summary>
     public SemanticEdgeDefinition[] local_semantic_edges = Array.Empty<SemanticEdgeDefinition>();
 }
@@ -274,11 +266,11 @@ public sealed class GuidanceVerifierResult
 }
 
 /// <summary>
-/// Unity 侧 Semantic-only 计划验证器；只读取节点成员关系和静态 Spatial Edge。
+/// Unity 侧 Semantic-only 计划验证器；只读取节点成员关系和任务约束。
 /// </summary>
 public static class SemanticPlanVerifier
 {
-    /// <summary>验证计划长度、节点成员关系、重复节点和连续空间边。</summary>
+    /// <summary>验证计划长度、节点成员关系、重复节点和连续候选节点。</summary>
     public static bool TryVerify(
         SemanticPlanRequest request,
         IReadOnlyList<string> orderedNodeIds,
@@ -343,8 +335,6 @@ public static class SemanticPlanVerifier
                 return false;
             }
         }
-
-        // Spatial Edge 只提供虚拟距离、方向和空间上下文，不作为 Planner 候选门禁。
 
         var finalTargetId = request.task?.final_goal?.exhibit_id ?? string.Empty;
         var policy = request.task?.intermediate_policy;
@@ -557,7 +547,7 @@ public static class SemanticPlanProtocol
 /// </summary>
 public sealed class SemanticLocalGraphBuilder
 {
-    /// <summary>根据空间跳数构建局部语义图。</summary>
+    /// <summary>根据当前任务策略从全部展品构建局部语义图。</summary>
     public SemanticPlanRequest Build(
         StaticSceneSemanticGraph graph,
         NaturalLanguageTaskContract task,
@@ -565,8 +555,7 @@ public sealed class SemanticLocalGraphBuilder
         string sessionId,
         string requestId,
         int generation,
-        int taskStateVersion,
-        int maximumSpatialHops = 3)
+        int taskStateVersion)
     {
         if (graph == null) throw new ArgumentNullException(nameof(graph));
         if (task == null) throw new ArgumentNullException(nameof(task));
@@ -577,19 +566,33 @@ public sealed class SemanticLocalGraphBuilder
             throw new ArgumentException("current exhibit is not present in the static semantic graph", nameof(currentExhibitId));
         }
 
-        var included = CollectSpatialNeighborhood(graph, currentExhibitId, maximumSpatialHops);
+        var included = new HashSet<string>(StringComparer.Ordinal) { currentExhibitId };
+        var visited = new HashSet<string>(taskState.visited_exhibit_ids ?? Array.Empty<string>(), StringComparer.Ordinal);
+        var finalTargetId = task.final_goal.exhibit_id;
+        var finalReady = taskState.intermediate_visit_count >= task.intermediate_policy.minimum_visits;
+        var finalRequired = taskState.phase == "final_approach" ||
+                            taskState.intermediate_visit_count >= task.intermediate_policy.maximum_visits;
+        foreach (var exhibit in graph.GetAllExhibits())
+        {
+            if (exhibit == null || string.Equals(exhibit.id, currentExhibitId, StringComparison.Ordinal) || visited.Contains(exhibit.id)) continue;
+            if (string.Equals(exhibit.id, finalTargetId, StringComparison.Ordinal))
+            {
+                if (finalReady || finalRequired) included.Add(exhibit.id);
+                continue;
+            }
+            if (!finalRequired) included.Add(exhibit.id);
+        }
+        if (finalRequired && graph.TryGetExhibit(finalTargetId, out _)) included.Add(finalTargetId);
         var nodes = new List<SemanticPlanningNode>();
         foreach (var exhibitId in included)
         {
             if (!graph.TryGetExhibit(exhibitId, out var exhibit)) continue;
             nodes.Add(SemanticPlanningNode.From(
                 exhibit,
-                FilterSemanticEdges(graph.SemanticEdges, included),
-                FilterSpatialEdges(graph.SpatialEdges, included)));
+                FilterSemanticEdges(graph.SemanticEdges, included)));
         }
         nodes.Sort((left, right) => string.CompareOrdinal(left.id, right.id));
         var localSemanticEdges = FilterSemanticEdges(graph.SemanticEdges, included);
-        var localSpatialEdges = FilterSpatialEdges(graph.SpatialEdges, included);
         return new SemanticPlanRequest
         {
             session_id = sessionId ?? string.Empty,
@@ -599,32 +602,8 @@ public sealed class SemanticLocalGraphBuilder
             task = task,
             task_state = taskState,
             local_semantic_nodes = nodes.ToArray(),
-            local_semantic_edges = localSemanticEdges,
-            local_spatial_edges = localSpatialEdges
+            local_semantic_edges = localSemanticEdges
         };
-    }
-
-    private static HashSet<string> CollectSpatialNeighborhood(
-        StaticSceneSemanticGraph graph,
-        string root,
-        int maximumHops)
-    {
-        var included = new HashSet<string>(StringComparer.Ordinal) { root };
-        var frontier = new List<string> { root };
-        for (var hop = 0; hop < Math.Max(0, maximumHops); hop++)
-        {
-            var next = new List<string>();
-            foreach (var nodeId in frontier)
-            {
-                foreach (var neighbor in graph.GetSpatialNeighbors(nodeId))
-                {
-                    if (included.Add(neighbor)) next.Add(neighbor);
-                }
-            }
-            frontier = next;
-            if (frontier.Count == 0) break;
-        }
-        return included;
     }
 
     private static SemanticEdgeDefinition[] FilterSemanticEdges(
@@ -639,17 +618,6 @@ public sealed class SemanticLocalGraphBuilder
         return result.ToArray();
     }
 
-    private static SpatialEdgeDefinition[] FilterSpatialEdges(
-        IEnumerable<SpatialEdgeDefinition> edges,
-        HashSet<string> included)
-    {
-        var result = new List<SpatialEdgeDefinition>();
-        foreach (var edge in edges ?? Array.Empty<SpatialEdgeDefinition>())
-        {
-            if (edge != null && included.Contains(edge.source) && included.Contains(edge.target)) result.Add(edge);
-        }
-        return result.ToArray();
-    }
 }
 
 /// <summary>Unity 执行前使用的物理安全候选；不作为 Semantic-only Planner 输入。</summary>

@@ -3,12 +3,10 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 保存局部导航图中的运行时节点事实与静态空间邻接。
+/// 保存局部导航图中的运行时节点事实。
 /// </summary>
 public sealed class PlanningNode
 {
-    private readonly IReadOnlyList<string> spatialNeighborIds;
-
     /// <summary>节点唯一 ID。</summary>
     public string NodeId { get; }
     /// <summary>节点的 Virtual XZ 位置，单位：米。</summary>
@@ -21,9 +19,6 @@ public sealed class PlanningNode
     public float TaskRelevance { get; }
     /// <summary>创建快照时该节点是否已访问。</summary>
     public bool Visited { get; }
-    /// <summary>静态虚拟空间拓扑邻居的只读副本。</summary>
-    public IReadOnlyList<string> SpatialNeighborIds => spatialNeighborIds;
-
     /// <summary>创建不可变的规划节点。</summary>
     public PlanningNode(
         string nodeId,
@@ -31,8 +26,7 @@ public sealed class PlanningNode
         NavigationTargetRole targetRole,
         float semanticImportance,
         float taskRelevance,
-        bool visited,
-        IEnumerable<string> spatialNeighbors = null)
+        bool visited)
     {
         NodeId = nodeId ?? string.Empty;
         VirtualPositionXZ = virtualPositionXZ;
@@ -40,12 +34,11 @@ public sealed class PlanningNode
         SemanticImportance = Mathf.Clamp01(semanticImportance);
         TaskRelevance = Mathf.Clamp01(taskRelevance);
         Visited = visited;
-        spatialNeighborIds = Array.AsReadOnly(new List<string>(spatialNeighbors ?? Array.Empty<string>()).ToArray());
     }
 }
 
 /// <summary>
-/// 描述 Local Graph 的静态空间边和可选动态 RDW 评估。
+/// 描述 Local Graph 的动态几何边和可选动态 RDW 评估。
 /// </summary>
 public sealed class PlanningEdge
 {
@@ -55,10 +48,6 @@ public sealed class PlanningEdge
     public string ToNodeId { get; }
     /// <summary>Virtual XZ 距离，单位：米。</summary>
     public float DistanceMeters { get; }
-    /// <summary>静态空间拓扑是否允许连接。</summary>
-    public bool Reachable { get; }
-    /// <summary>静态不可达原因码。</summary>
-    public string ReachabilityReason { get; }
     /// <summary>基于根快照生成的动态 RDW 评估；静态图中为 null。</summary>
     public RdwEdgeEvaluation Evaluation { get; }
 
@@ -67,15 +56,11 @@ public sealed class PlanningEdge
         string fromNodeId,
         string toNodeId,
         float distanceMeters,
-        bool reachable,
-        string reachabilityReason = "",
         RdwEdgeEvaluation evaluation = null)
     {
         FromNodeId = fromNodeId ?? string.Empty;
         ToNodeId = toNodeId ?? string.Empty;
         DistanceMeters = Mathf.Max(0f, distanceMeters);
-        Reachable = reachable;
-        ReachabilityReason = reachabilityReason ?? string.Empty;
         Evaluation = evaluation;
     }
 
@@ -86,8 +71,6 @@ public sealed class PlanningEdge
             FromNodeId,
             ToNodeId,
             DistanceMeters,
-            Reachable,
-            ReachabilityReason,
             evaluation);
     }
 }
@@ -172,20 +155,15 @@ public sealed class LocalNavigationGraph
 }
 
 /// <summary>
-/// 从冻结节点事实构建确定性的局部空间图。
+/// 从冻结节点事实构建确定性的局部动态几何图。
 /// </summary>
 public sealed class RdwLocalGraphBuilder
 {
-    private readonly float maximumEdgeDistanceMeters;
-
     /// <summary>创建局部图构建器。</summary>
-    public RdwLocalGraphBuilder(float maximumEdgeDistance = 12f)
-    {
-        maximumEdgeDistanceMeters = Mathf.Max(0.01f, maximumEdgeDistance);
-    }
+    public RdwLocalGraphBuilder() { }
 
     /// <summary>
-    /// 构建 Local Graph；唯一静态连接来源是 spatial_edges，距离只作为边事实。
+    /// 构建 Local Graph；候选节点之间直接建立动态几何边。
     /// </summary>
     public LocalNavigationGraph Build(
         RdwPlanningSnapshot snapshot,
@@ -228,26 +206,14 @@ public sealed class RdwLocalGraphBuilder
                 }
 
                 var distance = Vector2.Distance(from.VirtualPositionXZ, to.VirtualPositionXZ);
-                var reachable = Contains(from.SpatialNeighborIds, to.NodeId);
                 edges.Add(new PlanningEdge(
                     from.NodeId,
                     to.NodeId,
-                    distance,
-                    reachable,
-                    reachable ? string.Empty : "edge_distance_exceeded"));
+                    distance));
             }
         }
 
         return new LocalNavigationGraph(snapshot.SnapshotId, orderedNodes, edges);
     }
 
-    private static bool Contains(IReadOnlyList<string> values, string expected)
-    {
-        if (values == null) return false;
-        foreach (var value in values)
-        {
-            if (string.Equals(value, expected, StringComparison.Ordinal)) return true;
-        }
-        return false;
-    }
 }

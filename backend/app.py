@@ -54,7 +54,6 @@ def create_app(
             schema_version=pipeline.schema_version,
             exhibit_count=pipeline.exhibit_count,
             semantic_edge_count=pipeline.semantic_edge_count,
-            spatial_edge_count=pipeline.spatial_edge_count,
             semantic_ready=pipeline.semantic_ready,
         )
 

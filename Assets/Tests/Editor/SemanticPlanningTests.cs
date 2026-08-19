@@ -59,18 +59,9 @@ public sealed class SemanticPlanningTests
 
     /// <summary>没有 direct Spatial Edge 的中间展品仍允许进入计划。</summary>
     [Test]
-    public void SemanticPlanVerifierAllowsCandidateWithoutDirectSpatialEdge()
+    public void SemanticPlanVerifierAllowsCandidateWithoutDirectSemanticEdge()
     {
         var request = CreateRequest(0, "exploring", "E1", new[] { "E1" }, string.Empty);
-        request.local_spatial_edges = new[]
-        {
-            Spatial("E1", "E2"),
-            Spatial("E2", "E3"),
-            Spatial("E3", "E4"),
-            Spatial("E4", "E5"),
-            Spatial("E1", "E5")
-        };
-
         Assert.That(SemanticPlanVerifier.TryVerify(request, new[] { "E8" }, out var reason), Is.True, reason);
     }
 
@@ -195,15 +186,6 @@ public sealed class SemanticPlanningTests
                 new SemanticPlanningNode { id = "E5" },
                 new SemanticPlanningNode { id = "E8" }
             },
-            local_spatial_edges = new[]
-            {
-                Spatial("E1", "E2"),
-                Spatial("E2", "E3"),
-                Spatial("E3", "E4"),
-                Spatial("E4", "E5"),
-                Spatial("E1", "E5"),
-                Spatial("E1", "E8")
-            },
             local_semantic_edges = new[]
             {
                 Semantic("E2", "E5"),
@@ -211,11 +193,6 @@ public sealed class SemanticPlanningTests
                 Semantic("E4", "E5")
             }
         };
-    }
-
-    private static SpatialEdgeDefinition Spatial(string source, string target)
-    {
-        return new SpatialEdgeDefinition { source = source, target = target, bidirectional = true };
     }
 
     private static SemanticEdgeDefinition Semantic(string source, string target)

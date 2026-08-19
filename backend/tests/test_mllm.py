@@ -158,17 +158,6 @@ def request_for(
                                 "evidence_status": "supported",
                             }
                         ],
-                        "spatial_edges": [] if target_id == "E5" else [
-                            {
-                                "id": "SP_TEST",
-                                "source": "E1",
-                                "target": target_id,
-                                "relation_type": "adjacent_diagonal",
-                                "bidirectional": True,
-                                "virtual_distance_m": 4.63,
-                                "relative_direction_from_source": "diagonal",
-                            }
-                        ],
                 }
                 for target_id in model_candidate_ids
             ],
@@ -303,7 +292,6 @@ def test_condition_context_snapshots_freeze_six_information_boundaries() -> None
         "themes",
         "interpretation_notes",
         "semantic_edges",
-        "spatial_edges",
     ],
 )
 def test_semantic_candidate_requires_complete_v3_context(missing_field: str) -> None:
