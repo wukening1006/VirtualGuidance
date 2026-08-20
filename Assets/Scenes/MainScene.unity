@@ -224,6 +224,142 @@ Canvas:
   m_SortingLayerID: 0
   m_SortingOrder: 0
   m_TargetDisplay: 0
+--- !u!1 &2020663
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2020664}
+  - component: {fileID: 2020666}
+  - component: {fileID: 2020665}
+  m_Layer: 8
+  m_Name: ResetNarrationText
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!224 &2020664
+RectTransform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2020663}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1547201266}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_AnchorMin: {x: 0, y: 0.5}
+  m_AnchorMax: {x: 1, y: 0.5}
+  m_AnchoredPosition: {x: -0.00012207031, y: -114.599976}
+  m_SizeDelta: {x: -64, y: 60}
+  m_Pivot: {x: 0.5, y: 0.5}
+--- !u!114 &2020665
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2020663}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f4688fdb7df04437aeb418b961361dc5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_Material: {fileID: 0}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_RaycastTarget: 1
+  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
+  m_Maskable: 1
+  m_OnCullStateChanged:
+    m_PersistentCalls:
+      m_Calls: []
+  m_text: 
+  m_isRightToLeft: 0
+  m_fontAsset: {fileID: 11400000, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
+  m_sharedMaterial: {fileID: 2087391143}
+  m_fontSharedMaterials:
+  - {fileID: 2087391143}
+  m_fontMaterial: {fileID: 2087391143}
+  m_fontMaterials:
+  - {fileID: 2087391143}
+  m_fontColor32:
+    serializedVersion: 2
+    rgba: 4294967295
+  m_fontColor: {r: 1, g: 1, b: 1, a: 1}
+  m_enableVertexGradient: 0
+  m_colorMode: 3
+  m_fontColorGradient:
+    topLeft: {r: 1, g: 1, b: 1, a: 1}
+    topRight: {r: 1, g: 1, b: 1, a: 1}
+    bottomLeft: {r: 1, g: 1, b: 1, a: 1}
+    bottomRight: {r: 1, g: 1, b: 1, a: 1}
+  m_fontColorGradientPreset: {fileID: 0}
+  m_spriteAsset: {fileID: 0}
+  m_tintAllSprites: 0
+  m_StyleSheet: {fileID: 0}
+  m_TextStyleHashCode: -1183493901
+  m_overrideHtmlColors: 0
+  m_faceColor:
+    serializedVersion: 2
+    rgba: 4294967295
+  m_fontSize: 34
+  m_fontSizeBase: 34
+  m_fontWeight: 400
+  m_enableAutoSizing: 0
+  m_fontSizeMin: 18
+  m_fontSizeMax: 72
+  m_fontStyle: 0
+  m_HorizontalAlignment: 2
+  m_VerticalAlignment: 512
+  m_textAlignment: 65535
+  m_characterSpacing: 0
+  m_wordSpacing: 0
+  m_lineSpacing: 0
+  m_lineSpacingMax: 0
+  m_paragraphSpacing: 0
+  m_charWidthMaxAdj: 0
+  m_enableWordWrapping: 1
+  m_wordWrappingRatios: 0.4
+  m_overflowMode: 1
+  m_linkedTextComponent: {fileID: 0}
+  parentLinkedComponent: {fileID: 0}
+  m_enableKerning: 1
+  m_enableExtraPadding: 0
+  checkPaddingRequired: 0
+  m_isRichText: 1
+  m_parseCtrlCharacters: 1
+  m_isOrthographic: 1
+  m_isCullingEnabled: 0
+  m_horizontalMapping: 0
+  m_verticalMapping: 0
+  m_uvLineOffset: 0
+  m_geometrySortingOrder: 0
+  m_IsTextObjectScaleStatic: 0
+  m_VertexBufferAutoSizeReduction: 0
+  m_useMaxVisibleDescender: 1
+  m_pageToDisplay: 1
+  m_margin: {x: 0, y: 0, z: 0, w: 0}
+  m_isUsingLegacyAnimationComponent: 0
+  m_isVolumetricText: 0
+  m_hasFontAssetChanged: 0
+  m_baseMaterial: {fileID: 0}
+  m_maskOffset: {x: 0, y: 0, z: 0, w: 0}
+--- !u!222 &2020666
+CanvasRenderer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2020663}
+  m_CullTransparentMesh: 1
 --- !u!1 &2519522
 GameObject:
   m_ObjectHideFlags: 0
@@ -539,9 +675,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 5c27bdedfa424fe8897aca2e60401d47, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  userPoseTracker: {fileID: 0}
-  navigationTargets: {fileID: 0}
-  arrivalDistanceMeters: 0.75
+  userPoseTracker: {fileID: 2100100002}
+  navigationTargets: {fileID: 19950178}
+  arrivalDistanceMeters: 1
 --- !u!114 &19950177
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -554,8 +690,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7dd6f08d18054ba1a84fd29a7372532a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  navigationTargets: {fileID: 0}
-  riskEvaluator: {fileID: 0}
+  navigationTargets: {fileID: 19950178}
+  riskEvaluator: {fileID: 2100100012}
 --- !u!114 &19950178
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -569,7 +705,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   rebuildOnAwake: 1
-  userPoseTracker: {fileID: 0}
+  userPoseTracker: {fileID: 2100100002}
   forwardHalfAngleDegrees: 30
   forwardEnterHalfAngleDegrees: 25
   forwardExitHalfAngleDegrees: 35
@@ -590,7 +726,7 @@ MonoBehaviour:
     taskId: T2_main_target
     participantId: P001
     condition: B1_semantic_only
-    userTask: "\u6211\u60F3\u53C2\u89C2\u9752\u94DC\u795E\u6811\u3002\u5728\u5230\u8FBE\u5B83\u4E4B\u524D\uFF0C\u8BF7\u5E26\u6211\u6D4F\u89C8\u51E0\u4EF6\u6709\u52A9\u4E8E\u7406\u89E3\u4E09\u661F\u5806\u6587\u5316\u7684\u76F8\u5173\u5C55\u54C1\uFF0C\u5E76\u8BF4\u660E\u5B83\u4EEC\u4E0E\u76EE\u6807\u5C55\u54C1\u4E4B\u95F4\u7684\u8054\u7CFB\uFF0C\u6700\u540E\u5E26\u6211\u62B5\u8FBE\u9752\u94DC\u795E\u6811\u3002"
+    userTask: "\u6211\u60F3\u53C2\u89C2\u9752\u94DC\u795E\u6811\u3002\u5728\u5230\u8FBE\u5B83\u4E4B\u524D\uFF0C\u8BF7\u5E26\u6211\u6D4F\u89C8\u51E0\u4EF6\u6709\u52A9\u4E8E\u7406\u89E3\u4E09\u661F\u5806\u6587\u5316\u7684\u76F8\u5173\u5C55\u54C1."
     startExhibitId: E1
     finalTargetId: E5
     minimumIntermediateVisits: 3
@@ -13129,7 +13265,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 400774969}
   serializedVersion: 2
-  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
@@ -28261,6 +28397,7 @@ MonoBehaviour:
   actionText: {fileID: 591438180}
   gazeText: {fileID: 795234305}
   safetyText: {fileID: 1137473442}
+  resetNarrationText: {fileID: 2020665}
 --- !u!224 &1094502201
 RectTransform:
   m_ObjectHideFlags: 0
@@ -34700,6 +34837,7 @@ RectTransform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1137473444}
+  - {fileID: 2020664}
   m_Father: {fileID: 1094502201}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
@@ -36187,8 +36325,8 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   resetSemanticInterventionManager: {fileID: 0}
-  resetSemanticInterventionEnabled: 1
-  resetSemanticMediumThresholdDegrees: 60
+  resetSemanticInterventionEnabled: 0
+  resetSemanticMediumThresholdDegrees: 30
   resetSemanticHighThresholdDegrees: 120
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 0
@@ -36215,25 +36353,25 @@ MonoBehaviour:
   thomasApfMaxForceMagnitude: 100
   rdwPlanningSettings:
     mode: 2
-    hardClearanceMeters: 1.5
-    maximumGainCost: 0.6
+    hardClearanceMeters: 1.6
+    maximumGainCost: 0.5
     routeSearch:
-      maximumDepth: 2
-      beamWidth: 3
+      maximumDepth: 3
+      beamWidth: 4
       topK: 3
       distanceNormalizationMeters: 12
       clearanceNormalizationMeters: 3
-      depthDiscount: 0.9
+      depthDiscount: 0.857
     utilityWeights:
       semanticImportance: 0.5
       taskRelevance: 0.8
-      safetyMargin: 2.5
-      rdwBenefit: 1
+      safetyMargin: 4
+      rdwBenefit: 3
       unvisitedCoverage: 0.1
-      gainCost: 1.3
+      gainCost: 4
       distanceCost: 0.2
-      turnCost: 0.7
-      resetPressure: 1.8
+      turnCost: 3
+      resetPressure: 6
   guidanceExecutor: {fileID: 1780042341}
   experimentDashboard: {fileID: 891366376}
   experimentLogger: {fileID: 891366375}
@@ -36545,7 +36683,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 60b9711452e84cb98221e257682b3ef1, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  movementHintText: {fileID: 0}
+  movementHintText: {fileID: 591438180}
 --- !u!114 &1780042340
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -36558,7 +36696,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2c8fb36311414ff8a9c514cb9f9749cb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  narrationText: {fileID: 0}
+  narrationText: {fileID: 1971076563}
   idleText: Guide narration will appear here.
 --- !u!114 &1780042341
 MonoBehaviour:
@@ -39030,7 +39168,7 @@ MonoBehaviour:
   riskEvaluator: {fileID: 2100100012}
   guidanceCoordinator: {fileID: 0}
   physicalSpaceCalibration: {fileID: 0}
-  visualizationOrigin: {x: 40, y: 7, z: 0.21}
+  visualizationOrigin: {x: 45, y: 7, z: 0.21}
   directionArrowLength: 0.9
   lineWidth: 0.04
   researcherOnlyLayerName: ResearcherOnly

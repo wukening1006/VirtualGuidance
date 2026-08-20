@@ -771,7 +771,7 @@ class SemanticPlanDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ordered_node_ids: list[str] = Field(min_length=1, max_length=3)
+    ordered_node_ids: list[str] = Field(min_length=1, max_length=1)
     narration: str = Field(min_length=1, max_length=200)
 
     @classmethod
@@ -802,7 +802,7 @@ class SemanticPlanResponse(BaseModel):
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     generation: int = Field(ge=1)
-    ordered_node_ids: list[str] = Field(min_length=1, max_length=3)
+    ordered_node_ids: list[str] = Field(min_length=1, max_length=1)
     narration: str = Field(min_length=1, max_length=200)
     verifier: VerifierResult
 

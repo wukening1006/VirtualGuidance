@@ -36,7 +36,7 @@ SEMANTIC_PLAN_TEMPERATURE = 0.0
 SEMANTIC_PLAN_MAX_TOKENS = 512
 SEMANTIC_PLAN_SYSTEM_PROMPT = (
     "你是博物馆自然语言任务的 Semantic-only Local Planner。"
-    "只能依据 task、task_state 和冻结的任务候选节点生成 1-3 个展品节点。"
+    "只能依据 task、task_state 和冻结的任务候选节点生成 1 个展品节点。"
     "final_goal 是不可更改的最终目标；达到 minimum_visits 前不得选择它，"
     "达到 maximum_visits 或进入 final_approach 后必须只选择它。"
     "Choose from the allowed exhibit candidates based on semantic relevance "
@@ -56,7 +56,7 @@ SEMANTIC_PLAN_JSON_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
             "minItems": 1,
-            "maxItems": 3,
+            "maxItems": 1,
         },
         "narration": {"type": "string", "minLength": 1, "maxLength": 200},
     },
@@ -133,26 +133,18 @@ class DeterministicSemanticPlanGenerator:
                 narration="前面的参观已经建立了理解线索，现在前往最终目标展品。",
             )
 
-        path: list[str] = []
-        seen = {current}
-        for _ in range(3):
-            candidates = [
-                node_id
-                for node_id in candidate_ids
-                if node_id != final_target_id
-                and node_id not in seen
-                and node_id not in visited
-            ]
-            if not candidates:
-                break
-            current = candidates[0]
-            path.append(current)
-            seen.add(current)
-        if not path:
+        candidates = [
+            node_id
+            for node_id in candidate_ids
+            if node_id != final_target_id
+            and node_id != current
+            and node_id not in visited
+        ]
+        if not candidates:
             raise ValueError("semantic planner found no local executable graph node")
         return SemanticPlanDraft(
-            ordered_node_ids=path,
-            narration="先参观这些相关展品，逐步建立理解最终目标所需的文化线索。",
+            ordered_node_ids=[candidates[0]],
+            narration="先参观一个相关展品，建立理解最终目标所需的文化线索。",
         )
 
 

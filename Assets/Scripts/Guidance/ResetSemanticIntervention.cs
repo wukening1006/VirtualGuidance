@@ -166,6 +166,8 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
 
     /// <summary>当前 Reset 语义旁路是否正在等待或展示话术。</summary>
     public bool IsResetInterventionActive => resetActive;
+    /// <summary>Reset 语义话术已通过协议校验并可交给 Participant UI 显示时触发。</summary>
+    public event Action<string> ResetSemanticNarrationReceived;
     /// <summary>最近一次 Reset 按转角确定的等级。</summary>
     public ResetSemanticInterventionLevel CurrentLevel { get; private set; }
     /// <summary>Medium 阈值，单位：度。</summary>
@@ -291,6 +293,7 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
 
         // 等级由本地转角确定；后端返回的等级只保留为协议字段，不参与控制。
         narrationPlayer?.PlayReset(response.narration);
+        ResetSemanticNarrationReceived?.Invoke(response.narration);
         experimentLogger?.LogStatus(
             "reset_semantic_intervention_received",
             null,

@@ -270,7 +270,7 @@ public sealed class GuidanceVerifierResult
 /// </summary>
 public static class SemanticPlanVerifier
 {
-    /// <summary>验证计划长度、节点成员关系、重复节点和连续候选节点。</summary>
+    /// <summary>验证单节点计划的成员关系、重复节点和任务约束。</summary>
     public static bool TryVerify(
         SemanticPlanRequest request,
         IReadOnlyList<string> orderedNodeIds,
@@ -288,7 +288,7 @@ public static class SemanticPlanVerifier
             failureReason = "semantic_plan_task_contract_missing";
             return false;
         }
-        if (orderedNodeIds == null || orderedNodeIds.Count < 1 || orderedNodeIds.Count > 3)
+        if (orderedNodeIds == null || orderedNodeIds.Count != 1)
         {
             failureReason = "semantic_plan_length_invalid";
             return false;

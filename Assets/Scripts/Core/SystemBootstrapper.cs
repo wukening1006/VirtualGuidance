@@ -551,10 +551,23 @@ public sealed class SystemBootstrapper : MonoBehaviour
         agentClient.GuidanceRequestFailed.AddListener(guidanceDebugPanel.ShowStatus);
         agentClient.GuidanceRequestStarted.RemoveListener(guidanceDebugPanel.ShowStatus);
         agentClient.GuidanceRequestStarted.AddListener(guidanceDebugPanel.ShowStatus);
+
+        if (resetSemanticInterventionManager != null && participantUiController != null)
+        {
+            resetSemanticInterventionManager.ResetSemanticNarrationReceived -=
+                participantUiController.ShowResetNarration;
+            resetSemanticInterventionManager.ResetSemanticNarrationReceived +=
+                participantUiController.ShowResetNarration;
+        }
     }
 
     private void OnDestroy()
     {
+        if (resetSemanticInterventionManager != null && participantUiController != null)
+        {
+            resetSemanticInterventionManager.ResetSemanticNarrationReceived -=
+                participantUiController.ShowResetNarration;
+        }
         UnbindRdwPipeline();
         rotationGainController?.ConfigureRdwCommandSink(null);
         motionDetector?.SetExternallyDriven(false);

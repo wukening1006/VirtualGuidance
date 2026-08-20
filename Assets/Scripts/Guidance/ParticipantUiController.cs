@@ -13,6 +13,8 @@ public sealed class ParticipantUiController : MonoBehaviour
     [SerializeField] private TMP_Text actionText;
     [SerializeField] private TMP_Text gazeText;
     [SerializeField] private TMP_Text safetyText;
+    [Tooltip("显示 OURS Reset 期间语义干预话术的 TextMeshPro 文本控件。")]
+    [SerializeField] private TMP_Text resetNarrationText;
 
     public bool SafetyVisible => safetyPanel != null && safetyPanel.alpha > 0.5f;
     /// <summary>当前安全面板是否正在显示本次 Reset 的 participant-facing HUD。</summary>
@@ -90,6 +92,17 @@ public sealed class ParticipantUiController : MonoBehaviour
         }
     }
 
+    /// <summary>在不覆盖物理安全指令的前提下显示 Reset 期间的语义干预话术。</summary>
+    public void ShowResetNarration(string narration)
+    {
+        if (!ResetHudVisible || resetNarrationText == null)
+        {
+            return;
+        }
+
+        resetNarrationText.text = string.IsNullOrWhiteSpace(narration) ? string.Empty : narration;
+    }
+
     /// <summary>清理 Reset HUD；不会冻结 Camera、XR Tracking 或时间流逝。</summary>
     public void HideResetHud()
     {
@@ -103,6 +116,8 @@ public sealed class ParticipantUiController : MonoBehaviour
         {
             safetyText.text = string.Empty;
         }
+
+        ClearResetNarrationText();
 
         SetPanels(showGuidance: false, showSafety: false);
     }
@@ -128,6 +143,7 @@ public sealed class ParticipantUiController : MonoBehaviour
     {
         ResetHudVisible = isResetHud;
         ClearGuidanceText();
+        ClearResetNarrationText();
         if (safetyText != null)
         {
             safetyText.text = message;
@@ -146,6 +162,14 @@ public sealed class ParticipantUiController : MonoBehaviour
 
         SetCanvasGroup(guidancePanel, showGuidance);
         SetCanvasGroup(safetyPanel, showSafety);
+    }
+
+    private void ClearResetNarrationText()
+    {
+        if (resetNarrationText != null)
+        {
+            resetNarrationText.text = string.Empty;
+        }
     }
 
     private static void SetCanvasGroup(CanvasGroup group, bool visible)

@@ -33,6 +33,18 @@ public sealed class SemanticPlanningTests
         Assert.That(reason, Is.EqualTo("semantic_plan_empty"));
     }
 
+    /// <summary>单次语义规划不得提交多个子目标。</summary>
+    [Test]
+    public void SemanticPlanVerifierRejectsMultipleTargets()
+    {
+        var request = CreateRequest(0, "exploring", "E1", new[] { "E1" }, string.Empty);
+
+        Assert.That(
+            SemanticPlanVerifier.TryVerify(request, new[] { "E2", "E3" }, out var reason),
+            Is.False);
+        Assert.That(reason, Is.EqualTo("semantic_plan_length_invalid"));
+    }
+
     /// <summary>完成三件中间展品后允许以单节点计划前往最终目标。</summary>
     [Test]
     public void SemanticPlanVerifierAllowsFinalAfterMinimumVisits()

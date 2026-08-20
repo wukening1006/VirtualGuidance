@@ -101,6 +101,15 @@ def test_semantic_request_rejects_unknown_node() -> None:
         SemanticPlanRequest.model_validate(payload)
 
 
+def test_semantic_plan_rejects_multiple_targets() -> None:
+    payload = semantic_payload()
+    with pytest.raises(ValidationError):
+        SemanticPlanDraft(
+            ordered_node_ids=["E2", "E3"],
+            narration="不应一次提交多个子目标",
+        )
+
+
 def test_semantic_plan_endpoint_generates_related_intermediate_route() -> None:
     config_dir = Path(__file__).resolve().parents[2] / "Assets" / "Configs"
     app = create_app(config_dir=config_dir, semantic_planner=DeterministicSemanticPlanGenerator())
@@ -110,7 +119,7 @@ def test_semantic_plan_endpoint_generates_related_intermediate_route() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["planning_schema_version"] == "semantic-local-planning-v2"
-    assert body["ordered_node_ids"] == ["E2", "E3", "E4"]
+    assert body["ordered_node_ids"] == ["E2"]
     assert body["verifier"]["approved"] is True
 
 
@@ -140,7 +149,7 @@ def test_semantic_plan_endpoint_falls_back_when_model_fails_or_is_rejected(plann
 
     assert response.status_code == 200
     body = response.json()
-    assert body["ordered_node_ids"] == ["E2", "E3", "E4"]
+    assert body["ordered_node_ids"] == ["E2"]
     assert body["verifier"]["approved"] is True
 
 
