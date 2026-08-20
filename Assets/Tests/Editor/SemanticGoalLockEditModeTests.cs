@@ -33,6 +33,43 @@ public sealed class SemanticGoalLockEditModeTests
         Assert.That(ReserveCandidateSet(state, "blocked", out _), Is.False);
     }
 
+    /// <summary>OURS 动态提交普通路线目标时，必须同步任务目标以保持 Reset 锁身份一致。</summary>
+    [Test]
+    public void CommittedRouteSubgoal_SynchronizesNextTargetId()
+    {
+        var state = new GuidanceRuntimeState();
+        state.Begin("T2_main_target", "E1", string.Empty, "E5");
+        state.ConfigureIntermediateVisitPolicy("测试任务", 3, 4);
+        var candidate = new NavigationCandidate(
+            "E8",
+            NavigationTargetRole.RouteSubgoal,
+            "forward",
+            null,
+            Array.Empty<SemanticEdgeDefinition>());
+        var candidateSet = new NavigationCandidateSet(
+            new[] { candidate.TargetId },
+            new[] { candidate.TargetId },
+            new[] { candidate.TargetId },
+            new[] { candidate },
+            1);
+
+        Assert.That(state.TryReserveCandidateSet(
+            candidateSet,
+            "candidate-set-ours-route",
+            "request-ours-route",
+            "decision-ours-route",
+            "ours_rdw_grounded_topk",
+            CreateRisk(),
+            out var reservation), Is.True);
+        Assert.That(state.TryValidateCandidateSelection(reservation, "E8", out var selected), Is.True);
+        Assert.That(state.CommitCurrentSubgoal(reservation, selected, out var targetReservation), Is.True);
+
+        Assert.That(state.CurrentGuidanceTarget.TargetId, Is.EqualTo("E8"));
+        Assert.That(state.nextTargetId, Is.EqualTo("E8"));
+        Assert.That(targetReservation.TargetId, Is.EqualTo("E8"));
+        Assert.That(state.HasLockedSemanticGoal, Is.True);
+    }
+
     /// <summary>验证取消已提交目标时同步释放其候选集，并允许重新规划。</summary>
     [Test]
     public void AbandonCommittedTarget_ReleasesCandidateSetLock()

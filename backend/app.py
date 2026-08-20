@@ -9,6 +9,10 @@ from fastapi import FastAPI
 from backend.agents.guide_llm import GuideDraftGenerator
 from backend.pipeline import GuidancePipeline
 from backend.route_selection import RouteSelectionGenerator, RouteSelectionPipeline
+from backend.reset_semantic_intervention import (
+    ResetSemanticInterventionGenerator,
+    ResetSemanticInterventionPipeline,
+)
 from backend.semantic_planning import SemanticPlanGenerator, SemanticPlanPipeline
 from backend.schemas import (
     GuidanceRequest,
@@ -18,6 +22,8 @@ from backend.schemas import (
     SemanticPlanResponse,
     RouteSelectionRequest,
     RouteSelectionResponse,
+    ResetSemanticInterventionRequest,
+    ResetSemanticInterventionResponse,
 )
 
 
@@ -33,6 +39,7 @@ def create_app(
     draft_generator: GuideDraftGenerator | None = None,
     route_selector: RouteSelectionGenerator | None = None,
     semantic_planner: SemanticPlanGenerator | None = None,
+    reset_semantic_generator: ResetSemanticInterventionGenerator | None = None,
 ) -> FastAPI:
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
     application.state.pipeline = GuidancePipeline(
@@ -42,6 +49,9 @@ def create_app(
     )
     application.state.route_selection_pipeline = RouteSelectionPipeline(route_selector)
     application.state.semantic_plan_pipeline = SemanticPlanPipeline(semantic_planner)
+    application.state.reset_semantic_pipeline = ResetSemanticInterventionPipeline(
+        reset_semantic_generator
+    )
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -80,6 +90,16 @@ def create_app(
         request: SemanticPlanRequest,
     ) -> SemanticPlanResponse:
         pipeline: SemanticPlanPipeline = application.state.semantic_plan_pipeline
+        return await pipeline.handle(request)
+
+    @application.post(
+        "/api/planning/reset-semantic-intervention",
+        response_model=ResetSemanticInterventionResponse,
+    )
+    async def reset_semantic_intervention(
+        request: ResetSemanticInterventionRequest,
+    ) -> ResetSemanticInterventionResponse:
+        pipeline: ResetSemanticInterventionPipeline = application.state.reset_semantic_pipeline
         return await pipeline.handle(request)
 
     return application

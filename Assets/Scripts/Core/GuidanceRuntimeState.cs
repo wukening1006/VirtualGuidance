@@ -509,6 +509,11 @@ public sealed class GuidanceRuntimeState
 
         guidanceTargetId = selectedCandidate.TargetId;
         guidanceTargetRole = selectedCandidate.TargetRole;
+        if (selectedCandidate.TargetRole == NavigationTargetRole.RouteSubgoal)
+        {
+            // OURS 动态选择的普通路线目标必须同步成为当前任务目标，保证 Reset 锁身份一致。
+            nextTargetId = selectedCandidate.TargetId;
+        }
         stateVersion++;
         decisionStateVersion = stateVersion;
         guidanceGeneration++;

@@ -12,6 +12,8 @@ public sealed class NarrationPlayer : MonoBehaviour
     [Tooltip("没有话术时显示的占位文本。")]
     [SerializeField] private string idleText = string.Empty;
 
+    private bool resetNarrationActive;
+
     private void Awake()
     {
         ResolveReferences();
@@ -41,7 +43,41 @@ public sealed class NarrationPlayer : MonoBehaviour
             return;
         }
 
+        resetNarrationActive = false;
         narrationText.text = string.IsNullOrWhiteSpace(narration) ? idleText : narration;
+    }
+
+    /// <summary>
+    /// 显示 Reset 期间的旁路语义话术；普通 Guidance 播放后会自动覆盖该状态。
+    /// </summary>
+    public void PlayReset(string narration)
+    {
+        ResolveReferences();
+        if (narrationText == null || string.IsNullOrWhiteSpace(narration))
+        {
+            return;
+        }
+
+        resetNarrationActive = true;
+        narrationText.text = narration;
+    }
+
+    /// <summary>
+    /// 清除仍由 Reset 旁路持有的字幕；不会误删 Reset 完成后已恢复的 Guidance。
+    /// </summary>
+    public void ClearReset()
+    {
+        if (!resetNarrationActive)
+        {
+            return;
+        }
+
+        ResolveReferences();
+        resetNarrationActive = false;
+        if (narrationText != null)
+        {
+            narrationText.text = idleText;
+        }
     }
 
     /// <summary>
@@ -50,6 +86,7 @@ public sealed class NarrationPlayer : MonoBehaviour
     public void Clear()
     {
         ResolveReferences();
+        resetNarrationActive = false;
         if (narrationText != null)
         {
             narrationText.text = idleText;

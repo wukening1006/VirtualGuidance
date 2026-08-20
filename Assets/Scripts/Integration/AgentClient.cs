@@ -68,6 +68,27 @@ public interface ISemanticPlanClient
     event Action<string> SemanticPlanRequestFailed;
 }
 
+/// <summary>
+/// 定义 Reset 语义旁路使用的独立传输契约；请求失败不影响物理 Reset。
+/// </summary>
+public interface IResetSemanticInterventionClient
+{
+    /// <summary>当前是否有 Reset 语义请求在途。</summary>
+    bool ResetSemanticInterventionRequestInFlight { get; }
+
+    /// <summary>异步发送 Reset 语义上下文，不阻塞 Reset 控制器。</summary>
+    void RequestResetSemanticIntervention(ResetSemanticContext context);
+
+    /// <summary>取消旧 Reset 语义请求，使响应不再进入表现层。</summary>
+    void CancelPendingResetSemanticIntervention();
+
+    /// <summary>收到严格校验后的 Reset 语义响应。</summary>
+    event Action<ResetSemanticInterventionResponse> ResetSemanticInterventionReceived;
+
+    /// <summary>Reset 语义请求失败；物理 Reset 不受影响。</summary>
+    event Action<string> ResetSemanticInterventionRequestFailed;
+}
+
 /// <summary>表示后端健康检查的容错状态。</summary>
 public enum BackendHealthStatus
 {
@@ -114,7 +135,7 @@ public sealed class BackendHealthStatusInfo
 /// <summary>
 /// Unity 到后端 guidance endpoint 的 HTTP 客户端，只负责请求和解析，不直接执行导览效果。
 /// </summary>
-public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRouteSelectionClient, ISemanticPlanClient
+public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRouteSelectionClient, ISemanticPlanClient, IResetSemanticInterventionClient
 {
     private static readonly HashSet<string> ResponseFieldNames = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -156,10 +177,15 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     [Tooltip("后端 Semantic-only 局部规划 endpoint 地址。")]
     [SerializeField] private string semanticPlanEndpoint =
         "http://127.0.0.1:8000/api/planning/semantic-local";
+    [Tooltip("后端 Reset 语义干预 endpoint 地址。")]
+    [SerializeField] private string resetSemanticInterventionEndpoint =
+        "http://127.0.0.1:8000/api/planning/reset-semantic-intervention";
     [Tooltip("请求超时时间，单位：秒。")]
     [SerializeField] private int requestTimeoutSeconds = 8;
     [Tooltip("Semantic-only 规划请求超时时间，单位：秒；应覆盖后端 MLLM 等待时间。")]
     [SerializeField, Min(1)] private int semanticPlanRequestTimeoutSeconds = 75;
+    [Tooltip("Reset 语义旁路请求超时时间，单位：秒；超时只回退普通 Reset。")]
+    [SerializeField, Min(1)] private int resetSemanticInterventionTimeoutSeconds = 8;
     [Tooltip("后端健康检查地址。")]
     [SerializeField] private string healthEndpoint = "http://127.0.0.1:8000/health";
     [Tooltip("健康检查间隔，单位：秒。")]
@@ -223,6 +249,10 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     public event Action<SemanticPlanResponse> SemanticPlanReceived;
     /// <summary>Semantic-only 规划网络、HTTP 或协议失败。</summary>
     public event Action<string> SemanticPlanRequestFailed;
+    /// <summary>严格验证后的 Reset 语义响应。</summary>
+    public event Action<ResetSemanticInterventionResponse> ResetSemanticInterventionReceived;
+    /// <summary>Reset 语义网络、HTTP 或协议失败。</summary>
+    public event Action<string> ResetSemanticInterventionRequestFailed;
 
     private GuidanceRequest lastRequest;
     private bool requestInFlight;
@@ -236,6 +266,9 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     private bool semanticPlanRequestInFlight;
     private int semanticPlanRequestGeneration;
     private UnityWebRequest activeSemanticPlanRequest;
+    private bool resetSemanticInterventionRequestInFlight;
+    private int resetSemanticInterventionRequestGeneration;
+    private UnityWebRequest activeResetSemanticInterventionRequest;
     private Coroutine healthLoop;
     private BackendHealthStatus backendHealthStatus = BackendHealthStatus.Unknown;
     private int consecutiveHealthCheckFailures;
@@ -250,6 +283,8 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
     public bool RouteSelectionRequestInFlight => routeSelectionRequestInFlight;
     /// <summary>当前是否有语义规划请求等待响应。</summary>
     public bool SemanticPlanRequestInFlight => semanticPlanRequestInFlight;
+    /// <summary>当前是否有 Reset 语义请求等待响应。</summary>
+    public bool ResetSemanticInterventionRequestInFlight => resetSemanticInterventionRequestInFlight;
     /// <summary>后端是否已成功连接且尚未超过离线判定阈值。</summary>
     public bool BackendOnline => backendOnline;
     /// <summary>当前后端健康状态。</summary>
@@ -283,6 +318,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
         CancelPendingRequest();
         CancelPendingRouteSelection();
         CancelPendingSemanticPlan();
+        CancelPendingResetSemanticIntervention();
         healthRequestInFlight = false;
         ResetHealthTracking();
     }
@@ -442,6 +478,38 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
         {
             activeSemanticPlanRequest.Abort();
             activeSemanticPlanRequest = null;
+        }
+    }
+
+    /// <summary>发送独立 Reset 语义旁路请求，不等待或改变物理 Reset。</summary>
+    public void RequestResetSemanticIntervention(ResetSemanticContext context)
+    {
+        if (context == null)
+        {
+            ResetSemanticInterventionRequestFailed?.Invoke("Reset semantic context is missing.");
+            return;
+        }
+        if (resetSemanticInterventionRequestInFlight)
+        {
+            ResetSemanticInterventionRequestFailed?.Invoke(
+                "Reset semantic intervention request is already in progress.");
+            return;
+        }
+
+        var generation = ++resetSemanticInterventionRequestGeneration;
+        resetSemanticInterventionRequestInFlight = true;
+        StartCoroutine(SendResetSemanticInterventionRequest(context, generation));
+    }
+
+    /// <summary>中止独立 Reset 语义请求，并推进 generation。</summary>
+    public void CancelPendingResetSemanticIntervention()
+    {
+        resetSemanticInterventionRequestGeneration++;
+        resetSemanticInterventionRequestInFlight = false;
+        if (activeResetSemanticInterventionRequest != null)
+        {
+            activeResetSemanticInterventionRequest.Abort();
+            activeResetSemanticInterventionRequest = null;
         }
     }
 
@@ -927,12 +995,74 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
         }
     }
 
+    private IEnumerator SendResetSemanticInterventionRequest(
+        ResetSemanticContext context,
+        int transportGeneration)
+    {
+        var json = ResetSemanticInterventionProtocol.SerializeRequest(context);
+        using (var webRequest = new UnityWebRequest(
+                   resetSemanticInterventionEndpoint,
+                   UnityWebRequest.kHttpVerbPOST))
+        {
+            activeResetSemanticInterventionRequest = webRequest;
+            webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+            webRequest.downloadHandler = new DownloadHandlerBuffer();
+            webRequest.timeout = Mathf.Max(1, resetSemanticInterventionTimeoutSeconds);
+            webRequest.SetRequestHeader("Content-Type", "application/json");
+
+            yield return webRequest.SendWebRequest();
+            if (activeResetSemanticInterventionRequest == webRequest)
+            {
+                activeResetSemanticInterventionRequest = null;
+            }
+            if (transportGeneration != resetSemanticInterventionRequestGeneration)
+            {
+                yield break;
+            }
+
+            resetSemanticInterventionRequestInFlight = false;
+            var responseText = webRequest.downloadHandler != null
+                ? webRequest.downloadHandler.text
+                : string.Empty;
+            if (webRequest.result != UnityWebRequest.Result.Success)
+            {
+                ResetSemanticInterventionRequestFailed?.Invoke(
+                    FormatResetSemanticInterventionRequestFailure(webRequest.error, responseText));
+                yield break;
+            }
+
+            if (!ResetSemanticInterventionProtocol.TryParseResponse(
+                    responseText,
+                    out var response,
+                    out var failureReason))
+            {
+                ResetSemanticInterventionRequestFailed?.Invoke(
+                    $"Reset semantic response rejected: {failureReason}.");
+                yield break;
+            }
+
+            ResetSemanticInterventionReceived?.Invoke(response);
+        }
+    }
+
     /// <summary>格式化 Semantic-only 请求的 HTTP 与 Backend 诊断。</summary>
     public static string FormatSemanticPlanRequestFailure(string transportError, string responseBody)
     {
         var guidanceFailure = FormatGuidanceRequestFailure(transportError, responseBody);
         return guidanceFailure.StartsWith("Guidance request failed", StringComparison.Ordinal)
             ? "Semantic plan request failed" +
+              guidanceFailure.Substring("Guidance request failed".Length)
+            : guidanceFailure;
+    }
+
+    /// <summary>格式化 Reset 语义旁路请求的 HTTP 与 Backend 诊断。</summary>
+    public static string FormatResetSemanticInterventionRequestFailure(
+        string transportError,
+        string responseBody)
+    {
+        var guidanceFailure = FormatGuidanceRequestFailure(transportError, responseBody);
+        return guidanceFailure.StartsWith("Guidance request failed", StringComparison.Ordinal)
+            ? "Reset semantic intervention request failed" +
               guidanceFailure.Substring("Guidance request failed".Length)
             : guidanceFailure;
     }

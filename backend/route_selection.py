@@ -35,6 +35,7 @@ ROUTE_SELECTION_SYSTEM_PROMPT = (
     "你是博物馆路线候选选择与讲解模块。"
     "必须遵守 task 中不可变的 final_goal 和 intermediate_policy，并依据 task_state 判断当前阶段。"
     "只能从给定 route_candidates 中选择一个 route_id，并返回 route_id 与 narration。"
+    "请结合 local_semantic_nodes、semantic_themes 和 local_semantic_edges 判断主题连续性、叙事过渡、内容重复与参观历史。"
     "narration 应使用自然语言说明当前展品与最终目标的联系。"
     "不得创建节点或路线，不得输出 gain、reset、安全结论、clearance 或执行方向。"
 )
@@ -99,6 +100,18 @@ class MLLMRouteSelectionGenerator:
                 candidate.model_dump(mode="json")
                 for candidate in request.route_candidates
             ],
+            "local_semantic_nodes": [
+                node.model_dump(mode="json")
+                for node in request.local_semantic_nodes
+            ],
+            "local_semantic_edges": [
+                edge.model_dump(mode="json")
+                for edge in request.local_semantic_edges
+            ],
+            "semantic_themes": [
+                theme.model_dump(mode="json")
+                for theme in request.semantic_themes
+            ],
         }
         content = await self.provider.complete_json(
             messages=[
@@ -123,12 +136,10 @@ class DeterministicRouteSelectionGenerator:
             request.route_candidates,
             key=lambda candidate: (-candidate.route_utility, candidate.route_id),
         )[0]
-        narration = {
-            "low": "我们沿这条路线继续参观。",
-            "medium": "请留意前方展品，我们自然地转向下一站。",
-            "high": "让我们先关注这个线索，再前往下一件重要展品。",
-        }[selected.intervention_level]
-        return RouteSelectionDraft(route_id=selected.route_id, narration=narration)
+        return RouteSelectionDraft(
+            route_id=selected.route_id,
+            narration="我们沿这条路线继续参观。",
+        )
 
 
 def create_route_selector_from_env(

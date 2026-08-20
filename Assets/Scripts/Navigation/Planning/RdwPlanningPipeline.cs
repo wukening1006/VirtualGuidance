@@ -107,7 +107,8 @@ public sealed class RdwPlanningNodeFactory
     public IReadOnlyList<PlanningNode> Capture(
             RdwPlanningSnapshot snapshot,
             NavigationCandidateSet candidateSet,
-            NavigationTargetManager navigationTargets)
+            NavigationTargetManager navigationTargets,
+            StaticSceneSemanticGraph semanticGraph = null)
     {
         var result = new List<PlanningNode>();
         if (snapshot == null || candidateSet == null || navigationTargets == null)
@@ -130,8 +131,8 @@ public sealed class RdwPlanningNodeFactory
                 candidate.TargetId,
                 new Vector2(position.x, position.z),
                 candidate.TargetRole,
-                ResolveSemanticImportance(candidate),
-                ResolveTaskRelevance(snapshot, candidate),
+                ResolveSemanticImportance(candidate, snapshot, semanticGraph),
+                ResolveTaskRelevance(snapshot, candidate, semanticGraph),
                 IsVisited(snapshot.VisitedNodeIds, candidate.TargetId)));
         }
         if (!string.IsNullOrWhiteSpace(snapshot.CurrentNodeId) &&
@@ -154,20 +155,62 @@ public sealed class RdwPlanningNodeFactory
         return result.AsReadOnly();
     }
 
-    private static float ResolveSemanticImportance(NavigationCandidate candidate)
+    private static float ResolveSemanticImportance(
+        NavigationCandidate candidate,
+        RdwPlanningSnapshot snapshot,
+        StaticSceneSemanticGraph semanticGraph)
     {
-        if (candidate.TargetRole == NavigationTargetRole.FinalTarget) return 1f;
-        if (candidate.TargetRole == NavigationTargetRole.RouteSubgoal) return 0.8f;
-        if (candidate.TargetRole == NavigationTargetRole.NavigableDetour) return 0.55f;
-        return 0.35f;
+        var baseScore = candidate.TargetRole == NavigationTargetRole.FinalTarget
+            ? 1f
+            : candidate.TargetRole == NavigationTargetRole.RouteSubgoal
+                ? 0.8f
+                : candidate.TargetRole == NavigationTargetRole.NavigableDetour ? 0.55f : 0.35f;
+        if (semanticGraph == null || !semanticGraph.TryGetExhibit(candidate.TargetId, out var exhibit) ||
+            exhibit?.knowledge == null)
+        {
+            return baseScore;
+        }
+
+        var targetThemes = snapshot != null &&
+                           semanticGraph.TryGetExhibit(snapshot.FinalTargetId, out var target) &&
+                           target?.knowledge != null
+            ? target.knowledge.themes
+            : null;
+        var themeOverlap = CountOverlap(exhibit.knowledge.themes, targetThemes);
+        var edgeCount = semanticGraph.GetOutgoingSemanticEdges(candidate.TargetId).Count;
+        return Mathf.Clamp01(baseScore + Mathf.Min(0.15f, themeOverlap * 0.05f) +
+                             Mathf.Min(0.1f, edgeCount * 0.02f));
     }
 
     private static float ResolveTaskRelevance(
         RdwPlanningSnapshot snapshot,
-        NavigationCandidate candidate)
+        NavigationCandidate candidate,
+        StaticSceneSemanticGraph semanticGraph)
     {
         if (string.Equals(candidate.TargetId, snapshot.FinalTargetId, StringComparison.Ordinal)) return 1f;
-        return candidate.TargetRole == NavigationTargetRole.RouteSubgoal ? 0.65f : 0.35f;
+        var score = candidate.TargetRole == NavigationTargetRole.RouteSubgoal ? 0.65f : 0.35f;
+        if (semanticGraph == null || !semanticGraph.TryGetExhibit(candidate.TargetId, out var exhibit) ||
+            !semanticGraph.TryGetExhibit(snapshot.FinalTargetId, out var finalTarget) ||
+            exhibit?.knowledge == null || finalTarget?.knowledge == null)
+        {
+            return score;
+        }
+
+        return Mathf.Clamp01(score + Mathf.Min(
+            0.2f,
+            CountOverlap(exhibit.knowledge.key_concepts, finalTarget.knowledge.key_concepts) * 0.05f));
+    }
+
+    private static int CountOverlap(string[] left, string[] right)
+    {
+        if (left == null || right == null) return 0;
+        var rightSet = new HashSet<string>(right, StringComparer.Ordinal);
+        var count = 0;
+        foreach (var value in left)
+        {
+            if (!string.IsNullOrWhiteSpace(value) && rightSet.Contains(value)) count++;
+        }
+        return count;
     }
 
     private static bool ContainsNode(IReadOnlyList<PlanningNode> nodes, string id)
@@ -243,7 +286,8 @@ public sealed class RdwPlanningPipeline
         PhysicalRiskState riskState,
         GuidanceRuntimeState runtimeState,
         NavigationCandidateSet candidateSet,
-        NavigationTargetManager navigationTargets)
+        NavigationTargetManager navigationTargets,
+        StaticSceneSemanticGraph semanticGraph = null)
     {
         var snapshot = snapshotFactory.Capture(
             pose,
@@ -251,7 +295,7 @@ public sealed class RdwPlanningPipeline
             runtimeState,
             navigationTargets != null ? navigationTargets.RegistryRevision : 0,
             capability);
-        var nodes = nodeFactory.Capture(snapshot, candidateSet, navigationTargets);
+        var nodes = nodeFactory.Capture(snapshot, candidateSet, navigationTargets, semanticGraph);
         var graph = graphBuilder.Build(snapshot, nodes);
         return routePlanner.Search(snapshot, graph);
     }

@@ -40,6 +40,15 @@ public sealed class SystemBootstrapper : MonoBehaviour
 
     [Header("RDW 与安全")]
     [SerializeField] private PauseResetController pauseResetController;
+    [Tooltip("可选的 OURS Reset 语义旁路；为空时在组合根上运行时创建。")]
+    [SerializeField] private ResetSemanticInterventionManager resetSemanticInterventionManager;
+    [Header("OURS Reset 语义旁路")]
+    [Tooltip("是否在 OURS 条件下请求 Reset 期间的上下文叙事。")]
+    [SerializeField] private bool resetSemanticInterventionEnabled = true;
+    [Tooltip("Medium 语义干预的 Reset 转角下限，单位：度。")]
+    [SerializeField, Range(0f, 180f)] private float resetSemanticMediumThresholdDegrees = 60f;
+    [Tooltip("High 语义干预的 Reset 转角下限，单位：度。")]
+    [SerializeField, Range(0f, 360f)] private float resetSemanticHighThresholdDegrees = 120f;
     [SerializeField] private RotationGainController rotationGainController;
     [Header("Continuous RDW - 基础设置")]
     [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
@@ -376,6 +385,23 @@ public sealed class SystemBootstrapper : MonoBehaviour
             rotationGainController,
             rejectionPanel,
             motionDetector);
+        if (resetSemanticInterventionManager == null)
+        {
+            resetSemanticInterventionManager = GetComponent<ResetSemanticInterventionManager>();
+            if (resetSemanticInterventionManager == null)
+            {
+                resetSemanticInterventionManager = gameObject.AddComponent<ResetSemanticInterventionManager>();
+            }
+        }
+        resetSemanticInterventionManager.Configure(
+            pauseResetController,
+            guidanceCoordinator,
+            agentClient,
+            narrationPlayer,
+            experimentLogger,
+            resetSemanticInterventionEnabled,
+            resetSemanticMediumThresholdDegrees,
+            resetSemanticHighThresholdDegrees);
         rdwGainApplier = new RdwGainApplier(
             userPoseTracker.VirtualRotationRoot,
             userPoseTracker.VirtualPoseSource);
@@ -397,8 +423,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
             limiter: rdwGainLimiter,
             dashboard: experimentDashboard,
             continuousEnabled: continuousRdwEnabled);
-        var continuousPlanningAvailable = continuousRdwEnabled &&
-                                          continuousRedirectorMode != ContinuousRedirectorMode.None;
+        // Estimator 描述的是当前选择的 RDW 算法能力，不随启动时的运行开关冻结。
+        // Ours Profile 可能在 Bootstrap 完成后才打开 Continuous RDW；此时仍必须使用真实 S2C/S2O/APF 代价模型。
+        var continuousPlanningAvailable = continuousRedirectorMode != ContinuousRedirectorMode.None;
         var planningEstimator = RdwPlanningCostEstimatorFactory.Create(
             continuousRedirectorMode,
             continuousPlanningAvailable,

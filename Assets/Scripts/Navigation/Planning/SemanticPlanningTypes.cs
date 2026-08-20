@@ -785,8 +785,6 @@ public sealed class RdwRouteCandidate
     public string first_target_id;
     /// <summary>路线 utility。</summary>
     public float route_utility;
-    /// <summary>叙事介入等级。</summary>
-    public string intervention_level;
     /// <summary>任务语义进展。</summary>
     public float semantic_progress;
     /// <summary>路线边代价。</summary>

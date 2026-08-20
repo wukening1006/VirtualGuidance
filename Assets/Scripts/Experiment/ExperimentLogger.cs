@@ -1588,7 +1588,6 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["ordered_node_ids"] = new JArray(route.OrderedNodeIds),
                 ["route_utility"] = route.RouteUtility,
                 ["semantic_progress"] = route.SemanticProgress,
-                ["intervention_level"] = route.InterventionLevel.ToString().ToLowerInvariant(),
                 ["estimator_id"] = route.EstimatorId,
                 ["estimator_version"] = route.EstimatorVersion,
                 ["edges"] = edges

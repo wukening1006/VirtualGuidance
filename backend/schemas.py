@@ -23,7 +23,8 @@ GUIDANCE_SCHEMA_VERSION = "guidance-schema-v3"
 CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
 SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v2"
-RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v3"
+RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v4"
+RESET_SEMANTIC_INTERVENTION_SCHEMA_VERSION = "reset-semantic-intervention-v1"
 
 
 class ExperimentProfile(BaseModel):
@@ -875,7 +876,6 @@ class PlanningRouteCandidate(BaseModel):
     first_target_id: str = Field(min_length=1)
     route_utility: float
     semantic_progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    intervention_level: Literal["low", "medium", "high"]
     estimator_id: str = Field(min_length=1)
     estimator_version: str = Field(min_length=1)
     edges: list[PlanningRouteEdge] = Field(min_length=1)
@@ -893,12 +893,41 @@ class PlanningRouteCandidate(BaseModel):
         return self
 
 
+class RouteSemanticTheme(BaseModel):
+    """OURS Route Selection 使用的主题定义。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class RouteSemanticContextNode(BaseModel):
+    """OURS Route Selection 使用的局部展品知识；不包含物理执行事实。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    culture: str = Field(min_length=1)
+    chronology: str = Field(min_length=1)
+    archaeological_context: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    visual_features: list[str] = Field(min_length=1)
+    cultural_significance: list[str] = Field(min_length=1)
+    key_concepts: list[str] = Field(min_length=1)
+    themes: list[str] = Field(min_length=1)
+    interpretation_notes: list[CandidateInterpretationNote]
+
+
 class RouteSelectionRequest(BaseModel):
     """Unity Top-K 路线选择请求；不允许 Backend 重算 Physical Safety。"""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    planning_schema_version: Literal["rdw-route-selection-v3"]
+    planning_schema_version: Literal["rdw-route-selection-v4"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)
@@ -916,6 +945,9 @@ class RouteSelectionRequest(BaseModel):
     route_candidates: list[PlanningRouteCandidate] = Field(min_length=1, max_length=5)
     task: NaturalLanguageTaskContract
     task_state: NaturalLanguageTaskState
+    local_semantic_nodes: list[RouteSemanticContextNode] = Field(min_length=1)
+    local_semantic_edges: list[CandidateSemanticEdge]
+    semantic_themes: list[RouteSemanticTheme] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_candidate_identity(self) -> "RouteSelectionRequest":
@@ -923,6 +955,18 @@ class RouteSelectionRequest(BaseModel):
             raise ValueError("final_target_id must match task.final_goal.exhibit_id.")
         if self.current_node_id != self.task_state.current_exhibit_id:
             raise ValueError("current_node_id must match task_state.current_exhibit_id.")
+        node_ids = {node.id for node in self.local_semantic_nodes}
+        if self.current_node_id not in node_ids:
+            raise ValueError("current_node_id must belong to local_semantic_nodes.")
+        if any(
+            node_id not in node_ids
+            for candidate in self.route_candidates
+            for node_id in candidate.ordered_node_ids
+        ):
+            raise ValueError("route candidate nodes must belong to local_semantic_nodes.")
+        for edge in self.local_semantic_edges:
+            if edge.source not in node_ids or edge.target not in node_ids:
+                raise ValueError("local_semantic_edges must reference local_semantic_nodes.")
         if self.task_state.phase == "final_approach" and (
             self.task_state.required_target_id != self.final_target_id
         ):
@@ -964,7 +1008,7 @@ class RouteSelectionResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    planning_schema_version: Literal["rdw-route-selection-v3"]
+    planning_schema_version: Literal["rdw-route-selection-v4"]
     session_id: str = Field(min_length=1)
     request_id: str = Field(min_length=1)
     plan_id: str = Field(min_length=1)
@@ -973,6 +1017,29 @@ class RouteSelectionResponse(BaseModel):
     route_id: str = Field(min_length=1)
     narration: str = Field(min_length=1, max_length=200)
     verifier: VerifierResult
+
+
+class ResetSemanticInterventionRequest(BaseModel):
+    """Reset 已由 Unity 决定后提交的最小语义上下文。"""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    planning_schema_version: Literal["reset-semantic-intervention-v1"]
+    current_exhibit: str = ""
+    current_topic: str = ""
+    next_target: str = ""
+    recent_narration: str = ""
+    reset_angle: float = Field(ge=0.0, le=360.0)
+    reset_reason: str = ""
+
+
+class ResetSemanticInterventionResponse(BaseModel):
+    """Reset 语义旁路的严格两字段响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intervention_level: Literal["low", "medium", "high"]
+    narration: str = Field(min_length=1, max_length=500)
 
 
 class GuidanceResponse(BaseModel):

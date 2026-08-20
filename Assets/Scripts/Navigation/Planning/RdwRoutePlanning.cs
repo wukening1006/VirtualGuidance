@@ -160,8 +160,6 @@ public sealed class RouteCandidate
     public float RouteUtility { get; }
     /// <summary>路线带来的未访问主题内容覆盖增量，范围 0-1。</summary>
     public float SemanticProgress { get; }
-    /// <summary>第一步所需叙事介入等级。</summary>
-    public InterventionLevel InterventionLevel { get; }
     /// <summary>路线所属 Planning Snapshot ID。</summary>
     public string PlanningSnapshotId { get; }
     /// <summary>生成路线的估计器 ID。</summary>
@@ -175,7 +173,6 @@ public sealed class RouteCandidate
         IEnumerable<string> nodeIds,
         IEnumerable<RdwEdgeEvaluation> evaluations,
         float routeUtility,
-        InterventionLevel interventionLevel,
         string planningSnapshotId,
         string estimatorId,
         string estimatorVersion,
@@ -187,7 +184,6 @@ public sealed class RouteCandidate
             evaluations ?? Array.Empty<RdwEdgeEvaluation>()).ToArray());
         RouteUtility = routeUtility;
         SemanticProgress = Mathf.Clamp01(semanticProgress);
-        InterventionLevel = interventionLevel;
         PlanningSnapshotId = planningSnapshotId ?? string.Empty;
         EstimatorId = estimatorId ?? string.Empty;
         EstimatorVersion = estimatorVersion ?? string.Empty;
@@ -421,16 +417,11 @@ public sealed class RdwBeamRoutePlanner
                 estimator.EstimatorId,
                 estimator.EstimatorVersion,
                 path);
-            var firstNode = beam.FirstNode;
-            var intervention = ResolveIntervention(
-                firstNode != null ? firstNode.SemanticImportance : 0f,
-                beam.Evaluations.Count > 0 ? beam.Evaluations[0].GainCost : 0f);
             routes.Add(new RouteCandidate(
                 routeId,
                 beam.NodeIds,
                 beam.Evaluations,
                 beam.NormalizedUtility,
-                intervention,
                 snapshot.SnapshotId,
                 estimator.EstimatorId,
                 estimator.EstimatorVersion,
@@ -451,13 +442,6 @@ public sealed class RdwBeamRoutePlanner
             }
         }
         return Mathf.Clamp01((float)unvisited / beam.NodeIds.Count);
-    }
-
-    private static InterventionLevel ResolveIntervention(float semanticImportance, float gainCost)
-    {
-        var need = Mathf.Clamp01(semanticImportance) * Mathf.Clamp01(gainCost);
-        if (need >= 0.55f) return InterventionLevel.High;
-        return need >= 0.2f ? InterventionLevel.Medium : InterventionLevel.Low;
     }
 
     private static int CompareBeams(BeamState left, BeamState right)

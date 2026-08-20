@@ -28,6 +28,8 @@ public enum RoutePlanInvalidationReason
     FirstStepRejected,
     /// <summary>路线已耗尽。</summary>
     RouteExhausted,
+    /// <summary>当前路线第一步已完成，后缀必须重新规划。</summary>
+    FirstStepCompleted,
     /// <summary>活动 Guidance 被取消或软重规划。</summary>
     GuidanceCancelled
 }
@@ -91,9 +93,9 @@ public sealed class RoutePlan
     public string Narration { get; }
     /// <summary>当前正在执行、尚未确认到达的节点 ID。</summary>
     public string ActiveStepId { get; }
-    /// <summary>当前步骤之后尚未提交的路线节点。</summary>
+    /// <summary>路线后缀节点，仅用于日志审计，不代表执行许可。</summary>
     public IReadOnlyList<string> RemainingSteps => remainingSteps;
-    /// <summary>是否存在可在到达后继续提交的下一步。</summary>
+    /// <summary>是否存在待审计的路线后缀。</summary>
     public bool HasRemainingSteps => remainingSteps.Count > 0;
 
     /// <summary>创建不可变 RoutePlan。</summary>

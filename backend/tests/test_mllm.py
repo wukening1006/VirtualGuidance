@@ -585,6 +585,7 @@ async def test_deepseek_provider_sends_non_streaming_json_object_payload() -> No
     assert payload["temperature"] == 0.0
     assert payload["max_tokens"] == MLLM_MAX_TOKENS
     assert payload["stream"] is False
+    assert payload["thinking"] == {"type": "disabled"}
     assert payload["response_format"] == {"type": "json_object"}
     assert "不要输出 Markdown" in payload["messages"][0]["content"]
     assert json.dumps(

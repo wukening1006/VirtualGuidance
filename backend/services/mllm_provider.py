@@ -463,6 +463,8 @@ class DeepSeekOpenAICompatibleProvider:
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": False,
+            # 结构化输出不需要思维链，关闭 thinking 可避免推理内容耗尽输出预算。
+            "thinking": {"type": "disabled"},
             "response_format": {"type": "json_object"},
         }
         headers = {

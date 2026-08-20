@@ -9,7 +9,150 @@ using Newtonsoft.Json.Linq;
 public static class RdwPlanningProtocolVersions
 {
     /// <summary>规划路线选择协议版本。</summary>
-    public const string RouteSelectionSchema = "rdw-route-selection-v3";
+    public const string RouteSelectionSchema = "rdw-route-selection-v4";
+}
+
+/// <summary>提供给 OURS Route Selection 的静态语义主题定义。</summary>
+[Serializable]
+public sealed class RdwSemanticThemeDto
+{
+    /// <summary>主题稳定 ID。</summary>
+    public string id;
+    /// <summary>主题显示名称。</summary>
+    public string name;
+    /// <summary>主题知识描述。</summary>
+    public string description;
+
+    /// <summary>从静态语义图主题创建请求副本。</summary>
+    public static RdwSemanticThemeDto From(SceneThemeDefinition theme)
+    {
+        if (theme == null) return null;
+        return new RdwSemanticThemeDto
+        {
+            id = theme.id,
+            name = theme.name,
+            description = theme.description
+        };
+    }
+}
+
+/// <summary>提供给 OURS Route Selection 的展品语义知识节点。</summary>
+[Serializable]
+public sealed class RdwSemanticContextNode
+{
+    /// <summary>展品稳定 ID。</summary>
+    public string id;
+    /// <summary>展品名称。</summary>
+    public string name;
+    /// <summary>展品分类。</summary>
+    public string category;
+    /// <summary>文化归属。</summary>
+    public string culture;
+    /// <summary>年代信息。</summary>
+    public string chronology;
+    /// <summary>考古语境。</summary>
+    public string archaeological_context;
+    /// <summary>展品描述。</summary>
+    public string description;
+    /// <summary>可观察视觉特征。</summary>
+    public string[] visual_features = Array.Empty<string>();
+    /// <summary>文化意义。</summary>
+    public string[] cultural_significance = Array.Empty<string>();
+    /// <summary>关键知识概念。</summary>
+    public string[] key_concepts = Array.Empty<string>();
+    /// <summary>所属主题 ID。</summary>
+    public string[] themes = Array.Empty<string>();
+    /// <summary>解释边界说明。</summary>
+    public InterpretationNote[] interpretation_notes = Array.Empty<InterpretationNote>();
+
+    /// <summary>从静态展品知识创建请求副本。</summary>
+    public static RdwSemanticContextNode From(SceneExhibitDefinition exhibit)
+    {
+        if (exhibit == null || exhibit.knowledge == null) return null;
+        return new RdwSemanticContextNode
+        {
+            id = exhibit.id,
+            name = exhibit.name,
+            category = exhibit.knowledge.category,
+            culture = exhibit.knowledge.culture,
+            chronology = exhibit.knowledge.chronology,
+            archaeological_context = exhibit.knowledge.archaeological_context,
+            description = exhibit.knowledge.description,
+            visual_features = Copy(exhibit.knowledge.visual_features),
+            cultural_significance = Copy(exhibit.knowledge.cultural_significance),
+            key_concepts = Copy(exhibit.knowledge.key_concepts),
+            themes = Copy(exhibit.knowledge.themes),
+            interpretation_notes = Copy(exhibit.knowledge.interpretation_notes)
+        };
+    }
+
+    private static string[] Copy(string[] values) =>
+        values != null ? (string[])values.Clone() : Array.Empty<string>();
+
+    private static InterpretationNote[] Copy(InterpretationNote[] values) =>
+        values != null ? (InterpretationNote[])values.Clone() : Array.Empty<InterpretationNote>();
+}
+
+/// <summary>从静态语义图提取 OURS 路线相关的局部语义上下文。</summary>
+public static class RdwSemanticContextBuilder
+{
+    /// <summary>仅包含当前节点、候选路线节点和最终目标，避免发送无关知识。</summary>
+    public static void Build(
+        StaticSceneSemanticGraph graph,
+        RdwRoutePlanningResult result,
+        out RdwSemanticContextNode[] nodes,
+        out SemanticEdgeDefinition[] edges,
+        out RdwSemanticThemeDto[] themes)
+    {
+        nodes = Array.Empty<RdwSemanticContextNode>();
+        edges = Array.Empty<SemanticEdgeDefinition>();
+        themes = Array.Empty<RdwSemanticThemeDto>();
+        if (graph == null || result?.Snapshot == null) return;
+
+        var included = new HashSet<string>(StringComparer.Ordinal)
+        {
+            result.Snapshot.CurrentNodeId,
+            result.Snapshot.FinalTargetId
+        };
+        foreach (var route in result.Routes ?? Array.Empty<RouteCandidate>())
+        {
+            foreach (var nodeId in route?.OrderedNodeIds ?? Array.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(nodeId)) included.Add(nodeId);
+            }
+        }
+
+        var nodeList = new List<RdwSemanticContextNode>();
+        foreach (var nodeId in included)
+        {
+            if (graph.TryGetExhibit(nodeId, out var exhibit))
+            {
+                var node = RdwSemanticContextNode.From(exhibit);
+                if (node != null) nodeList.Add(node);
+            }
+        }
+        nodeList.Sort((left, right) => string.CompareOrdinal(left?.id, right?.id));
+
+        var edgeList = new List<SemanticEdgeDefinition>();
+        foreach (var edge in graph.SemanticEdges ?? Array.Empty<SemanticEdgeDefinition>())
+        {
+            if (edge != null && included.Contains(edge.source) && included.Contains(edge.target))
+            {
+                edgeList.Add(edge);
+            }
+        }
+        edgeList.Sort((left, right) => string.CompareOrdinal(left?.id, right?.id));
+
+        var themeList = new List<RdwSemanticThemeDto>();
+        foreach (var theme in graph.Themes ?? Array.Empty<SceneThemeDefinition>())
+        {
+            if (theme != null) themeList.Add(RdwSemanticThemeDto.From(theme));
+        }
+        themeList.Sort((left, right) => string.CompareOrdinal(left?.id, right?.id));
+        nodes = nodeList.ToArray();
+        edges = edgeList.ToArray();
+        themes = themeList.ToArray();
+    }
 }
 
 /// <summary>
@@ -50,8 +193,6 @@ public sealed class RdwRouteCandidateDto
     public float route_utility;
     /// <summary>路线带来的任务语义进展，范围 0-1。</summary>
     public float semantic_progress;
-    /// <summary>叙事介入等级。</summary>
-    public string intervention_level;
     /// <summary>估计器 ID。</summary>
     public string estimator_id;
     /// <summary>估计器版本。</summary>
@@ -87,7 +228,6 @@ public sealed class RdwRouteCandidateDto
             first_target_id = route.FirstTargetId,
             route_utility = route.RouteUtility,
             semantic_progress = route.SemanticProgress,
-            intervention_level = route.InterventionLevel.ToString().ToLowerInvariant(),
             estimator_id = route.EstimatorId,
             estimator_version = route.EstimatorVersion,
             edges = edgeDtos.ToArray()
@@ -137,6 +277,12 @@ public sealed class RdwRouteSelectionRequest
     public NaturalLanguageTaskContract task;
     /// <summary>当前任务进度快照。</summary>
     public NaturalLanguageTaskState task_state;
+    /// <summary>当前路线相关的静态语义知识节点；仅 OURS Route Selection 使用。</summary>
+    public RdwSemanticContextNode[] local_semantic_nodes = Array.Empty<RdwSemanticContextNode>();
+    /// <summary>当前路线相关的语义关系边；不作为物理可达性门禁。</summary>
+    public SemanticEdgeDefinition[] local_semantic_edges = Array.Empty<SemanticEdgeDefinition>();
+    /// <summary>语义主题定义，供模型理解主题 ID。</summary>
+    public RdwSemanticThemeDto[] semantic_themes = Array.Empty<RdwSemanticThemeDto>();
 
     /// <summary>从 Planning result 与 Call identity 创建严格请求。</summary>
     public static RdwRouteSelectionRequest From(
@@ -144,7 +290,8 @@ public sealed class RdwRouteSelectionRequest
         PlanningCallIdentity identity,
         RdwRoutePlanningResult result,
         NaturalLanguageTaskContract task,
-        NaturalLanguageTaskState taskState)
+        NaturalLanguageTaskState taskState,
+        StaticSceneSemanticGraph semanticGraph = null)
     {
         if (identity == null || result?.Snapshot == null) return null;
         var routes = new RdwRouteCandidateDto[result.Routes.Count];
@@ -153,6 +300,12 @@ public sealed class RdwRouteSelectionRequest
             routes[index] = RdwRouteCandidateDto.From(result.Routes[index], result.Snapshot.CurrentNodeId);
         }
         var snapshot = result.Snapshot;
+        RdwSemanticContextBuilder.Build(
+            semanticGraph,
+            result,
+            out var semanticNodes,
+            out var semanticEdges,
+            out var semanticThemes);
         return new RdwRouteSelectionRequest
         {
             session_id = sessionId ?? string.Empty,
@@ -171,7 +324,10 @@ public sealed class RdwRouteSelectionRequest
             estimator_version = snapshot.Capability.EstimatorVersion,
             route_candidates = routes,
             task = task,
-            task_state = taskState
+            task_state = taskState,
+            local_semantic_nodes = semanticNodes,
+            local_semantic_edges = semanticEdges,
+            semantic_themes = semanticThemes
         };
     }
 
@@ -206,7 +362,7 @@ public sealed class RdwRouteSelectionResponse
     public long generation;
     /// <summary>模型从候选集合中选择的 route_id。</summary>
     public string route_id;
-    /// <summary>与 intervention_level 对齐的讲解文本。</summary>
+    /// <summary>路线选择后返回的讲解文本。</summary>
     public string narration;
     /// <summary>后端 membership verifier 结果。</summary>
     public VerifierResult verifier;

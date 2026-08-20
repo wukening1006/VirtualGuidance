@@ -400,6 +400,64 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public GuidanceTarget CurrentGuidanceTarget => taskController != null
         ? taskController.RuntimeState.CurrentGuidanceTarget
         : null;
+    /// <summary>当前 Guidance 最近一次使用的讲解文本；Reset 语义旁路只读该字段。</summary>
+    public string ActiveNarration => resetInterruptedResponse?.narration ?? activeResponse?.narration ?? string.Empty;
+
+    /// <summary>
+    /// 从 Reset 开始前已经冻结的导览状态创建最小语义上下文；不暴露物理安全事实。
+    /// </summary>
+    public ResetSemanticContext CreateResetSemanticContext(ResetEventInfo resetInfo)
+    {
+        var state = RuntimeState;
+        if (state == null || resetInfo == null)
+        {
+            return null;
+        }
+
+        var currentId = state.currentExhibitId ?? string.Empty;
+        var nextId = !string.IsNullOrWhiteSpace(resetTargetId)
+            ? resetTargetId
+            : state.nextTargetId ?? string.Empty;
+        var currentExhibit = semanticPlanningGraph?.GetExhibit(currentId);
+        var nextExhibit = semanticPlanningGraph?.GetExhibit(nextId);
+        var topic = state.userTask ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(topic) && currentExhibit?.knowledge?.themes != null)
+        {
+            var themeNames = new List<string>();
+            foreach (var themeId in currentExhibit.knowledge.themes)
+            {
+                var theme = semanticPlanningGraph?.GetTheme(themeId);
+                if (theme != null && !string.IsNullOrWhiteSpace(theme.name))
+                {
+                    themeNames.Add(theme.name);
+                }
+            }
+
+            topic = string.Join("、", themeNames);
+        }
+
+        return new ResetSemanticContext
+        {
+            current_exhibit = DescribeResetExhibit(currentId, currentExhibit),
+            current_topic = string.IsNullOrWhiteSpace(topic) ? "当前展览主题" : topic,
+            next_target = DescribeResetExhibit(nextId, nextExhibit),
+            recent_narration = ActiveNarration,
+            reset_angle = resetInfo.ApproximateTurnDegrees,
+            reset_reason = resetInfo.Reason
+        };
+    }
+
+    private static string DescribeResetExhibit(string id, SceneExhibitDefinition exhibit)
+    {
+        if (exhibit == null || string.IsNullOrWhiteSpace(exhibit.name))
+        {
+            return id ?? string.Empty;
+        }
+
+        return string.IsNullOrWhiteSpace(id) || string.Equals(id, exhibit.name, StringComparison.Ordinal)
+            ? exhibit.name
+            : $"{id} {exhibit.name}";
+    }
     /// <summary>当前会话已真正启动的自动 Reset 次数。</summary>
     public int AutomaticResetAttempts => automaticResetAttempts;
     /// <summary>当前自动物理恢复状态。</summary>
@@ -763,8 +821,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         RdwRoutePlanningResult rdwPlanningResult = null;
-        RoutePlan cachedPlan = null;
-        var cachedTargetId = string.Empty;
         if (CurrentRdwPlanningMode != RdwPlanningMode.Legacy)
         {
             if (!TryCreateRdwPlanningResult(
@@ -825,11 +881,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     return;
                 }
 
-                TryResolveCachedRdwStep(
-                    rdwPlanningResult,
-                    candidateSet,
-                    out cachedPlan,
-                    out cachedTargetId);
             }
         }
 
@@ -865,16 +916,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                     RoutePlanInvalidationReason.GuidanceCancelled,
                     "RDW constrained planning could not prepare the local guidance identity.");
                 HandleRequestFailed("RDW constrained planning could not prepare the local guidance identity.");
-                return;
-            }
-
-            if (cachedPlan != null && !string.IsNullOrWhiteSpace(cachedTargetId))
-            {
-                ExecuteCachedRdwStep(
-                    cachedPlan,
-                    cachedTargetId,
-                    guidanceRequest,
-                    rdwPlanningResult);
                 return;
             }
 
@@ -1382,7 +1423,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 riskState,
                 taskController.RuntimeState,
                 candidateSet,
-                navigationTargets);
+                navigationTargets,
+                semanticPlanningGraph);
         }
         catch (Exception exception)
         {
@@ -1399,95 +1441,33 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         return true;
     }
 
-    private bool TryResolveCachedRdwStep(
-        RdwRoutePlanningResult result,
-        NavigationCandidateSet candidateSet,
-        out RoutePlan plan,
-        out string targetId)
-    {
-        plan = null;
-        targetId = string.Empty;
-        var state = taskController != null ? taskController.RuntimeState : null;
-        var previousPlan = rdwPlanCache.ActivePlan;
-        if (state == null ||
-            !rdwPlanCache.TryGet(result.Snapshot, state.stateVersion, out plan))
-        {
-            if (previousPlan != null)
-            {
-                LogRdwPlanning(
-                    "planning_plan_invalidated",
-                    result,
-                    null,
-                    previousPlan,
-                    rdwPlanCache.LastInvalidationReason.ToString());
-            }
-            return false;
-        }
-
-        if (!string.IsNullOrWhiteSpace(plan.ActiveStepId))
-        {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.GuidanceCancelled,
-                "Cached route still owns an uncompleted active step.");
-            plan = null;
-            return false;
-        }
-        if (!plan.HasRemainingSteps)
-        {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.RouteExhausted,
-                "Cached route has no remaining step.");
-            plan = null;
-            return false;
-        }
-
-        targetId = plan.RemainingSteps[0];
-        if (!Contains(candidateSet.ModelCandidateIds, targetId) ||
-            !ContainsHardSafeFirstTarget(result, targetId))
-        {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.FirstStepRejected,
-                "Cached next step is not a current hard-safe model candidate.");
-            plan = null;
-            targetId = string.Empty;
-            return false;
-        }
-        return true;
-    }
-
-    private static bool ContainsHardSafeFirstTarget(
-        RdwRoutePlanningResult result,
-        string targetId)
-    {
-        if (result == null) return false;
-        foreach (var route in result.Routes)
-        {
-            if (route != null &&
-                string.Equals(route.FirstTargetId, targetId, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private void ConfirmCompletedRdwStep(string arrivedTargetId, int nextTaskStateVersion)
     {
-        if (rdwPlanCache.ActivePlan == null) return;
-        if (!rdwPlanCache.ConfirmStepCompleted(arrivedTargetId, nextTaskStateVersion))
+        // 只有 OURS 的受约束路线拥有 RoutePlan；B1/B2 不经过该生命周期。
+        if (CurrentRdwPlanningMode != RdwPlanningMode.RdwConstrained ||
+            rdwPlanCache.ActivePlan == null)
         {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.TaskStateChanged,
-                "Arrived target does not match the active cached route step.");
             return;
         }
 
+        var completedPlan = rdwPlanCache.ActivePlan;
+        if (!string.Equals(completedPlan.ActiveStepId, arrivedTargetId, StringComparison.Ordinal) &&
+            !string.Equals(completedPlan.ActiveStepId, string.Empty, StringComparison.Ordinal))
+        {
+            InvalidateRdwPlanning(
+                RoutePlanInvalidationReason.TaskStateChanged,
+                "Arrived target does not match the active RDW route first step.");
+            return;
+        }
+
+        // RoutePlan 的后缀仅用于审计；到达第一步后立即废弃，下一轮必须使用 Fresh State + 新的 LLM 选择。
+        rdwPlanCache.Invalidate(RoutePlanInvalidationReason.FirstStepCompleted);
         LogRdwPlanning(
             "planning_step_completed",
             null,
             null,
-            rdwPlanCache.ActivePlan,
-            "The active route step reached its reserved target.");
+            completedPlan,
+            "The active route first step reached its reserved target; route suffix discarded for fresh replanning.");
     }
 
     private bool BeginRdwRouteSelection(
@@ -1523,7 +1503,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             identity,
             result,
             NaturalLanguageTaskContract.From(semanticPlanningGraph, runtimeState),
-            NaturalLanguageTaskState.From(runtimeState));
+            NaturalLanguageTaskState.From(runtimeState),
+            semanticPlanningGraph);
         if (request == null)
         {
             rdwPlanningCallGate.Invalidate();
@@ -1631,53 +1612,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 "Unity Exact Safety accepted the selected route first step.");
         }
         ClearPendingRdwPlanning();
-    }
-
-    private void ExecuteCachedRdwStep(
-        RoutePlan plan,
-        string targetId,
-        GuidanceRequest guidanceRequest,
-        RdwRoutePlanningResult freshResult)
-    {
-        var adapted = CreateRdwGuidanceResponse(
-            guidanceRequest,
-            targetId,
-            plan.Narration,
-            plan.SelectedRouteId,
-            new VerifierResult
-            {
-                approved = true,
-                reason = "Cached route membership retained; Unity must revalidate Exact Safety."
-            });
-        if (adapted == null)
-        {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.FirstStepRejected,
-                "Cached route step cannot be adapted to the current Candidate Reservation.");
-            HandleRequestFailed("Cached RDW route step adaptation failed.");
-            return;
-        }
-
-        HandleGuidanceResponse(adapted);
-        if (requestPhase == GuidanceRequestPhase.Executing &&
-            ReferenceEquals(activeResponse, adapted))
-        {
-            if (!rdwPlanCache.CommitNextStep(
-                    targetId,
-                    taskController.RuntimeState.stateVersion))
-            {
-                InvalidateRdwPlanning(
-                    RoutePlanInvalidationReason.GuidanceCancelled,
-                    "Cached route step executed but the cache transition failed.");
-                return;
-            }
-            LogRdwPlanning(
-                "planning_cached_step_revalidated",
-                freshResult,
-                null,
-                rdwPlanCache.ActivePlan,
-                "Unity Exact Safety accepted the cached route next step.");
-        }
     }
 
     private static GuidanceResponse CreateRdwGuidanceResponse(

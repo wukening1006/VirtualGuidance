@@ -18,19 +18,6 @@ public enum RdwPlanningMode
 }
 
 /// <summary>
-/// 描述路线需要的叙事与注意力介入强度，不参与 Gain 或安全阈值计算。
-/// </summary>
-public enum InterventionLevel
-{
-    /// <summary>无需额外叙事介入。</summary>
-    Low,
-    /// <summary>可使用地标或自然转身提示。</summary>
-    Medium,
-    /// <summary>需要较强的叙事或注意力引导。</summary>
-    High
-}
-
-/// <summary>
 /// 冻结规划器可使用的 Continuous RDW 与 Resetter 能力身份。
 /// </summary>
 public sealed class RdwCapabilityProfile
