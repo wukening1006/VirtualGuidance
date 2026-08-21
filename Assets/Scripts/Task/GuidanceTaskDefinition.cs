@@ -16,15 +16,15 @@ public sealed class GuidanceTaskDefinition
     /// <summary>提供给模型理解用户意图的自然语言任务描述。</summary>
     public string userTask = "我想参观青铜神树。在到达它之前，请带我浏览几件有助于理解三星堆文化的相关展品，并说明它们与目标展品之间的联系，最后带我抵达青铜神树。";
     /// <summary>任务开始时视为已到达的首个展品 ID。</summary>
-    public string startExhibitId = "E1";
+    public string startExhibitId = string.Empty;
     /// <summary>任务预期结束的展品 ID。</summary>
     public string finalTargetId = "E5";
     /// <summary>最终目标解锁前至少需要到达的中间展品数量。</summary>
     public int minimumIntermediateVisits = 3;
     /// <summary>达到后必须前往最终目标的中间展品数量上限。</summary>
-    public int maximumIntermediateVisits = 4;
+    public int maximumIntermediateVisits = 3;
     /// <summary>包含起点在内的有序展品 ID；控制器按数组顺序推进。</summary>
-    public string[] routeTargetIds = { "E1" };
+    public string[] routeTargetIds = Array.Empty<string>();
     /// <summary>返回原路线前允许连续使用的最大 NavigableDetour 数量。</summary>
     public int maxConsecutiveDetours = 2;
 }

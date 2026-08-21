@@ -723,16 +723,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   defaultTask:
-    taskId: T2_main_target
+    taskId: T1_overview
     participantId: P001
     condition: B1_semantic_only
-    userTask: "\u6211\u60F3\u53C2\u89C2\u9752\u94DC\u795E\u6811\u3002\u5728\u5230\u8FBE\u5B83\u4E4B\u524D\uFF0C\u8BF7\u5E26\u6211\u6D4F\u89C8\u51E0\u4EF6\u6709\u52A9\u4E8E\u7406\u89E3\u4E09\u661F\u5806\u6587\u5316\u7684\u76F8\u5173\u5C55\u54C1."
-    startExhibitId: E1
-    finalTargetId: E5
+    userTask: "从人物、礼仪与自然象征入手，逐步建立对古蜀祭祀与精神世界的整体认识，最后抵达古蜀祭祀世界。"
+    startExhibitId: ""
+    finalTargetId: E8
     minimumIntermediateVisits: 3
-    maximumIntermediateVisits: 4
-    routeTargetIds:
-    - E1
+    maximumIntermediateVisits: 3
+    routeTargetIds: []
     maxConsecutiveDetours: 2
 --- !u!1 &22189630
 GameObject:
@@ -10764,7 +10763,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: T2_main_target
+  m_text: T1_overview
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
   m_sharedMaterial: {fileID: 3361940478459683118, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
@@ -16065,7 +16064,13 @@ MonoBehaviour:
   m_Value: 0
   m_Options:
     m_Options:
+    - m_Text: T1_overview
+      m_Image: {fileID: 0}
     - m_Text: T2_main_target
+      m_Image: {fileID: 0}
+    - m_Text: T3_compare
+      m_Image: {fileID: 0}
+    - m_Text: T4_next_step
       m_Image: {fileID: 0}
   m_OnValueChanged:
     m_PersistentCalls:
@@ -31890,9 +31895,9 @@ MonoBehaviour:
     state_version: 0
     risk_snapshot_id: 
     condition: B1_semantic_only
-    task_id: T2_main_target
-    current_exhibit: E1
-    final_target: 
+    task_id: T1_overview
+    current_exhibit: ""
+    final_target: E8
     preferred_task_target: 
     candidate_ids: []
     model_candidate_ids: []
@@ -33737,9 +33742,9 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: 'Task: T2_main_target
+  m_text: 'Task: T1_overview
 
-    Request: Take me to the most important exhibit.'
+    Request: Visit three intermediate exhibits, then reach the final target.'
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
   m_sharedMaterial: {fileID: 2180264, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}

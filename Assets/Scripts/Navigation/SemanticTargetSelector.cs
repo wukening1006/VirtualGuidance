@@ -98,8 +98,7 @@ public sealed class SemanticTargetSelector : MonoBehaviour
                                     (allowPausedForReset &&
                                      runtimeState.phase == GuidanceRuntimePhase.PausedForReset));
         if (!canInspectCandidates || navigationTargets == null ||
-            !string.Equals(runtimeState.taskId, "T2_main_target", StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(runtimeState.currentExhibitId))
+            !ExperimentConditionMatrix.IsFormalTaskSupported(runtimeState.taskId))
         {
             return new NavigationCandidateSet(null, null, null, null, 0);
         }
@@ -127,7 +126,8 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             foreach (var exhibit in graph.GetAllExhibits())
             {
                 if (exhibit == null ||
-                    string.Equals(exhibit.id, runtimeState.currentExhibitId, StringComparison.Ordinal) ||
+                    (!string.IsNullOrWhiteSpace(runtimeState.currentExhibitId) &&
+                     string.Equals(exhibit.id, runtimeState.currentExhibitId, StringComparison.Ordinal)) ||
                     string.Equals(exhibit.id, runtimeState.finalTargetId, StringComparison.Ordinal))
                 {
                     continue;

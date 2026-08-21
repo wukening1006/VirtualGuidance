@@ -7,11 +7,11 @@ using UnityEngine;
 public static class GuidanceProtocolVersions
 {
     /// <summary>T2 固定任务定义版本。</summary>
-    public const string TaskDefinition = "t2-main-target-v2";
+    public const string TaskDefinition = "natural-language-task-v1";
     /// <summary>Unity 与 Backend 精确 JSON 契约版本。</summary>
     public const string GuidanceSchema = "guidance-schema-v3";
     /// <summary>T2 Candidate Set 生成策略版本。</summary>
-    public const string CandidatePolicy = "t2-candidate-policy-v1";
+    public const string CandidatePolicy = "candidate-policy-v2";
     /// <summary>Unity 权威运行时风险策略版本。</summary>
     public const string RiskPolicy = "unity-risk-policy-v2";
 }
@@ -335,7 +335,7 @@ public sealed class GuidanceRequest
     /// <summary>
     /// 用户当前所在或正在观看的展品 ID。
     /// </summary>
-    public string current_exhibit = "E1";
+    public string current_exhibit = string.Empty;
 
     /// <summary>Unity 生成的完整权威 Physical Risk 快照。</summary>
     public GuidanceRiskSnapshot risk_snapshot;
@@ -531,7 +531,7 @@ public sealed class GuidanceRequestContext
     /// 默认当前展品 ID。
     /// </summary>
     [Tooltip("当前展品 ID，例如 E1。")]
-    public string current_exhibit = "E1";
+    public string current_exhibit = string.Empty;
 
     /// <summary>任务不可变的最终目标 ID。</summary>
     public string final_target = string.Empty;

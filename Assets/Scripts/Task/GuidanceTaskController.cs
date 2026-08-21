@@ -48,15 +48,12 @@ public sealed class GuidanceTaskController : MonoBehaviour
         {
             errors?.Add("task.intermediate_visit_policy_invalid");
         }
-        ValidateExhibitReference(graph, errors, defaultTask.startExhibitId, "task.start_exhibit_id");
-        ValidateExhibitReference(graph, errors, defaultTask.finalTargetId, "task.final_target_id");
-        if (defaultTask.routeTargetIds == null || defaultTask.routeTargetIds.Length == 0)
+        if (!string.IsNullOrWhiteSpace(defaultTask.startExhibitId))
         {
-            errors?.Add("task.route_target_ids_missing");
-            return;
+            ValidateExhibitReference(graph, errors, defaultTask.startExhibitId, "task.start_exhibit_id");
         }
-
-        foreach (var targetId in defaultTask.routeTargetIds)
+        ValidateExhibitReference(graph, errors, defaultTask.finalTargetId, "task.final_target_id");
+        foreach (var targetId in defaultTask.routeTargetIds ?? Array.Empty<string>())
         {
             ValidateExhibitReference(graph, errors, targetId, "task.route_target_id");
         }
@@ -81,7 +78,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
     {
         if (!ExperimentConditionMatrix.IsFormalTaskSupported(defaultTask.taskId))
         {
-            throw new InvalidOperationException($"正式实验仅允许启动 T2_main_target，当前任务为 {defaultTask.taskId}。");
+            throw new InvalidOperationException($"正式实验任务不受支持，当前任务为 {defaultTask.taskId}。");
         }
 
         routeIndex = 0;
@@ -110,7 +107,7 @@ public sealed class GuidanceTaskController : MonoBehaviour
 
         if (!ExperimentConditionMatrix.IsFormalTaskSupported(taskDefinition.taskId))
         {
-            throw new ArgumentException("正式实验仅允许配置 T2_main_target。", nameof(taskDefinition));
+            throw new ArgumentException("正式实验任务不受支持。", nameof(taskDefinition));
         }
 
         defaultTask = taskDefinition;

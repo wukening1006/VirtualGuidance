@@ -309,15 +309,8 @@ public static class SemanticPlanVerifier
                 return false;
             }
         }
-        var containsCurrent = false;
-        foreach (var nodeId in orderedNodeIds)
-        {
-            if (string.Equals(nodeId, request.task_state.current_exhibit_id, StringComparison.Ordinal))
-            {
-                containsCurrent = true;
-                break;
-            }
-        }
+        var containsCurrent = !string.IsNullOrWhiteSpace(request.task_state.current_exhibit_id) &&
+                              IndexOf(orderedNodeIds, request.task_state.current_exhibit_id) >= 0;
         if (containsCurrent)
         {
             failureReason = "semantic_plan_starts_at_current_exhibit";
@@ -560,13 +553,14 @@ public sealed class SemanticLocalGraphBuilder
         if (graph == null) throw new ArgumentNullException(nameof(graph));
         if (task == null) throw new ArgumentNullException(nameof(task));
         if (taskState == null) throw new ArgumentNullException(nameof(taskState));
-        var currentExhibitId = taskState.current_exhibit_id;
-        if (!graph.TryGetExhibit(currentExhibitId, out _))
+        var currentExhibitId = taskState.current_exhibit_id ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(currentExhibitId) && !graph.TryGetExhibit(currentExhibitId, out _))
         {
             throw new ArgumentException("current exhibit is not present in the static semantic graph", nameof(currentExhibitId));
         }
 
-        var included = new HashSet<string>(StringComparer.Ordinal) { currentExhibitId };
+        var included = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(currentExhibitId)) included.Add(currentExhibitId);
         var visited = new HashSet<string>(taskState.visited_exhibit_ids ?? Array.Empty<string>(), StringComparer.Ordinal);
         var finalTargetId = task.final_goal.exhibit_id;
         var finalReady = taskState.intermediate_visit_count >= task.intermediate_policy.minimum_visits;

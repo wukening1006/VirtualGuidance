@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using TMPro;
 using UnityEngine;
@@ -15,6 +16,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
     [SerializeField] private int taskIndex = 0;
     [SerializeField] private int physicalSpaceIndex = 1;
     [SerializeField, Min(1f)] private float completionCountdownSeconds = 10f;
+    [SerializeField, Tooltip("研究员侧任务下拉框；未手动绑定时按对象名自动查找。")]
+    private TMP_Dropdown taskDropdown;
 
     [Header("自动恢复")]
     [Tooltip("Tracking 暂时丢失后允许系统自动恢复的最长时间，单位：秒。")]
@@ -63,6 +66,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
     private void Awake()
     {
         ResolveReferences();
+        ConfigureTaskDropdown();
         participantUiController?.ShowWaiting();
         experimentLogger?.SetRunState(runState, activeGuidanceTrace);
     }
@@ -331,7 +335,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
             if (IsSessionActiveState())
             {
-                EndSession("unrecoverable_critical_risk_at_session_start");
+                EnterSafetyHold("unrecoverable_critical_risk_at_session_start", false);
             }
             return;
         }
@@ -487,6 +491,20 @@ public sealed class ExperimentDashboard : MonoBehaviour
     {
         if (runState == ExperimentRunState.Ended || runState == ExperimentRunState.Preparing || runState == ExperimentRunState.Ready)
         {
+            return;
+        }
+
+        // 正式实验只能在最终目标完成后结束；研究员手动结束保留为显式例外。
+        var taskCompleted = taskController != null &&
+                            taskController.RuntimeState != null &&
+                            taskController.RuntimeState.IsCompleted;
+        var researcherEnded = string.Equals(reason, "researcher_ended", StringComparison.Ordinal);
+        var applicationQuit = string.Equals(reason, "application_quit", StringComparison.Ordinal);
+        if (!taskCompleted && !researcherEnded && !applicationQuit)
+        {
+            EnterSafetyHold(
+                string.IsNullOrWhiteSpace(reason) ? "session_end_rejected_before_task_completion" : reason,
+                false);
             return;
         }
 
@@ -719,11 +737,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (guidanceCoordinator == null)
         {
-            EndSession("critical_risk_without_guidance_coordinator");
+            EnterSafetyHold("critical_risk_without_guidance_coordinator", false);
         }
         else if (runState == ExperimentRunState.Completing)
         {
-            EndSession("critical_risk_during_completion");
+            EnterSafetyHold("critical_risk_during_completion", false);
         }
         else if (!guidanceCoordinator.IsAutomaticRecoveryActive)
         {
@@ -774,7 +792,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             }
             else if (IsSessionActiveState())
             {
-                EndSession("reset_completed_without_guidance_coordinator");
+                EnterSafetyHold("reset_completed_without_guidance_coordinator", false);
             }
             return;
         }
@@ -1037,9 +1055,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
             intervention != null ? intervention.Reason : "runtime safety intervention");
         if (IsSessionActiveState())
         {
-            EndSession(intervention != null && !string.IsNullOrWhiteSpace(intervention.Reason)
-                ? $"automatic_safety_termination: {intervention.Reason}"
-                : "automatic_safety_termination");
+            EnterSafetyHold(intervention != null && !string.IsNullOrWhiteSpace(intervention.Reason)
+                ? $"automatic_safety_hold: {intervention.Reason}"
+                : "automatic_safety_hold",
+                false);
         }
     }
 
@@ -1203,7 +1222,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        EndSession($"automatic_safety_termination: calibration state {state}");
+        EnterSafetyHold($"automatic_safety_hold: calibration state {state}", false);
     }
 
     private void HandleTrackingStateChanged(bool trackingActive)
@@ -1327,7 +1346,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             yield break;
         }
 
-        EndSession("automatic_safety_termination: tracking recovery timeout");
+        EnterSafetyHold("automatic_safety_hold: tracking recovery timeout", false);
     }
 
     private static double ElapsedSeconds(long startedTimestamp)
@@ -1715,5 +1734,28 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (guidanceExecutor == null) guidanceExecutor = FindObjectOfType<GuidanceExecutor>();
         if (pauseResetController == null) pauseResetController = FindObjectOfType<PauseResetController>();
         if (participantUiController == null) participantUiController = FindObjectOfType<ParticipantUiController>();
+    }
+
+    /// <summary>使用任务矩阵同步研究员侧任务下拉框，避免场景序列化列表与矩阵漂移。</summary>
+    private void ConfigureTaskDropdown()
+    {
+        if (taskDropdown == null)
+        {
+            var dropdownObject = GameObject.Find("TaskDropdown");
+            taskDropdown = dropdownObject != null ? dropdownObject.GetComponent<TMP_Dropdown>() : null;
+        }
+        if (taskDropdown == null || ExperimentConditionMatrix.TaskIds == null)
+        {
+            return;
+        }
+
+        var options = new List<string>(ExperimentConditionMatrix.TaskIds);
+        taskDropdown.ClearOptions();
+        taskDropdown.AddOptions(options);
+        var normalizedIndex = ExperimentConditionMatrix.TaskIds.Length > 0
+            ? ((taskIndex % ExperimentConditionMatrix.TaskIds.Length) + ExperimentConditionMatrix.TaskIds.Length) %
+              ExperimentConditionMatrix.TaskIds.Length
+            : 0;
+        taskDropdown.SetValueWithoutNotify(normalizedIndex);
     }
 }

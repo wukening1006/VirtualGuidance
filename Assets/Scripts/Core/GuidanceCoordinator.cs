@@ -2118,7 +2118,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ClearDeferredNavigationRecovery();
         TransitionRecoveryTo(GuidanceRecoveryState.Terminated, reason);
         pauseResetController?.CancelReset(reason);
-        taskController?.EndTask();
+        // HardStop 只终止当前恢复链路，不提前结束实验任务；未到最终目标时由会话层进入 SafetyHold。
         ClearResetTargetContext();
         TriggerRuntimeIntervention(null, reason);
     }

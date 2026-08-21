@@ -17,7 +17,7 @@ public sealed class ExperimentConditionSpec
     /// <summary>physical space 配置 ID。</summary>
     public string physicalSpaceId = "narrow_room";
     /// <summary>任务开始时的展品 ID。</summary>
-    public string startExhibitId = "E1";
+    public string startExhibitId = string.Empty;
     /// <summary>初次请求建议使用的语义目标 ID。</summary>
     public string semanticNextTargetId = string.Empty;
     /// <summary>任务不可变的最终目标展品 ID。</summary>
@@ -27,9 +27,9 @@ public sealed class ExperimentConditionSpec
     /// <summary>最终目标解锁前至少需要到达的中间展品数量。</summary>
     [Min(0)] public int minimumIntermediateVisits = 3;
     /// <summary>达到后必须前往最终目标的中间展品数量上限。</summary>
-    [Min(1)] public int maximumIntermediateVisits = 4;
+    [Min(1)] public int maximumIntermediateVisits = 3;
     /// <summary>包含起点在内的有序路线展品 ID。</summary>
-    public string[] routeTargetIds = { "E1" };
+    public string[] routeTargetIds = Array.Empty<string>();
     /// <summary>
     /// 转换为任务控制器使用的定义，并复制路线数组以隔离后续修改。
     /// </summary>

@@ -28,7 +28,7 @@ public sealed class GuidanceRuntimeState
     /// <summary>当前任务 ID，必须与实验条件和后端 schema 使用相同取值。</summary>
     public string taskId = "T2_main_target";
     /// <summary>用户当前已到达的展品 ID。</summary>
-    public string currentExhibitId = "E1";
+    public string currentExhibitId = string.Empty;
     /// <summary>当前局部计划的第一步目标 ID；未生成计划时为空。</summary>
     public string nextTargetId = string.Empty;
     /// <summary>本次任务不可变的最终目标 ID。</summary>
@@ -38,13 +38,13 @@ public sealed class GuidanceRuntimeState
     /// <summary>当前最终目标任务阶段。</summary>
     public GuidanceTaskStage taskStage = GuidanceTaskStage.Exploring;
     /// <summary>已参观展品 ID，按首次到达顺序保存。</summary>
-    public string[] visitedExhibitIds = new[] { "E1" };
+    public string[] visitedExhibitIds = Array.Empty<string>();
     /// <summary>已经确认到达的中间展品数量，不包含起点和最终目标。</summary>
     public int intermediateVisitCount;
     /// <summary>最终目标允许被选择前需要完成的最少中间展品数量。</summary>
     public int minimumIntermediateVisits = 3;
     /// <summary>达到后必须锁定最终目标的中间展品数量。</summary>
-    public int maximumIntermediateVisits = 4;
+    public int maximumIntermediateVisits = 3;
     /// <summary>当前有效语义计划 ID。</summary>
     public string activePlanId = string.Empty;
     /// <summary>当前语义计划代际。</summary>
@@ -86,6 +86,8 @@ public sealed class GuidanceRuntimeState
 
     /// <summary>任务当前是否允许请求 guidance 或接受到达事件。</summary>
     public bool IsNavigating => phase == GuidanceRuntimePhase.Navigating;
+    /// <summary>当前是否已经存在真实展品位置；任务启动时允许为空。</summary>
+    public bool HasCurrentExhibit => !string.IsNullOrWhiteSpace(currentExhibitId);
     /// <summary>当前是否已经满足选择最终目标的最少中间游览数量。</summary>
     public bool CanSelectFinalGoal => intermediateVisitCount >= minimumIntermediateVisits;
     /// <summary>当前规划是否只能选择最终目标。</summary>
@@ -133,9 +135,9 @@ public sealed class GuidanceRuntimeState
         int detourLimit = 2)
     {
         taskId = EmptyFallback(nextTaskId, taskId);
-        currentExhibitId = EmptyFallback(startExhibitId, "E1");
+        currentExhibitId = startExhibitId ?? string.Empty;
         nextTargetId = firstTargetId ?? string.Empty;
-        finalTargetId = EmptyFallback(finalTarget, "E5");
+        finalTargetId = finalTarget ?? string.Empty;
         visitedExhibitIds = string.IsNullOrWhiteSpace(currentExhibitId)
             ? Array.Empty<string>()
             : new[] { currentExhibitId };

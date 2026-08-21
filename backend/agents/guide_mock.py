@@ -56,7 +56,7 @@ class GuideMockAgent:
         return draft_for_direction(
             selected_target=target,
             direction=direction,
-            route_decision=route_decision_for_target(target),
+            route_decision=route_decision_for_target(request, target),
             narration=narration_for_direct_target(request, target),
             physical_intent=intent,
             intervention_type="none",
@@ -72,7 +72,7 @@ class GuideMockAgent:
         return draft_for_direction(
             selected_target=target,
             direction=direction,
-            route_decision=route_decision_for_target(target),
+            route_decision=route_decision_for_target(request, target),
             narration=(
                 "当前物理空间信息已提供，请按照目标方向缓慢前进。"
             ),
@@ -174,25 +174,33 @@ class GuideMockAgent:
         return draft_for_direction(
             selected_target=target,
             direction=direction,
-            route_decision=route_decision_for_affordance(affordance, target),
+            route_decision=route_decision_for_affordance(request, affordance, target),
             narration=narration,
             physical_intent=affordance.physical_goal,
             intervention_type=affordance.intervention_type,
         )
 
 
-def route_decision_for_target(target: str) -> RouteDecision:
-    return RouteDecision.DIRECT_TO_TARGET if target == "E5" else RouteDecision.VISIT_ROUTE_SUBGOAL
+def route_decision_for_target(request: GuidanceRequest, target: str) -> RouteDecision:
+    return (
+        RouteDecision.DIRECT_TO_TARGET
+        if target == request.final_target
+        else RouteDecision.VISIT_ROUTE_SUBGOAL
+    )
 
 
-def route_decision_for_affordance(affordance: Affordance, target: str) -> RouteDecision:
+def route_decision_for_affordance(
+    request: GuidanceRequest,
+    affordance: Affordance,
+    target: str,
+) -> RouteDecision:
     if affordance.intervention_type == "semantic_redirection":
         return RouteDecision.SEMANTIC_REDIRECT
-    return route_decision_for_target(target)
+    return route_decision_for_target(request, target)
 
 
 def narration_for_direct_target(request: GuidanceRequest, target: str) -> str:
-    if request.task_id == TaskId.T2_MAIN_TARGET.value and target == "E5":
+    if target == request.final_target:
         return "请继续向前，前往重点展品。"
     if request.task_id == TaskId.T3_COMPARE.value:
         return "请前往对比展品，观察它与当前内容的差异。"

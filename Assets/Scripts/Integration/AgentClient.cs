@@ -644,7 +644,7 @@ public sealed class AgentClient : MonoBehaviour, IGuidanceRequestClient, IRdwRou
             condition = EmptyFallback(context.condition, "B1_semantic_only"),
             task_id = EmptyFallback(context.task_id, "T2_main_target"),
             physical_space_id = EmptyFallback(physicalSpaceManager.CurrentSpaceId, "wide_room"),
-            current_exhibit = EmptyFallback(context.current_exhibit, "E1"),
+            current_exhibit = context.current_exhibit ?? string.Empty,
             final_target = context.final_target ?? string.Empty,
             preferred_task_target = context.preferred_task_target ?? string.Empty,
             candidate_ids = context.candidate_ids,

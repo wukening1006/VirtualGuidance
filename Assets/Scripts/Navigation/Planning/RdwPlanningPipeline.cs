@@ -74,6 +74,9 @@ public sealed class RdwPlanningSnapshotFactory
                                       pose.PhysicalSpaceId,
                                       riskState.physical_space,
                                       StringComparison.Ordinal);
+        var currentNodeId = runtimeState != null && !string.IsNullOrWhiteSpace(runtimeState.currentExhibitId)
+            ? runtimeState.currentExhibitId
+            : RdwPlanningPipeline.RuntimeStartNodeId;
         return new RdwPlanningSnapshot(
             RdwPlanningSnapshot.NewSnapshotId(),
             pose.Sequence,
@@ -86,7 +89,7 @@ public sealed class RdwPlanningSnapshotFactory
             riskState?.physical_space,
             riskState?.risk_snapshot_id,
             riskState?.risk_revision ?? 0,
-            runtimeState?.currentExhibitId,
+            currentNodeId,
             runtimeState?.finalTargetId,
             runtimeState?.stateVersion ?? 0,
             registryRevision,
@@ -243,6 +246,8 @@ public sealed class RdwPlanningNodeFactory
 /// </summary>
 public sealed class RdwPlanningPipeline
 {
+    /// <summary>任务启动时仅供 RDW 搜索使用的临时根节点，不属于展品或访问记录。</summary>
+    public const string RuntimeStartNodeId = "__runtime_start__";
     private readonly RdwPlanningSnapshotFactory snapshotFactory;
     private readonly RdwPlanningNodeFactory nodeFactory;
     private readonly RdwLocalGraphBuilder graphBuilder;

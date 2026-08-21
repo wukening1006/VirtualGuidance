@@ -18,9 +18,9 @@ from pydantic import (
 )
 
 
-TASK_DEFINITION_VERSION = "t2-main-target-v2"
+TASK_DEFINITION_VERSION = "natural-language-task-v1"
 GUIDANCE_SCHEMA_VERSION = "guidance-schema-v3"
-CANDIDATE_POLICY_VERSION = "t2-candidate-policy-v1"
+CANDIDATE_POLICY_VERSION = "candidate-policy-v2"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
 SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v2"
 RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v4"
@@ -341,6 +341,10 @@ class TaskId(str, Enum):
     T4_NEXT_STEP = "T4_next_step"
 
 
+# 任务启动时 RDW 搜索使用的临时根节点；它不是语义展品。
+RUNTIME_START_NODE_ID = "__runtime_start__"
+
+
 class NavigationTargetRole(str, Enum):
     FINAL_TARGET = "final_target"
     ROUTE_SUBGOAL = "route_subgoal"
@@ -538,9 +542,9 @@ class GuidanceRequest(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
     # 字段名对应 Unity/backend 接口契约；旧版本请求必须显式失败，不能与新客户端混用。
-    task_definition_version: Literal["t2-main-target-v2"]
+    task_definition_version: Literal["natural-language-task-v1"]
     guidance_schema_version: Literal["guidance-schema-v3"]
-    candidate_policy_version: Literal["t2-candidate-policy-v1"]
+    candidate_policy_version: Literal["candidate-policy-v2"]
     risk_policy_version: Literal["unity-risk-policy-v2"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)
@@ -552,7 +556,7 @@ class GuidanceRequest(BaseModel):
     condition: Condition
     task_id: TaskId
     physical_space_id: str = Field(min_length=1)
-    current_exhibit: str = Field(min_length=1)
+    current_exhibit: str = ""
     risk_snapshot: RiskSnapshot
     user_physical_position: list[float]
     user_physical_forward: list[float]
@@ -570,8 +574,6 @@ class GuidanceRequest(BaseModel):
     @field_validator("task_id")
     @classmethod
     def validate_active_task(cls, value: TaskId) -> TaskId:
-        if value != TaskId.T2_MAIN_TARGET:
-            raise ValueError("Formal sessions only support T2_main_target.")
         return value
 
     @field_validator("user_physical_position", "user_physical_forward")
@@ -583,8 +585,6 @@ class GuidanceRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_unity_snapshot_identity(self) -> "GuidanceRequest":
-        if self.task_id != TaskId.T2_MAIN_TARGET:
-            return self
         if self.risk_snapshot.source != "unity":
             raise ValueError("risk_snapshot.source must be unity.")
         if self.risk_snapshot.risk_snapshot_id != self.risk_snapshot_id:
@@ -618,8 +618,10 @@ class GuidanceRequest(BaseModel):
             raise ValueError("allowed_candidate_ids must be a subset of candidate_ids.")
         if semantic_candidate_ids != model_candidate_ids:
             raise ValueError("semantic_candidates ids must exactly match model_candidate_ids.")
-        if self.final_target not in candidate_ids or self.preferred_task_target not in candidate_ids:
-            raise ValueError("final_target and preferred_task_target must belong to candidate_ids.")
+        # 启动阶段 final_target 是任务契约字段，但按策略不会进入候选集合；
+        # preferred_task_target 必须始终来自本轮冻结候选。
+        if self.preferred_task_target not in candidate_ids:
+            raise ValueError("preferred_task_target must belong to candidate_ids.")
 
         policy = condition_policy_for(self.condition)
         if policy.use_safe_candidate_filter == ConditionCapabilityMode.ENABLED:
@@ -694,7 +696,7 @@ class NaturalLanguageTaskState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     phase: Literal["exploring", "final_approach", "completed"]
-    current_exhibit_id: str = Field(min_length=1)
+    current_exhibit_id: str = ""
     visited_exhibit_ids: list[str]
     intermediate_visit_count: int = Field(ge=0)
     required_target_id: str = ""
@@ -703,7 +705,16 @@ class NaturalLanguageTaskState(BaseModel):
     def validate_progress(self) -> "NaturalLanguageTaskState":
         if len(set(self.visited_exhibit_ids)) != len(self.visited_exhibit_ids):
             raise ValueError("visited_exhibit_ids must be unique.")
-        if self.current_exhibit_id not in self.visited_exhibit_ids:
+        if not self.current_exhibit_id:
+            if (
+                self.phase != "exploring"
+                or self.visited_exhibit_ids
+                or self.intermediate_visit_count != 0
+            ):
+                raise ValueError(
+                    "empty current_exhibit_id is only valid for the exploring startup snapshot."
+                )
+        elif self.current_exhibit_id not in self.visited_exhibit_ids:
             raise ValueError("current_exhibit_id must belong to visited_exhibit_ids.")
         if self.phase == "final_approach" and not self.required_target_id:
             raise ValueError("final_approach requires required_target_id.")
@@ -750,7 +761,7 @@ class SemanticPlanRequest(BaseModel):
         node_ids = [node.id for node in self.local_semantic_nodes]
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("local_semantic_nodes ids must be unique.")
-        if self.task_state.current_exhibit_id not in node_ids:
+        if self.task_state.current_exhibit_id and self.task_state.current_exhibit_id not in node_ids:
             raise ValueError("current_exhibit_id must belong to local_semantic_nodes.")
         policy = self.task.intermediate_policy
         if self.task_state.intermediate_visit_count > policy.maximum_visits:
@@ -953,10 +964,14 @@ class RouteSelectionRequest(BaseModel):
     def validate_candidate_identity(self) -> "RouteSelectionRequest":
         if self.final_target_id != self.task.final_goal.exhibit_id:
             raise ValueError("final_target_id must match task.final_goal.exhibit_id.")
-        if self.current_node_id != self.task_state.current_exhibit_id:
+        is_runtime_start = self.current_node_id == RUNTIME_START_NODE_ID
+        if is_runtime_start:
+            if self.task_state.current_exhibit_id:
+                raise ValueError("runtime start node requires an empty current_exhibit_id.")
+        elif self.current_node_id != self.task_state.current_exhibit_id:
             raise ValueError("current_node_id must match task_state.current_exhibit_id.")
         node_ids = {node.id for node in self.local_semantic_nodes}
-        if self.current_node_id not in node_ids:
+        if not is_runtime_start and self.current_node_id not in node_ids:
             raise ValueError("current_node_id must belong to local_semantic_nodes.")
         if any(
             node_id not in node_ids
@@ -1045,9 +1060,9 @@ class ResetSemanticInterventionResponse(BaseModel):
 class GuidanceResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True, extra="forbid")
 
-    task_definition_version: Literal["t2-main-target-v2"]
+    task_definition_version: Literal["natural-language-task-v1"]
     guidance_schema_version: Literal["guidance-schema-v3"]
-    candidate_policy_version: Literal["t2-candidate-policy-v1"]
+    candidate_policy_version: Literal["candidate-policy-v2"]
     risk_policy_version: Literal["unity-risk-policy-v2"]
     session_id: str = Field(min_length=1)
     calibration_id: str = Field(min_length=1)

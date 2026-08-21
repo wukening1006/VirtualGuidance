@@ -81,16 +81,14 @@ public static class ExperimentConditionMatrix
     /// <summary>当前正式实验允许启动的任务 ID 集合。</summary>
     public static readonly string[] TaskIds =
     {
-        "T2_main_target"
-    };
-
-    /// <summary>保留兼容身份但不允许进入正式 Session 的冻结任务 ID。</summary>
-    public static readonly string[] FrozenTaskIds =
-    {
         "T1_overview",
+        "T2_main_target",
         "T3_compare",
         "T4_next_step"
     };
+
+    /// <summary>兼容旧调用方的冻结任务集合；当前四个任务均已正式启用。</summary>
+    public static readonly string[] FrozenTaskIds = Array.Empty<string>();
 
     /// <summary>Assets/Configs 中可切换的 physical space ID 集合。</summary>
     public static readonly string[] PhysicalSpaces =
@@ -142,20 +140,17 @@ public static class ExperimentConditionMatrix
         for (var taskIndex = 0; taskIndex < TaskIds.Length; taskIndex++)
         {
             var spec = Build(0, taskIndex, 0, "semantic_validation");
-            ValidateExhibitReference(graph, errors, spec.startExhibitId, spec.taskId, "start_exhibit_id");
+            if (!string.IsNullOrWhiteSpace(spec.startExhibitId))
+            {
+                ValidateExhibitReference(graph, errors, spec.startExhibitId, spec.taskId, "start_exhibit_id");
+            }
             if (!string.IsNullOrWhiteSpace(spec.semanticNextTargetId))
             {
                 ValidateExhibitReference(graph, errors, spec.semanticNextTargetId, spec.taskId, "semantic_next_target_id");
             }
             ValidateExhibitReference(graph, errors, spec.finalTargetId, spec.taskId, "final_target_id");
 
-            if (spec.routeTargetIds == null || spec.routeTargetIds.Length == 0)
-            {
-                errors?.Add("experiment_matrix_route_missing:" + spec.taskId);
-                continue;
-            }
-
-            foreach (var exhibitId in spec.routeTargetIds)
+            foreach (var exhibitId in spec.routeTargetIds ?? Array.Empty<string>())
             {
                 ValidateExhibitReference(graph, errors, exhibitId, spec.taskId, "route_target_id");
             }
@@ -250,24 +245,54 @@ public static class ExperimentConditionMatrix
 
     private static void ApplyRoute(ExperimentConditionSpec spec, string taskId)
     {
-        spec.startExhibitId = "E1";
-        // 三种条件共享同一最终目标；Planner 只负责选择到达 E5 前的中间展品。
+        // 正式任务不预设起点或静态路线；首个目标由 Planner 从当前实时位置选择。
+        spec.startExhibitId = string.Empty;
         spec.semanticNextTargetId = string.Empty;
-        spec.finalTargetId = "E5";
+        spec.finalTargetId = FinalTargetFor(taskId);
         spec.minimumIntermediateVisits = 3;
-        spec.maximumIntermediateVisits = 4;
-        spec.routeTargetIds = new[] { "E1" };
+        spec.maximumIntermediateVisits = 3;
+        spec.routeTargetIds = Array.Empty<string>();
     }
 
     private static string UserTaskFor(string taskId)
     {
-        return "我想参观青铜神树。在到达它之前，请带我浏览几件有助于理解三星堆文化的相关展品，并说明它们与目标展品之间的联系，最后带我抵达青铜神树。";
+        switch (taskId)
+        {
+            case "T1_overview":
+                return "从人物、礼仪与自然象征入手，逐步建立对古蜀祭祀与精神世界的整体认识，最后抵达古蜀祭祀世界。";
+            case "T2_main_target":
+                return "沿着自然意象与宇宙观线索探索相关展品，理解古蜀人如何表达天地与自然，最后抵达青铜神树。";
+            case "T3_compare":
+                return "沿着人物形象与身份表达的线索进行比较，关注青铜、覆金以及仪式角色之间的差异，最后抵达戴金面罩青铜人头像。";
+            case "T4_next_step":
+                return "从普通人物形象逐步走向夸张、神圣的人物表达，关注面部特征与祭祀语境的变化，最后抵达青铜纵目面具。";
+            default:
+                return string.Empty;
+        }
     }
 
-    /// <summary>检查任务是否属于当前正式实验允许启动的 T2 范围。</summary>
+    /// <summary>返回正式任务固定的最终目标展品 ID。</summary>
+    public static string FinalTargetFor(string taskId)
+    {
+        switch (taskId)
+        {
+            case "T1_overview": return "E8";
+            case "T2_main_target": return "E5";
+            case "T3_compare": return "E6";
+            case "T4_next_step": return "E3";
+            default: return string.Empty;
+        }
+    }
+
+    /// <summary>检查任务是否属于当前正式实验允许启动的四个正式任务。</summary>
     public static bool IsFormalTaskSupported(string taskId)
     {
-        return string.Equals(taskId, "T2_main_target", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(taskId)) return false;
+        foreach (var formalTaskId in TaskIds)
+        {
+            if (string.Equals(taskId, formalTaskId, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static void ValidateExhibitReference(
