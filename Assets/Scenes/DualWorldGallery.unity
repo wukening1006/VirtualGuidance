@@ -4586,7 +4586,7 @@ MonoBehaviour:
   maxClearanceMeters: 3
   unsafeClearanceMeters: 0.8
   safeClearanceMeters: 1.2
-  criticalClearanceMeters: 0.45
+  criticalClearanceMeters: 0.6
 --- !u!114 &2100100021
 MonoBehaviour:
   m_ObjectHideFlags: 0

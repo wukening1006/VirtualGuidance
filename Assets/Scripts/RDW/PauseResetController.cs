@@ -210,6 +210,13 @@ public sealed class PauseResetController : MonoBehaviour
             return false;
         }
 
+        if (state == ResetLifecycleState.Required ||
+            state == ResetLifecycleState.TurningToSafeHeading)
+        {
+            // 已提交的 Reset 航向保持不变；新风险由 Reset 完成后的统一复验处理。
+            return true;
+        }
+
         IsPaused = true;
         rotationGainController?.AbortGain("reset_required");
         guidanceExecutor?.Clear();

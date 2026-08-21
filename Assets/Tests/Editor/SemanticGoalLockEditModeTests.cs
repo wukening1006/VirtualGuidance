@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -178,6 +179,31 @@ public sealed class SemanticGoalLockEditModeTests
             Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
     }
 
+    /// <summary>固定目标 Recovery Hold 不得进入通用语义重规划等待。</summary>
+    [Test]
+    public void NavigationRecoveryHold_DoesNotEnterSemanticReplanHold()
+    {
+        var root = new GameObject("FixedTargetRecoveryHoldTest");
+        try
+        {
+            var coordinator = root.AddComponent<GuidanceCoordinator>();
+
+            InvokePrivate(
+                coordinator,
+                "EnterNavigationRecoveryHold",
+                CreateRisk(),
+                "state:1|risk:1",
+                "fixed target is temporarily unavailable");
+
+            Assert.That(coordinator.IsHoldingForNavigationRecovery, Is.True);
+            Assert.That(coordinator.IsHoldingForReplan, Is.False);
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(root);
+        }
+    }
+
     private static GuidanceRuntimeState CreateNavigatingState()
     {
         var state = new GuidanceRuntimeState();
@@ -257,6 +283,15 @@ public sealed class SemanticGoalLockEditModeTests
                 new Vector2(2f, 2f),
                 new Vector2(-2f, 2f)
             });
+    }
+
+    private static object InvokePrivate(object target, string methodName, params object[] arguments)
+    {
+        var method = target.GetType().GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.That(method, Is.Not.Null, $"Private method '{methodName}' was not found.");
+        return method.Invoke(target, arguments);
     }
 
     private sealed class CapturingHeadingEvaluator : IPhysicalHeadingEvaluator

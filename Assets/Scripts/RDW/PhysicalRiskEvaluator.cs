@@ -45,6 +45,11 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     public event Action<PhysicalRiskState> RiskStateChanged;
 
     /// <summary>
+    /// 风险快照确认参与者与物理障碍物重叠时触发；先于 RiskStateChanged 发布，供安全暂停优先介入。
+    /// </summary>
+    public event Action<string, PhysicalRiskState> CollisionDetected;
+
+    /// <summary>
     /// 获取最近一次 deterministic 风险计算结果。
     /// </summary>
     public PhysicalRiskState CurrentRiskState => currentRiskState;
@@ -178,8 +183,35 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
         }
 
         currentRiskState = CreateSnapshot(sample, space, calibrationId);
+        PublishCollisionDetection(currentRiskState);
         RiskStateChanged?.Invoke(currentRiskState);
         return currentRiskState;
+    }
+
+    private void PublishCollisionDetection(PhysicalRiskState riskState)
+    {
+        if (riskState == null || riskState.obstacle_context == null)
+        {
+            return;
+        }
+
+        foreach (var obstacle in riskState.obstacle_context)
+        {
+            if (obstacle == null)
+            {
+                continue;
+            }
+
+            var collisionRadius = Mathf.Max(0f, obstacle.radius) + Mathf.Max(0f, riskState.user_radius_meters);
+            if ((riskState.user_physical_position - obstacle.center).sqrMagnitude > collisionRadius * collisionRadius)
+            {
+                continue;
+            }
+
+            var obstacleId = string.IsNullOrWhiteSpace(obstacle.id) ? "unnamed_obstacle" : obstacle.id;
+            CollisionDetected?.Invoke(obstacleId, riskState);
+            return;
+        }
     }
 
     /// <summary>

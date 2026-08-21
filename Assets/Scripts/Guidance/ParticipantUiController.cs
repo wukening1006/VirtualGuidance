@@ -61,6 +61,9 @@ public sealed class ParticipantUiController : MonoBehaviour
     }
 
     public void ShowResearcherPaused() => ShowSafetyMessage("实验已暂停，请保持原地");
+    /// <summary>提示参与者因碰撞暂停，并等待研究员引导至安全位置。</summary>
+    public void ShowCollisionIntervention() =>
+        ShowSafetyMessage("检测到碰撞，实验已暂停\n请等待研究员引导至安全位置");
     public void ShowCriticalSafety() => ShowSafetyMessage("请立即停止移动，等待研究员指引");
     /// <summary>显示不暴露实验条件或内部风险原因的统一 Runtime Intervention 提示。</summary>
     public void ShowRuntimeIntervention() => ShowSafetyMessage("请停止移动，等待安全引导");

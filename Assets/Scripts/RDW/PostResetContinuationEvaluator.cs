@@ -20,6 +20,8 @@ public readonly struct PostResetContinuationAssessment
 {
     /// <summary>该朝向对应的导航可行性等级。</summary>
     public PostResetContinuationLevel Level { get; }
+    /// <summary>Reset 后原锁定目标是否可以直接执行。</summary>
+    public bool IsTargetExecutable => Level == PostResetContinuationLevel.DirectTarget;
     /// <summary>可继续导航时对应的锁定目标 ID；Hold 时为空。</summary>
     public string TargetId { get; }
     /// <summary>候选方向是否通过 Physical Safety Authority 的精确评估。</summary>

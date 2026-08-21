@@ -339,7 +339,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
         guidanceCoordinator.RequestNextGuidance(SemanticReplanReason.TaskStarted);
     }
 
+    /// <summary>由研究员手动暂停当前运行中的实验会话。</summary>
     public void PauseSession()
+    {
+        PauseSession("researcher pause", riskEvaluator?.CurrentRiskState, false);
+    }
+
+    private void PauseSession(string reason, PhysicalRiskState riskState, bool collisionIntervention)
     {
         if (runState != ExperimentRunState.Running)
         {
@@ -347,17 +353,24 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         experimentLogger.Session?.BeginPause();
-        LogTargetAbandoned(activeGuidanceTrace, "researcher pause");
+        LogTargetAbandoned(activeGuidanceTrace, reason);
         FreezeExperimentBehavior();
         taskController?.PauseForResearcher();
-        TransitionTo(ExperimentRunState.Paused, "Paused by researcher");
-        participantUiController?.ShowResearcherPaused();
+        TransitionTo(ExperimentRunState.Paused, reason);
+        if (collisionIntervention)
+        {
+            participantUiController?.ShowCollisionIntervention();
+        }
+        else
+        {
+            participantUiController?.ShowResearcherPaused();
+        }
         experimentLogger?.LogStatus(
             "session_paused",
             activeGuidanceTrace,
             taskController?.RuntimeState,
-            riskEvaluator?.CurrentRiskState,
-            "researcher pause");
+            riskState,
+            reason);
     }
 
     public void ResumeSession()
@@ -718,6 +731,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
                 state,
                 "Critical physical risk without an executable guidance action.");
         }
+    }
+
+    private void HandleCollisionDetected(string obstacleId, PhysicalRiskState riskState)
+    {
+        var resolvedObstacleId = string.IsNullOrWhiteSpace(obstacleId) ? "unnamed_obstacle" : obstacleId;
+        PauseSession($"collision researcher intervention: {resolvedObstacleId}", riskState, true);
     }
 
     private void HandleResetStarted(ResetEventInfo info)
@@ -1570,6 +1589,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (riskEvaluator != null)
         {
+            riskEvaluator.CollisionDetected -= HandleCollisionDetected;
+            riskEvaluator.CollisionDetected += HandleCollisionDetected;
             riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
             riskEvaluator.RiskStateChanged += HandleRiskStateChanged;
         }
@@ -1631,7 +1652,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator.NavigationRecoveryDiagnosed -= HandleNavigationRecoveryDiagnosed;
             guidanceCoordinator.ReplanHoldChanged -= HandleReplanHoldChanged;
         }
-        if (riskEvaluator != null) riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        if (riskEvaluator != null)
+        {
+            riskEvaluator.CollisionDetected -= HandleCollisionDetected;
+            riskEvaluator.RiskStateChanged -= HandleRiskStateChanged;
+        }
         if (pauseResetController != null)
         {
             pauseResetController.ResetStarted -= HandleResetStarted;
