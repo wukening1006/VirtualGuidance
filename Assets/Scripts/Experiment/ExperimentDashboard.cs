@@ -262,6 +262,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
         if (!CanStartSession(out var missing))
         {
             lastStatusMessage = "Cannot start: " + missing;
+            UnityEngine.Debug.LogWarning(
+                $"[ExperimentDashboard] 会话未启动，日志文件不会创建 | reason={missing} | " +
+                $"请先满足 Tracking、Calibration、Backend 等前置条件。",
+                this);
             if (missing.Contains("backend") || missing.Contains("reference"))
             {
                 participantUiController?.ShowSystemUnavailable();
@@ -722,12 +726,11 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             participantUiController?.ShowRecoveryStarted(info);
         }
-        experimentLogger?.LogStatus(
-            "reset_started",
+        experimentLogger?.LogResetStarted(
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            info != null ? $"safe heading yaw: {info.RelativeYawDegrees:F1} deg" : "reset started");
+            info);
     }
 
     private void HandleResetCompleted(ResetEventInfo _)
@@ -737,12 +740,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
             participantUiController?.HideResetHud();
             participantUiController?.ShowRecoveryReplanning();
         }
-        experimentLogger?.LogStatus(
-            "reset_completed",
+        experimentLogger?.LogResetCompleted(
             activeGuidanceTrace,
             taskController?.RuntimeState,
-            riskEvaluator?.CurrentRiskState,
-            "safe heading reached");
+            riskEvaluator?.CurrentRiskState);
         if (taskController != null &&
             taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
         {
@@ -895,19 +896,28 @@ public sealed class ExperimentDashboard : MonoBehaviour
             ? experimentLogger.LogRequest(
                 request,
                 riskEvaluator?.CurrentRiskState,
-                taskController?.RuntimeState.ActiveCandidateSetReservation)
+                taskController?.RuntimeState.ActiveCandidateSetReservation,
+                taskController?.RuntimeState)
             : LogTraceContext.FromRequest(request, riskEvaluator?.CurrentRiskState);
     }
 
     private void HandleResponseReceived(GuidanceResponse response)
     {
         activeGuidanceTrace = experimentLogger != null
-            ? experimentLogger.LogResponse(response, riskEvaluator?.CurrentRiskState)
+            ? experimentLogger.LogResponse(
+                response,
+                riskEvaluator?.CurrentRiskState,
+                taskController?.RuntimeState)
             : LogTraceContext.FromResponse(response, riskEvaluator?.CurrentRiskState);
     }
 
     private void HandleRequestFailed(string message)
     {
+        experimentLogger?.LogPlannerWaitingEnded(
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            "request_failed");
         experimentLogger?.LogStatus(
             "request_failed",
             activeGuidanceTrace,

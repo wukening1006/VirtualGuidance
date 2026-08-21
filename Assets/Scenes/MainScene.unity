@@ -677,7 +677,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   navigationTargets: {fileID: 19950178}
-  arrivalDistanceMeters: 0.85
+  arrivalDistanceMeters: 1
 --- !u!114 &19950177
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -16991,11 +16991,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3598fdd5c8d34185b5ecc132b3eb4ac9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  logFolderRelativeToProject: Logs/TestRuns
+  experimentDataRoot: D:\SoftwareFiles\MyCode\实验数据
   autoFlush: 1
   bufferSizeBytes: 65536
   flushIntervalSeconds: 1
-  usePersistentDataPathInPlayer: 1
   riskTelemetrySamplingRateHz: 5
   mirrorToUnityConsole: 1
 --- !u!114 &891366376

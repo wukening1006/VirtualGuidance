@@ -16,6 +16,8 @@ public sealed class ExperimentSession
     public string condition;
     /// <summary>本次会话的任务 ID。</summary>
     public string taskId;
+    /// <summary>由本次有序路线节点构成的稳定路线标识。</summary>
+    public string routeId;
     /// <summary>本次会话的 physical space ID。</summary>
     public string physicalSpaceId;
     /// <summary>ISO 8601 round-trip 格式的 UTC 开始时间。</summary>
@@ -65,6 +67,9 @@ public sealed class ExperimentSession
             participantId = spec.participantId,
             condition = spec.condition,
             taskId = spec.taskId,
+            routeId = spec.routeTargetIds != null && spec.routeTargetIds.Length > 0
+                ? string.Join(">", spec.routeTargetIds)
+                : spec.taskId,
             physicalSpaceId = spec.physicalSpaceId,
             startedAtUtc = timestamp.ToString("o"),
             startedTimestamp = Stopwatch.GetTimestamp(),

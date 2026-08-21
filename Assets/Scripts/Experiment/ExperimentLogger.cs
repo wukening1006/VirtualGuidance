@@ -120,18 +120,17 @@ public sealed class ExperimentLogger : MonoBehaviour
 {
     private const string ConsolePrefix = "VirtualGuidance";
     private const double StorageErrorReportIntervalSeconds = 10d;
+    private const string DefaultExperimentDataRoot = @"D:\SoftwareFiles\MyCode\实验数据";
 
     [Header("文件日志")]
-    [Tooltip("Editor 和测试环境使用的项目相对日志目录；Player 默认改用 persistentDataPath。")]
-    [SerializeField] private string logFolderRelativeToProject = "Logs/TestRuns";
+    [Tooltip("实验数据根目录；Session 文件将写入此目录下的 Sessions/<session_id>。")]
+    [SerializeField] private string experimentDataRoot = DefaultExperimentDataRoot;
     [Tooltip("启用后按缓冲阈值或时间间隔批量 Flush；关闭时仅在关键生命周期强制 Flush。")]
     [SerializeField] private bool autoFlush = true;
     [Tooltip("单个 JSONL Sink 的缓冲阈值，单位：字节。")]
     [SerializeField, Min(4096)] private int bufferSizeBytes = 65536;
     [Tooltip("自动批量 Flush 的最长间隔，单位：秒。")]
     [SerializeField, Min(0.1f)] private float flushIntervalSeconds = 1f;
-    [Tooltip("Player 构建启用后将日志写入 Application.persistentDataPath。")]
-    [SerializeField] private bool usePersistentDataPathInPlayer = true;
     [Tooltip("写入 session_meta.json 的风险 Telemetry 采样率，单位：Hz；应与 PhysicalRiskEvaluator 保持一致。")]
     [SerializeField, Min(0.1f)] private float riskTelemetrySamplingRateHz = 5f;
 
@@ -148,7 +147,24 @@ public sealed class ExperimentLogger : MonoBehaviour
     private ExperimentRunState runState = ExperimentRunState.Preparing;
     private string lastRiskEventSignature = string.Empty;
     private string lastConsoleRiskSignature = string.Empty;
+    private bool wasNearBoundary;
+    private bool wasBoundaryBreached;
+    private readonly HashSet<string> activeObstacleCollisions = new HashSet<string>();
     private long lastStorageErrorTimestamp;
+    private readonly Dictionary<string, long> requestStartedTimestamps = new Dictionary<string, long>();
+    private readonly HashSet<string> activePlannerWaitingIds = new HashSet<string>();
+    private Vector3 previousVirtualPosition;
+    private bool hasPreviousVirtualPosition;
+    private double accumulatedVirtualDistanceMeters;
+    private string activeMetricResetId = string.Empty;
+    private string activeExhibitDwellId = string.Empty;
+    private string activeExhibitId = string.Empty;
+    private Vector2 lastPhysicalPosition;
+    private Vector2 lastPhysicalForward;
+    private Vector3 lastVirtualPosition;
+    private Vector3 lastVirtualForward;
+    private string lastMetricState = "unknown";
+    private string lastTelemetryTimestamp = string.Empty;
     private readonly List<PendingCalibrationEvent> pendingCalibrationEvents = new List<PendingCalibrationEvent>();
 
     /// <summary>当前实验会话；尚未开始时为 null。</summary>
@@ -159,6 +175,33 @@ public sealed class ExperimentLogger : MonoBehaviour
     public string TelemetryLogPath => telemetryLogPath;
     /// <summary>当前 Session Meta JSON 的绝对路径；尚未开始时为空。</summary>
     public string SessionMetaPath => sessionMetaPath;
+
+    /// <summary>当前运行环境解析后的日志根目录，便于研究员定位输出文件。</summary>
+    public string ResolvedLogRootPath
+    {
+        get
+        {
+            try
+            {
+                return ResolveLogRootPath();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+    }
+
+    private void Awake()
+    {
+        // 启动时明确输出日志根目录；正式 JSONL 仍需点击 Start Session 才创建。
+        var root = ResolvedLogRootPath;
+        Debug.Log(
+            string.IsNullOrWhiteSpace(root)
+                ? $"[{ConsolePrefix}] 日志器已初始化，但日志根目录无效；请检查 Inspector 配置。"
+                : $"[{ConsolePrefix}] 日志器已初始化 | root={root} | 请点击 Start Session 创建会话日志。",
+            this);
+    }
 
     /// <summary>更新后续日志行使用的实验运行状态。</summary>
     public void SetRunState(ExperimentRunState state, LogTraceContext trace)
@@ -186,7 +229,31 @@ public sealed class ExperimentLogger : MonoBehaviour
         session = ExperimentSession.Start(spec);
         lastRiskEventSignature = string.Empty;
         lastConsoleRiskSignature = string.Empty;
+        wasNearBoundary = false;
+        wasBoundaryBreached = false;
+        activeObstacleCollisions.Clear();
+        requestStartedTimestamps.Clear();
+        activePlannerWaitingIds.Clear();
+        hasPreviousVirtualPosition = false;
+        accumulatedVirtualDistanceMeters = 0d;
+        activeMetricResetId = string.Empty;
+        activeExhibitDwellId = string.Empty;
+        activeExhibitId = string.Empty;
+        lastMetricState = "unknown";
+        lastTelemetryTimestamp = string.Empty;
         InitializeSessionFiles();
+        if (!string.IsNullOrWhiteSpace(logPath))
+        {
+            Debug.Log(
+                $"[{ConsolePrefix}] 会话日志已创建 | session_id={session.sessionId} | events={logPath} | telemetry={telemetryLogPath}",
+                this);
+        }
+        else
+        {
+            Debug.LogError(
+                $"[{ConsolePrefix}][ERROR] 会话已开始但日志文件创建失败 | root={ResolvedLogRootPath}",
+                this);
+        }
         Write("session_started", spec, null, null, null, null, "session started", LogTraceContext.Empty);
         FlushPendingCalibrationEvents();
     }
@@ -201,16 +268,22 @@ public sealed class ExperimentLogger : MonoBehaviour
     public LogTraceContext LogRequest(
         GuidanceRequest request,
         PhysicalRiskState riskState,
-        CandidateSetReservation candidateReservation = null)
+        CandidateSetReservation candidateReservation = null,
+        GuidanceRuntimeState runtimeState = null)
     {
         var trace = LogTraceContext.FromRequest(request, riskState);
+        if (!string.IsNullOrWhiteSpace(trace.RequestId))
+        {
+            requestStartedTimestamps[trace.RequestId] = Stopwatch.GetTimestamp();
+        }
+        BeginPlannerWaiting(trace.RequestId, trace, runtimeState, riskState, "guidance_request");
         Write(
             "guidance_requested",
             null,
             request,
             null,
             riskState,
-            null,
+            runtimeState,
             "guidance requested",
             trace,
             candidateReservation: candidateReservation);
@@ -218,10 +291,25 @@ public sealed class ExperimentLogger : MonoBehaviour
     }
 
     /// <summary>记录后端响应及响应到达时的物理风险状态。</summary>
-    public LogTraceContext LogResponse(GuidanceResponse response, PhysicalRiskState riskState)
+    public LogTraceContext LogResponse(
+        GuidanceResponse response,
+        PhysicalRiskState riskState,
+        GuidanceRuntimeState runtimeState = null)
     {
         var trace = LogTraceContext.FromResponse(response, riskState);
-        Write("guidance_received", null, null, response, riskState, null, "guidance received", trace, "pending");
+        var latencySeconds = ResolveRequestLatencySeconds(trace.RequestId);
+        Write(
+            "guidance_received",
+            null,
+            null,
+            response,
+            riskState,
+            runtimeState,
+            "guidance received",
+            trace,
+            "pending",
+            llmLatencySeconds: latencySeconds);
+        EndPlannerWaiting(trace.RequestId, trace, runtimeState, riskState, "response_received");
         return trace;
     }
 
@@ -246,6 +334,12 @@ public sealed class ExperimentLogger : MonoBehaviour
         GuidanceRuntimeState runtimeState,
         string reason = "")
     {
+        var requestId = FirstNonEmpty(request?.request_id, response?.request_id);
+        var trace = new LogTraceContext(requestId: requestId);
+        if (string.Equals(eventType, "semantic_plan_requested", StringComparison.Ordinal))
+        {
+            BeginPlannerWaiting(requestId, trace, runtimeState, null, "semantic_plan_request");
+        }
         Write(
             string.IsNullOrWhiteSpace(eventType) ? "semantic_plan" : eventType,
             null,
@@ -254,9 +348,15 @@ public sealed class ExperimentLogger : MonoBehaviour
             null,
             runtimeState,
             string.IsNullOrWhiteSpace(reason) ? "semantic plan" : reason,
-            LogTraceContext.Empty,
+            trace,
             semanticPlanRequest: request,
             semanticPlanResponse: response);
+        if (string.Equals(eventType, "semantic_plan_received", StringComparison.Ordinal) ||
+            string.Equals(eventType, "semantic_plan_failed", StringComparison.Ordinal) ||
+            string.Equals(eventType, "semantic_plan_stale", StringComparison.Ordinal))
+        {
+            EndPlannerWaiting(requestId, trace, runtimeState, null, eventType);
+        }
     }
 
     /// <summary>记录 Guidance 已通过条件与运行时验证。</summary>
@@ -275,12 +375,24 @@ public sealed class ExperimentLogger : MonoBehaviour
     public void LogGuidanceCancelled(LogTraceContext trace, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string reason)
     {
         Write("guidance_cancelled", null, null, null, riskState, runtimeState, reason, trace);
+        EndPlannerWaiting(trace?.RequestId, trace, runtimeState, riskState, "guidance_cancelled");
     }
 
     /// <summary>记录 Guidance 因请求身份或状态版本变化而过期。</summary>
     public void LogGuidanceExpired(LogTraceContext trace, GuidanceRuntimeState runtimeState, PhysicalRiskState riskState, string reason)
     {
         Write("guidance_expired", null, null, null, riskState, runtimeState, reason, trace);
+        EndPlannerWaiting(trace?.RequestId, trace, runtimeState, riskState, "guidance_expired");
+    }
+
+    /// <summary>关闭指定 Guidance 请求的 Planner Waiting 区间。</summary>
+    public void LogPlannerWaitingEnded(
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string reason)
+    {
+        EndPlannerWaiting(trace?.RequestId, trace, runtimeState, riskState, reason);
     }
 
     /// <summary>记录一次 Physical Space 校准尝试开始；会话未开始时暂存到下一份会话日志。</summary>
@@ -342,6 +454,12 @@ public sealed class ExperimentLogger : MonoBehaviour
         PhysicalRiskState riskState)
     {
         LogTargetEvent("target_completed", trace, target, runtimeState, riskState, "target completed");
+        if (target != null &&
+            (target.TargetRole == NavigationTargetRole.RouteSubgoal ||
+             target.TargetRole == NavigationTargetRole.FinalTarget))
+        {
+            BeginExhibitDwell(target.TargetId, trace, runtimeState, riskState);
+        }
     }
 
     /// <summary>记录一次 NavigableDetour 被选为当前 Guidance Target。</summary>
@@ -478,6 +596,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             trace,
             "approved",
             executed: true);
+        EndExhibitDwell(trace, runtimeState, riskState, "next_guidance_executed");
     }
 
     /// <summary>
@@ -506,6 +625,54 @@ public sealed class ExperimentLogger : MonoBehaviour
             virtualPosition,
             virtualForward);
 
+        var isNearBoundary = string.Equals(riskState.boundary_risk, "medium", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(riskState.boundary_risk, "high", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase);
+        if (isNearBoundary != wasNearBoundary)
+        {
+            Write(
+                isNearBoundary ? "near_boundary_enter" : "near_boundary_exit",
+                null,
+                null,
+                null,
+                riskState,
+                runtimeState,
+                isNearBoundary ? "near boundary entered" : "near boundary exited",
+                trace);
+            wasNearBoundary = isNearBoundary;
+        }
+
+        var boundaryBreached = riskState.boundary_context != null &&
+                               riskState.boundary_context.Count >= 3 &&
+                               !PhysicalSpaceGeometry.ContainsPoint(
+                                   riskState.boundary_context,
+                                   riskState.user_physical_position);
+        if (boundaryBreached && !wasBoundaryBreached)
+        {
+            LogBoundaryBreach(riskState);
+        }
+        wasBoundaryBreached = boundaryBreached;
+
+        var currentCollisions = new HashSet<string>();
+        foreach (var obstacle in riskState.obstacle_context)
+        {
+            if (obstacle == null) continue;
+            var collisionRadius = Mathf.Max(0f, obstacle.radius) + Mathf.Max(0f, riskState.user_radius_meters);
+            if ((riskState.user_physical_position - obstacle.center).sqrMagnitude > collisionRadius * collisionRadius)
+            {
+                continue;
+            }
+
+            var obstacleId = string.IsNullOrWhiteSpace(obstacle.id) ? "unnamed_obstacle" : obstacle.id;
+            currentCollisions.Add(obstacleId);
+            if (!activeObstacleCollisions.Contains(obstacleId))
+            {
+                LogCollision(obstacleId, riskState);
+            }
+        }
+        activeObstacleCollisions.Clear();
+        foreach (var obstacleId in currentCollisions) activeObstacleCollisions.Add(obstacleId);
+
         var signature = BuildRiskSignature(riskState);
         if (string.Equals(signature, lastRiskEventSignature, StringComparison.Ordinal))
         {
@@ -525,6 +692,75 @@ public sealed class ExperimentLogger : MonoBehaviour
         string message)
     {
         Write(eventType, null, null, null, riskState, runtimeState, message, trace);
+    }
+
+    /// <summary>记录一次可重建的 Reset 开始事件，并生成稳定 reset_id。</summary>
+    public void LogResetStarted(
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ResetEventInfo info)
+    {
+        activeMetricResetId = Guid.NewGuid().ToString("N");
+        Write(
+            "reset_started",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            info != null ? $"safe heading yaw: {info.RelativeYawDegrees:F1} deg" : "reset started",
+            trace,
+            resetId: activeMetricResetId,
+            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+    }
+
+    /// <summary>记录与最近一次 Reset 开始配对的完成事件。</summary>
+    public void LogResetCompleted(
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        Write(
+            "reset_completed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "safe heading reached",
+            trace,
+            resetId: activeMetricResetId,
+            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+        activeMetricResetId = string.Empty;
+    }
+
+    /// <summary>由实际碰撞检测组件按一次接触进入调用，持续接触不得逐帧调用。</summary>
+    public void LogCollision(string colliderId, PhysicalRiskState riskState = null)
+    {
+        Write(
+            "collision",
+            null,
+            null,
+            null,
+            riskState,
+            null,
+            string.IsNullOrWhiteSpace(colliderId) ? "collision" : $"collision: {colliderId}",
+            LogTraceContext.FromRisk(riskState));
+    }
+
+    /// <summary>由物理边界检测在首次越界时调用，持续越界不得逐帧调用。</summary>
+    public void LogBoundaryBreach(PhysicalRiskState riskState)
+    {
+        Write(
+            "boundary_breach",
+            null,
+            null,
+            null,
+            riskState,
+            null,
+            "physical boundary breached",
+            LogTraceContext.FromRisk(riskState));
     }
 
     /// <summary>记录 Rotation Gain 生命周期及本轮配置、有效倍率和角度预算。</summary>
@@ -585,6 +821,12 @@ public sealed class ExperimentLogger : MonoBehaviour
         string message,
         string formalSelectedTargetId = "")
     {
+        var requestId = FirstNonEmpty(callIdentity?.RequestId, selectionResponse?.request_id);
+        var trace = new LogTraceContext(requestId: requestId);
+        if (string.Equals(eventType, "planning_route_selection_requested", StringComparison.Ordinal))
+        {
+            BeginPlannerWaiting(requestId, trace, runtimeState, riskState, "route_selection_request");
+        }
         Write(
             eventType,
             null,
@@ -593,7 +835,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             riskState,
             runtimeState,
             message,
-            LogTraceContext.Empty,
+            trace,
             selectedTargetOverride: formalSelectedTargetId,
             rdwPlanningMode: mode,
             rdwPlanningResult: planningResult,
@@ -601,6 +843,11 @@ public sealed class ExperimentLogger : MonoBehaviour
             rdwRouteSelectionResponse: selectionResponse,
             rdwRoutePlan: routePlan,
             rdwPlanInvalidationReason: invalidationReason);
+        if (string.Equals(eventType, "planning_route_selected", StringComparison.Ordinal) ||
+            string.Equals(eventType, "planning_route_selection_failed", StringComparison.Ordinal))
+        {
+            EndPlannerWaiting(requestId, trace, runtimeState, riskState, eventType);
+        }
     }
 
     /// <summary>记录重规划等待的规划指纹、风险修订与退避次数。</summary>
@@ -651,6 +898,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             return;
         }
 
+        CloseOpenMetricIntervals(trace, reason);
         Write(
             "session_ended",
             null,
@@ -662,7 +910,9 @@ public sealed class ExperimentLogger : MonoBehaviour
             trace);
         Flush();
         session.End(reason);
+        WriteSessionMeta();
         CloseWriters();
+        TryBuildSessionResult();
     }
 
     /// <summary>立即 Flush 当前 Event 与 Telemetry 缓冲。</summary>
@@ -682,6 +932,12 @@ public sealed class ExperimentLogger : MonoBehaviour
 
     private void OnApplicationQuit()
     {
+        if (session != null && session.IsActive)
+        {
+            EndSession("application_quit", LogTraceContext.Empty);
+            return;
+        }
+
         Flush();
     }
 
@@ -729,7 +985,13 @@ public sealed class ExperimentLogger : MonoBehaviour
         RoutePlan rdwRoutePlan = null,
         RoutePlanInvalidationReason rdwPlanInvalidationReason = RoutePlanInvalidationReason.None,
         SemanticPlanRequest semanticPlanRequest = null,
-        SemanticPlanResponse semanticPlanResponse = null)
+        SemanticPlanResponse semanticPlanResponse = null,
+        double? llmLatencySeconds = null,
+        string resetId = "",
+        string intervalId = "",
+        string intervalReason = "",
+        string exhibitId = "",
+        JObject metricSnapshot = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -815,6 +1077,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             var data = new JObject
             {
                 ["log_schema_version"] = "natural-language-task-experiment-v3",
+                ["event_type"] = eventType,
                 ["participant_id"] = participantId,
                 ["condition"] = condition,
                 ["policy_version"] = ExperimentConditionPolicy.CurrentVersion,
@@ -838,6 +1101,47 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["current_heading"] = SerializeHeadingSample(
                     riskState != null ? riskState.current_heading : default(HeadingSample))
             };
+
+            if (string.Equals(eventType, "guidance_requested", StringComparison.Ordinal) ||
+                string.Equals(eventType, "guidance_received", StringComparison.Ordinal))
+            {
+                data["call_id"] = requestId;
+            }
+            if (llmLatencySeconds.HasValue)
+            {
+                data["latency_s"] = llmLatencySeconds.Value;
+            }
+            if (!string.IsNullOrWhiteSpace(resetId))
+            {
+                data["reset_id"] = resetId;
+                data["reset_phase"] = string.Equals(eventType, "reset_started", StringComparison.Ordinal)
+                    ? "start"
+                    : string.Equals(eventType, "reset_completed", StringComparison.Ordinal) ? "end" : string.Empty;
+                if (riskState != null)
+                {
+                    data["reset_position"] = new JObject
+                    {
+                        ["x"] = riskState.user_physical_position.x,
+                        ["z"] = riskState.user_physical_position.y
+                    };
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(intervalId))
+            {
+                data["interval_id"] = intervalId;
+            }
+            if (!string.IsNullOrWhiteSpace(intervalReason))
+            {
+                data["interval_reason"] = intervalReason;
+            }
+            if (!string.IsNullOrWhiteSpace(exhibitId))
+            {
+                data["exhibit_id"] = exhibitId;
+            }
+            if (metricSnapshot != null)
+            {
+                data["metric_snapshot"] = metricSnapshot;
+            }
 
             var profile = ExperimentConditionMatrix.GetProfile(condition);
             data["condition_id"] = condition;
@@ -882,6 +1186,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             if (candidateReservation != null)
             {
                 data["candidate_assessments"] = SerializeCandidateAssessments(candidateReservation.Assessments);
+                data["k_before"] = candidateReservation.CandidateIds.Count;
+                data["k_after"] = candidateReservation.ModelCandidateIds.Count;
             }
             if (response != null && response.verifier != null)
             {
@@ -1113,6 +1419,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             {
                 ["timestamp"] = timestamp,
                 ["elapsed_ms"] = elapsedMilliseconds,
+                ["elapsed_s"] = elapsedMilliseconds / 1000d,
                 ["record_type"] = "event",
                 ["level"] = ConsoleLevelLabel(descriptor.Level),
                 ["category"] = descriptor.Category,
@@ -1274,8 +1581,16 @@ public sealed class ExperimentLogger : MonoBehaviour
             case "guidance_cancelled": return new EventDescriptor("guidance.cancelled", "Guidance", level);
             case "guidance_expired": return new EventDescriptor("guidance.expired", "Guidance", level);
             case "guidance_executed": return new EventDescriptor("guidance.executed", "Guidance", level);
+            case "planner_waiting_start": return new EventDescriptor("planner.waiting_start", "Planning", level);
+            case "planner_waiting_end": return new EventDescriptor("planner.waiting_end", "Planning", level);
+            case "exhibit_dwell_start": return new EventDescriptor("task.exhibit_dwell_start", "Task", level);
+            case "exhibit_dwell_end": return new EventDescriptor("task.exhibit_dwell_end", "Task", level);
             case "runtime_intervention": return new EventDescriptor("safety.decision", "Safety", level);
             case "risk_changed": return new EventDescriptor("safety.risk_changed", "Safety", level);
+            case "near_boundary_enter": return new EventDescriptor("safety.near_boundary_enter", "Safety", level);
+            case "near_boundary_exit": return new EventDescriptor("safety.near_boundary_exit", "Safety", level);
+            case "collision": return new EventDescriptor("safety.collision", "Safety", level);
+            case "boundary_breach": return new EventDescriptor("safety.boundary_breach", "Safety", level);
             case "safety_hold": return new EventDescriptor("safety.hold", "Safety", level);
             case "reset_started": return new EventDescriptor("safety.pause_reset_started", "Safety", level);
             case "reset_completed": return new EventDescriptor("safety.pause_reset_completed", "Safety", level);
@@ -1358,6 +1673,22 @@ public sealed class ExperimentLogger : MonoBehaviour
             var stateVersion = trace.HasGuidanceIdentity
                 ? trace.StateVersion
                 : runtimeState != null ? runtimeState.stateVersion : 0;
+            if (hasPreviousVirtualPosition)
+            {
+                var delta = virtualPosition - previousVirtualPosition;
+                delta.y = 0f;
+                accumulatedVirtualDistanceMeters += delta.magnitude;
+            }
+            previousVirtualPosition = virtualPosition;
+            hasPreviousVirtualPosition = true;
+            var state = ResolveMetricState(runtimeState);
+            var timestamp = DateTime.UtcNow.ToString("o");
+            lastPhysicalPosition = riskState.user_physical_position;
+            lastPhysicalForward = riskState.user_physical_forward;
+            lastVirtualPosition = virtualPosition;
+            lastVirtualForward = virtualForward;
+            lastMetricState = state;
+            lastTelemetryTimestamp = timestamp;
             var traceObject = new JObject
             {
                 ["calibration_id"] = calibrationId,
@@ -1370,6 +1701,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             {
                 ["task_id"] = FirstNonEmpty(runtimeState?.taskId, session.taskId),
                 ["runtime_phase"] = runtimeState != null ? runtimeState.phase.ToString() : string.Empty,
+                ["state"] = state,
                 ["physical_space_id"] = FirstNonEmpty(riskState.physical_space, session.physicalSpaceId),
                 ["tracking_valid"] = trackingValid,
                 ["calibration_valid"] = calibrationValid,
@@ -1379,12 +1711,28 @@ public sealed class ExperimentLogger : MonoBehaviour
                     ["x"] = riskState.user_physical_position.x,
                     ["z"] = riskState.user_physical_position.y
                 },
+                ["physical_position"] = new JObject
+                {
+                    ["x"] = riskState.user_physical_position.x,
+                    ["z"] = riskState.user_physical_position.y
+                },
                 ["physical_forward"] = new JObject
                 {
                     ["x"] = riskState.user_physical_forward.x,
                     ["z"] = riskState.user_physical_forward.y
                 },
+                ["physical_rotation"] = new JObject
+                {
+                    ["forward_x"] = riskState.user_physical_forward.x,
+                    ["forward_z"] = riskState.user_physical_forward.y
+                },
                 ["virtual_position_m"] = new JObject
+                {
+                    ["x"] = virtualPosition.x,
+                    ["y"] = virtualPosition.y,
+                    ["z"] = virtualPosition.z
+                },
+                ["virtual_position"] = new JObject
                 {
                     ["x"] = virtualPosition.x,
                     ["y"] = virtualPosition.y,
@@ -1396,6 +1744,14 @@ public sealed class ExperimentLogger : MonoBehaviour
                     ["y"] = virtualForward.y,
                     ["z"] = virtualForward.z
                 },
+                ["virtual_rotation"] = new JObject
+                {
+                    ["forward_x"] = virtualForward.x,
+                    ["forward_y"] = virtualForward.y,
+                    ["forward_z"] = virtualForward.z
+                },
+                ["virtual_distance_m"] = accumulatedVirtualDistanceMeters,
+                ["clearance_m"] = riskState.current_heading.ClearanceMeters,
                 ["current_heading"] = SerializeHeadingSample(riskState.current_heading),
                 ["boundary_risk"] = riskState.boundary_risk ?? string.Empty,
                 ["reset_risk"] = riskState.reset_risk ?? string.Empty,
@@ -1407,8 +1763,9 @@ public sealed class ExperimentLogger : MonoBehaviour
             };
             var record = new JObject
             {
-                ["timestamp"] = DateTime.UtcNow.ToString("o"),
+                ["timestamp"] = timestamp,
                 ["elapsed_ms"] = session.ElapsedMilliseconds,
+                ["elapsed_s"] = session.ElapsedMilliseconds / 1000d,
                 ["record_type"] = "telemetry",
                 ["category"] = "Safety",
                 ["sample_name"] = "risk.snapshot",
@@ -1945,16 +2302,42 @@ public sealed class ExperimentLogger : MonoBehaviour
 
     private string ResolveLogRootPath()
     {
-#if UNITY_EDITOR
-        return Path.GetFullPath(Path.Combine(Application.dataPath, "..", logFolderRelativeToProject));
-#else
-        if (usePersistentDataPathInPlayer)
+        if (!Application.isEditor)
         {
-            return Path.Combine(Application.persistentDataPath, "VirtualGuidance", "Logs");
+            return Path.GetFullPath(Path.Combine(Application.persistentDataPath, "ExperimentData"));
         }
 
-        return Path.GetFullPath(Path.Combine(Application.dataPath, "..", logFolderRelativeToProject));
-#endif
+        var configuredRoot = string.IsNullOrWhiteSpace(experimentDataRoot)
+            ? DefaultExperimentDataRoot
+            : experimentDataRoot.Trim();
+        return Path.GetFullPath(configuredRoot);
+    }
+
+    private void TryBuildSessionResult()
+    {
+        var sessionDirectory = Path.GetDirectoryName(sessionMetaPath);
+        if (string.IsNullOrWhiteSpace(sessionDirectory) || !Directory.Exists(sessionDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            var projectDirectory = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "python",
+                Arguments = $"-m backend.session_metrics \"{sessionDirectory}\"",
+                WorkingDirectory = projectDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            Process.Start(startInfo)?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"{ConsolePrefix}: result.json 自动生成启动失败：{exception.Message}");
+        }
     }
 
     private void WriteSessionMeta()
@@ -1974,6 +2357,9 @@ public sealed class ExperimentLogger : MonoBehaviour
                 task_id = session.taskId,
                 physical_space_id = session.physicalSpaceId,
                 started_at_utc = session.startedAtUtc,
+                ended_at_utc = session.endedAtUtc,
+                end_reason = session.endReason,
+                route_id = session.routeId,
                 application_version = Application.version,
                 unity_version = Application.unityVersion,
                 scene_name = SceneManager.GetActiveScene().name,
@@ -1984,7 +2370,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                 buffer_bytes = bufferSizeBytes,
                 position_unit = "meter",
                 rotation_unit = "degree",
-                time_unit = "millisecond",
+                time_unit = "second",
                 coordinate_convention = "Unity left-handed world; calibrated physical XZ plane"
             };
             File.WriteAllText(sessionMetaPath, JsonUtility.ToJson(meta, true), new UTF8Encoding(false));
@@ -2073,6 +2459,185 @@ public sealed class ExperimentLogger : MonoBehaviour
                 riskState.current_heading.Safety);
     }
 
+    private void BeginPlannerWaiting(
+        string requestId,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string reason)
+    {
+        if (string.IsNullOrWhiteSpace(requestId) || !activePlannerWaitingIds.Add(requestId))
+        {
+            return;
+        }
+
+        Write(
+            "planner_waiting_start",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "planner waiting started",
+            trace ?? new LogTraceContext(requestId: requestId),
+            intervalId: requestId,
+            intervalReason: reason);
+    }
+
+    private void EndPlannerWaiting(
+        string requestId,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string reason)
+    {
+        if (string.IsNullOrWhiteSpace(requestId) || !activePlannerWaitingIds.Remove(requestId))
+        {
+            return;
+        }
+
+        requestStartedTimestamps.Remove(requestId);
+        Write(
+            "planner_waiting_end",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "planner waiting ended",
+            trace ?? new LogTraceContext(requestId: requestId),
+            intervalId: requestId,
+            intervalReason: reason);
+    }
+
+    private void BeginExhibitDwell(
+        string exhibitId,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        if (string.IsNullOrWhiteSpace(exhibitId))
+        {
+            return;
+        }
+
+        EndExhibitDwell(trace, runtimeState, riskState, "next_exhibit_arrived");
+        activeExhibitDwellId = Guid.NewGuid().ToString("N");
+        activeExhibitId = exhibitId;
+        Write(
+            "exhibit_dwell_start",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "exhibit dwell started",
+            trace,
+            selectedTargetOverride: exhibitId,
+            intervalId: activeExhibitDwellId,
+            intervalReason: "target_arrived",
+            exhibitId: exhibitId);
+    }
+
+    private void EndExhibitDwell(
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string reason)
+    {
+        if (string.IsNullOrWhiteSpace(activeExhibitDwellId))
+        {
+            return;
+        }
+
+        Write(
+            "exhibit_dwell_end",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "exhibit dwell ended",
+            trace,
+            selectedTargetOverride: activeExhibitId,
+            intervalId: activeExhibitDwellId,
+            intervalReason: reason,
+            exhibitId: activeExhibitId);
+        activeExhibitDwellId = string.Empty;
+        activeExhibitId = string.Empty;
+    }
+
+    private void CloseOpenMetricIntervals(LogTraceContext trace, string reason)
+    {
+        var openWaitingIds = new List<string>(activePlannerWaitingIds);
+        foreach (var requestId in openWaitingIds)
+        {
+            EndPlannerWaiting(requestId, new LogTraceContext(requestId: requestId), null, null, reason);
+        }
+        EndExhibitDwell(trace, null, null, reason);
+    }
+
+    private JObject CreateMetricSnapshot(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    {
+        var physicalPosition = riskState != null ? riskState.user_physical_position : lastPhysicalPosition;
+        var physicalForward = riskState != null ? riskState.user_physical_forward : lastPhysicalForward;
+        return new JObject
+        {
+            ["telemetry_available"] = hasPreviousVirtualPosition,
+            ["telemetry_timestamp"] = lastTelemetryTimestamp,
+            ["state"] = runtimeState != null ? ResolveMetricState(runtimeState) : lastMetricState,
+            ["virtual_distance_m"] = accumulatedVirtualDistanceMeters,
+            ["virtual_position_m"] = new JObject
+            {
+                ["x"] = lastVirtualPosition.x,
+                ["y"] = lastVirtualPosition.y,
+                ["z"] = lastVirtualPosition.z
+            },
+            ["virtual_rotation"] = new JObject
+            {
+                ["forward_x"] = lastVirtualForward.x,
+                ["forward_y"] = lastVirtualForward.y,
+                ["forward_z"] = lastVirtualForward.z
+            },
+            ["physical_position_m"] = new JObject
+            {
+                ["x"] = physicalPosition.x,
+                ["z"] = physicalPosition.y
+            },
+            ["physical_rotation"] = new JObject
+            {
+                ["forward_x"] = physicalForward.x,
+                ["forward_z"] = physicalForward.y
+            }
+        };
+    }
+
+    private double? ResolveRequestLatencySeconds(string requestId)
+    {
+        if (string.IsNullOrWhiteSpace(requestId) || !requestStartedTimestamps.TryGetValue(requestId, out var started))
+        {
+            return null;
+        }
+
+        requestStartedTimestamps.Remove(requestId);
+        return Math.Max(0d, (Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency);
+    }
+
+    private string ResolveMetricState(GuidanceRuntimeState runtimeState)
+    {
+        if (runtimeState == null) return "unknown";
+        if (runtimeState.phase == GuidanceRuntimePhase.PausedForReset) return "reset";
+        if (!string.IsNullOrWhiteSpace(activeExhibitDwellId)) return "exhibit_dwell";
+        switch (runtimeState.phase)
+        {
+            case GuidanceRuntimePhase.Navigating: return "active_walking";
+            case GuidanceRuntimePhase.PausedByResearcher: return "paused";
+            case GuidanceRuntimePhase.Completed:
+            case GuidanceRuntimePhase.Ended: return "ended";
+            default: return "idle";
+        }
+    }
+
     private static void AppendConsoleValue(StringBuilder builder, string key, string value)
     {
         if (!string.IsNullOrWhiteSpace(value))
@@ -2124,6 +2689,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         public string task_id;
         public string physical_space_id;
         public string started_at_utc;
+        public string ended_at_utc;
+        public string end_reason;
+        public string route_id;
         public string application_version;
         public string unity_version;
         public string scene_name;
