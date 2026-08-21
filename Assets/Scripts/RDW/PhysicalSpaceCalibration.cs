@@ -29,18 +29,14 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     [Tooltip("接收校准后 Physical Room Pose 的用户位姿追踪器。")]
     [SerializeField] private UserPoseTracker userPoseTracker;
 
-    [Header("Physical Room 校准点")]
-    [Tooltip("用户执行校准时应位于的 Physical Room XZ 坐标，单位：米；Vector2.y 对应 Unity Z。")]
-    [SerializeField] private Vector2 calibrationPointInRoom;
-    [Tooltip("用户执行校准时应面向的 Physical Room 水平角，单位：度；0 度表示 +Z。")]
-    [SerializeField] private float calibrationForwardYawDegrees;
-
     private PhysicalCalibrationState state = PhysicalCalibrationState.NotCalibrated;
     private Vector2 latestRawPosition;
     private float latestRawYawDegrees;
     private bool hasRawTrackingPose;
     private Vector2 rawPositionAtCalibration;
     private float trackingToRoomYawDegrees;
+    private Vector2 calibrationPointAtCalibration;
+    private float requiredPhysicalClearanceMeters;
     private string calibratedSpaceId = string.Empty;
     private string calibrationId = string.Empty;
 
@@ -56,9 +52,9 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     /// <summary>当前校准绑定的 Physical Space ID。</summary>
     public string CalibratedSpaceId => calibratedSpaceId;
     /// <summary>Physical Room 中固定校准点的位置，单位：米。</summary>
-    public Vector2 CalibrationPointInRoom => calibrationPointInRoom;
+    public Vector2 CalibrationPointInRoom => GetCurrentCalibrationPose()?.point ?? Vector2.zero;
     /// <summary>Physical Room 中固定校准朝向，单位：度。</summary>
-    public float CalibrationForwardYawDegrees => calibrationForwardYawDegrees;
+    public float CalibrationForwardYawDegrees => GetCurrentCalibrationPose()?.forwardYawDegrees ?? 0f;
     /// <summary>是否已经收到至少一份有效 Raw Tracking Pose。</summary>
     public bool HasRawTrackingPose => hasRawTrackingPose;
 
@@ -80,27 +76,19 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     /// <summary>
     /// 注入 Physical Space 与用户位姿依赖，并迁移空间切换事件订阅。
     /// </summary>
-    public void Configure(PhysicalSpaceManager spaceManager, UserPoseTracker poseTracker)
+    /// <param name="spaceManager">提供当前物理空间及校准位姿。</param>
+    /// <param name="poseTracker">接收校准后的 Physical Room Pose。</param>
+    /// <param name="requiredClearanceMeters">与风险系统共享的安全净空，单位：米。</param>
+    public void Configure(
+        PhysicalSpaceManager spaceManager,
+        UserPoseTracker poseTracker,
+        float requiredClearanceMeters)
     {
         UnbindSpaceChanged();
         if (spaceManager != null) physicalSpaceManager = spaceManager;
         if (poseTracker != null) userPoseTracker = poseTracker;
+        requiredPhysicalClearanceMeters = Mathf.Max(0f, requiredClearanceMeters);
         BindSpaceChanged();
-    }
-
-    /// <summary>
-    /// 配置 Physical Room 中固定的校准位置和朝向。
-    /// </summary>
-    /// <param name="roomPosition">Physical Room XZ 位置，单位：米。</param>
-    /// <param name="roomYawDegrees">以 +Z 为 0 度的水平朝向，单位：度。</param>
-    public void SetCalibrationPoint(Vector2 roomPosition, float roomYawDegrees)
-    {
-        calibrationPointInRoom = roomPosition;
-        calibrationForwardYawDegrees = NormalizeYaw(roomYawDegrees);
-        if (!string.IsNullOrWhiteSpace(calibrationId))
-        {
-            InvalidateCalibration();
-        }
     }
 
     /// <summary>
@@ -124,14 +112,20 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     public bool CalibrateCurrentPose()
     {
         ResolveReferences();
-        if (!hasRawTrackingPose || physicalSpaceManager == null || physicalSpaceManager.CurrentSpace == null || userPoseTracker == null ||
-            !PhysicalSpaceGeometry.ContainsPoint(physicalSpaceManager.CurrentSpace.boundary, calibrationPointInRoom))
+        var space = physicalSpaceManager != null ? physicalSpaceManager.CurrentSpace : null;
+        var calibrationPose = space != null ? space.calibration : null;
+        if (!hasRawTrackingPose || space == null || calibrationPose == null || userPoseTracker == null ||
+            !PhysicalSpaceGeometry.IsPointClear(
+                space,
+                calibrationPose.point,
+                requiredPhysicalClearanceMeters))
         {
             return false;
         }
 
         rawPositionAtCalibration = latestRawPosition;
-        trackingToRoomYawDegrees = NormalizeYaw(calibrationForwardYawDegrees - latestRawYawDegrees);
+        calibrationPointAtCalibration = calibrationPose.point;
+        trackingToRoomYawDegrees = NormalizeYaw(calibrationPose.forwardYawDegrees - latestRawYawDegrees);
         calibratedSpaceId = physicalSpaceManager.CurrentSpaceId;
         calibrationId = Guid.NewGuid().ToString("N");
         SetState(PhysicalCalibrationState.Calibrated);
@@ -199,7 +193,7 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     /// <returns>校准后的 Physical Room XZ 位置，单位：米。</returns>
     public Vector2 TransformPositionToRoom(Vector2 rawPosition)
     {
-        return calibrationPointInRoom + Rotate(rawPosition - rawPositionAtCalibration, trackingToRoomYawDegrees);
+        return calibrationPointAtCalibration + Rotate(rawPosition - rawPositionAtCalibration, trackingToRoomYawDegrees);
     }
 
     /// <summary>
@@ -249,6 +243,13 @@ public sealed class PhysicalSpaceCalibration : MonoBehaviour
     {
         if (physicalSpaceManager == null) physicalSpaceManager = FindObjectOfType<PhysicalSpaceManager>();
         if (userPoseTracker == null) userPoseTracker = FindObjectOfType<UserPoseTracker>();
+    }
+
+    private PhysicalCalibrationPose GetCurrentCalibrationPose()
+    {
+        return physicalSpaceManager != null && physicalSpaceManager.CurrentSpace != null
+            ? physicalSpaceManager.CurrentSpace.calibration
+            : null;
     }
 
     private void BindSpaceChanged()

@@ -329,7 +329,10 @@ public sealed class SystemBootstrapper : MonoBehaviour
             riskEvaluator,
             physicalSpaceCalibration,
             experimentLogger);
-        physicalSpaceCalibration.Configure(physicalSpaceManager, userPoseTracker);
+        physicalSpaceCalibration.Configure(
+            physicalSpaceManager,
+            userPoseTracker,
+            riskEvaluator.RequiredPhysicalClearanceMeters);
         riskEvaluator.Configure(physicalSpaceManager, userPoseTracker, physicalSpaceCalibration);
         motionDetector.Configure(userPoseTracker);
         xrTrackingAdapter.Configure(userPoseTracker, physicalSpaceCalibration);
@@ -610,6 +613,8 @@ public sealed class SystemBootstrapper : MonoBehaviour
 
     private void HandleTrackingSampleApplied(float deltaTimeSeconds)
     {
+        // 当前 HMD 样本已写入 Room Pose，RDW 必须在同一帧使用对应的风险快照。
+        riskEvaluator?.EvaluateNow();
         rdwFrameCoordinator?.ProcessTrackingSample(deltaTimeSeconds);
     }
 

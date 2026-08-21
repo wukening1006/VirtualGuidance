@@ -1,5 +1,9 @@
 {
   "id": "obstacle_room",
+  "calibration": {
+    "point": [1.0, 1.0],
+    "forward_yaw_degrees": 0.0
+  },
   "boundary": [[0, 0], [4, 0], [4, 4], [0, 4]],
   "obstacles": [
     {

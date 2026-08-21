@@ -50,6 +50,9 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     public PhysicalRiskState CurrentRiskState => currentRiskState;
     /// <summary>获取参与者碰撞半径这一共享 Physical Fact，单位：米。</summary>
     public float UserRadiusMeters => Mathf.Max(0f, userRadiusMeters);
+    /// <summary>用户半径与边界余量之和，供校准与运行期共享同一安全净空标准。</summary>
+    public float RequiredPhysicalClearanceMeters =>
+        Mathf.Max(0f, userRadiusMeters) + Mathf.Max(0f, boundaryMarginMeters);
     /// <summary>当前是否仍有可用于运行期安全判断的 Tracking 输入。</summary>
     public bool IsTrackingValid => physicalSpaceCalibration != null &&
                                    physicalSpaceCalibration.HasRawTrackingPose &&

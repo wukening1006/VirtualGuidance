@@ -677,7 +677,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   navigationTargets: {fileID: 19950178}
-  arrivalDistanceMeters: 1
+  arrivalDistanceMeters: 0.85
 --- !u!114 &19950177
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -12037,12 +12037,13 @@ RectTransform:
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 549286874}
   m_Father: {fileID: 508227087}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 48.7, y: 8}
+  m_AnchoredPosition: {x: 38, y: 8}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!20 &251972321
@@ -14077,7 +14078,6 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
-  - {fileID: 549286874}
   - {fileID: 1281588211}
   - {fileID: 251972320}
   m_Father: {fileID: 0}
@@ -14487,12 +14487,12 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 549286873}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 30.8, y: 0, z: 0}
+  m_LocalRotation: {x: -0.7071068, y: -0, z: -0, w: 0.7071068}
+  m_LocalPosition: {x: 0, y: 0, z: 8}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 508227087}
+  m_Father: {fileID: 251972320}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &571786064
 GameObject:
@@ -14543,7 +14543,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &591438178
 RectTransform:
   m_ObjectHideFlags: 0
@@ -16991,7 +16991,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3598fdd5c8d34185b5ecc132b3eb4ac9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  logFolderRelativeToProject: Logs/ThemeDrivenV2
+  logFolderRelativeToProject: Logs/TestRuns
   autoFlush: 1
   bufferSizeBytes: 65536
   flushIntervalSeconds: 1
@@ -31878,11 +31878,11 @@ MonoBehaviour:
   healthCheckFailureThreshold: 3
   backendOfflineGraceSeconds: 8
   backendFatalTimeoutSeconds: 30
-  physicalSpaceManager: {fileID: 0}
-  userPoseTracker: {fileID: 0}
-  riskEvaluator: {fileID: 0}
-  physicalSpaceCalibration: {fileID: 0}
-  experimentLogger: {fileID: 0}
+  physicalSpaceManager: {fileID: 2100100001}
+  userPoseTracker: {fileID: 2100100002}
+  riskEvaluator: {fileID: 2100100012}
+  physicalSpaceCalibration: {fileID: 1896314442}
+  experimentLogger: {fileID: 891366375}
   defaultContext:
     session_id: 
     calibration_id: 
@@ -31983,7 +31983,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &1208479641
 RectTransform:
   m_ObjectHideFlags: 0
@@ -37573,8 +37573,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
-  calibrationPointInRoom: {x: 2.5, y: 2.5}
-  calibrationForwardYawDegrees: 0
 --- !u!1 &1929111771
 GameObject:
   m_ObjectHideFlags: 0
@@ -38126,7 +38124,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1967346973
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -38567,7 +38565,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: 'Guidance: waiting for approved guidance JSON.'
+  m_text: "\u60A8\u5DF2\u5230\u8FBE\u5C55\u67DC\uFF0C\u770B\u770B\u6709\u54EA\u4E9B\u503C\u5F97\u4E86\u89E3\u7684\u5185\u5BB9\u3002\r"
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: dd9e5e28ba778e8409549b463ec7fddc, type: 2}
   m_sharedMaterial: {fileID: 1379642390}
@@ -39149,8 +39147,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   virtualUserRoot: {fileID: 1462606602}
   virtualRotationRoot: {fileID: 400774973}
-  simulatedPhysicalPosition: {x: 4, y: 4.3}
-  simulatedPhysicalYawDegrees: 0
 --- !u!114 &2100100003
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -39168,7 +39164,7 @@ MonoBehaviour:
   riskEvaluator: {fileID: 2100100012}
   guidanceCoordinator: {fileID: 0}
   physicalSpaceCalibration: {fileID: 0}
-  visualizationOrigin: {x: 45, y: 7, z: 0.21}
+  visualizationOrigin: {x: 39.5, y: 8, z: 0}
   directionArrowLength: 0.9
   lineWidth: 0.04
   researcherOnlyLayerName: ResearcherOnly
@@ -39201,7 +39197,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 1896314442}
-  inputMode: 1
+  inputMode: 0
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
   simulatedMoveSpeedMetersPerSecond: 1.5
@@ -39269,7 +39265,7 @@ MonoBehaviour:
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 0}
-  evaluationIntervalSeconds: 0.2
+  evaluationIntervalSeconds: 0.1
   maxClearanceMeters: 3
   unsafeClearanceMeters: 0.8
   safeClearanceMeters: 1.2

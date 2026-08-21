@@ -102,7 +102,7 @@ public static class ExperimentConditionMatrix
     };
 
     /// <summary>
-    /// 按三个可循环索引生成实验条件，并填充任务路线和空间对应的模拟物理起点。
+    /// 按三个可循环索引生成实验条件，并填充任务路线与物理空间 ID。
     /// </summary>
     /// <returns>可直接应用到实验会话的独立条件配置。</returns>
     public static ExperimentConditionSpec Build(
@@ -120,9 +120,7 @@ public static class ExperimentConditionMatrix
             condition = condition,
             taskId = taskId,
             physicalSpaceId = spaceId,
-            userTask = UserTaskFor(taskId),
-            simulatedPhysicalPosition = PoseFor(spaceId),
-            simulatedPhysicalYawDegrees = 0f
+            userTask = UserTaskFor(taskId)
         };
 
         ApplyRoute(spec, taskId);
@@ -284,22 +282,6 @@ public static class ExperimentConditionMatrix
             errors?.Add(
                 "unknown_exhibit_reference:experiment_matrix." + taskId + "." + field + ":" +
                 (exhibitId ?? string.Empty));
-        }
-    }
-
-    private static Vector2 PoseFor(string physicalSpaceId)
-    {
-        // 二维分量对应 physical tracking space 的 XZ 平面，数值单位为米。
-        switch (physicalSpaceId)
-        {
-            case "narrow_room":
-                return new Vector2(1.8f, 4.3f);
-            case "obstacle_room":
-                return new Vector2(2.0f, 1.2f);
-            case "l_shaped_room":
-                return new Vector2(1.0f, 1.0f);
-            default:
-                return new Vector2(1.0f, 2.0f);
         }
     }
 

@@ -26,6 +26,19 @@ public sealed class PhysicalObstacle
 }
 
 /// <summary>
+/// 定义用户执行物理空间校准时的已知 Room Pose。
+/// </summary>
+[Serializable]
+public sealed class PhysicalCalibrationPose
+{
+    /// <summary>Physical Room XZ 平面中的标记点，单位：米。</summary>
+    public Vector2 point;
+
+    /// <summary>校准时用户应面向的水平角，单位：度；0 度表示 +Z。</summary>
+    public float forwardYawDegrees;
+}
+
+/// <summary>
 /// 描述一个可切换的 physical tracking space 配置，供风险计算和可视化共享。
 /// </summary>
 [Serializable]
@@ -47,9 +60,14 @@ public sealed class PhysicalSpaceConfig
     public PhysicalObstacle[] obstacles = Array.Empty<PhysicalObstacle>();
 
     /// <summary>
+    /// 当前物理空间专用的已知校准位姿。
+    /// </summary>
+    public PhysicalCalibrationPose calibration;
+
+    /// <summary>
     /// 判断配置是否具备最基本的可计算条件，避免无效边界进入风险计算。
     /// </summary>
-    public bool IsValid => !string.IsNullOrWhiteSpace(id) && boundary != null && boundary.Length >= 3;
+    public bool IsValid => !string.IsNullOrWhiteSpace(id) && boundary != null && boundary.Length >= 3 && calibration != null;
 }
 
 /// <summary>
@@ -234,6 +252,50 @@ internal static class PhysicalSpaceGeometry
 
         return inside;
     }
+
+    internal static bool IsPointClear(PhysicalSpaceConfig space, Vector2 point, float clearanceMeters)
+    {
+        if (space == null || !ContainsPoint(space.boundary, point))
+        {
+            return false;
+        }
+
+        var requiredClearance = Mathf.Max(0f, clearanceMeters);
+        for (var index = 0; index < space.boundary.Length; index++)
+        {
+            var start = space.boundary[index];
+            var end = space.boundary[(index + 1) % space.boundary.Length];
+            if (DistanceToSegment(point, start, end) <= requiredClearance)
+            {
+                return false;
+            }
+        }
+
+        var obstacles = space.obstacles ?? Array.Empty<PhysicalObstacle>();
+        foreach (var obstacle in obstacles)
+        {
+            if (obstacle != null &&
+                Vector2.Distance(point, obstacle.center) <= Mathf.Max(0f, obstacle.radius) + requiredClearance)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static float DistanceToSegment(Vector2 point, Vector2 start, Vector2 end)
+    {
+        var segment = end - start;
+        var lengthSquared = segment.sqrMagnitude;
+        if (lengthSquared <= Epsilon)
+        {
+            return Vector2.Distance(point, start);
+        }
+
+        var t = Mathf.Clamp01(Vector2.Dot(point - start, segment) / lengthSquared);
+        return Vector2.Distance(point, start + segment * t);
+    }
 }
 
 /// <summary>
@@ -278,14 +340,15 @@ public static class PhysicalSpaceConfigParser
 
         config.id = dto.id != null ? dto.id.Trim() : string.Empty;
         if (!TryConvertBoundary(dto.boundary, out config.boundary, out error) ||
-            !TryConvertObstacles(dto.obstacles, out config.obstacles, out error))
+            !TryConvertObstacles(dto.obstacles, out config.obstacles, out error) ||
+            !TryConvertCalibration(dto.calibration, out config.calibration, out error))
         {
             return false;
         }
 
         if (!config.IsValid)
         {
-            error = $"Invalid physical space config '{config.id}'. Boundary needs at least 3 points.";
+            error = $"Invalid physical space config '{config.id}'. Boundary and calibration are required.";
             return false;
         }
 
@@ -354,6 +417,30 @@ public static class PhysicalSpaceConfigParser
         return true;
     }
 
+    private static bool TryConvertCalibration(
+        PhysicalCalibrationPoseDto source,
+        out PhysicalCalibrationPose calibration,
+        out string error)
+    {
+        calibration = null;
+        error = null;
+        if (source == null ||
+            !TryConvertPoint(source.point, out var point) ||
+            float.IsNaN(source.forward_yaw_degrees) ||
+            float.IsInfinity(source.forward_yaw_degrees))
+        {
+            error = "Physical space calibration must contain a finite point and forward_yaw_degrees.";
+            return false;
+        }
+
+        calibration = new PhysicalCalibrationPose
+        {
+            point = point,
+            forwardYawDegrees = source.forward_yaw_degrees
+        };
+        return true;
+    }
+
     private static bool TryConvertPoint(float[] source, out Vector2 point)
     {
         point = default;
@@ -373,6 +460,7 @@ public static class PhysicalSpaceConfigParser
         public string id;
         public float[][] boundary;
         public PhysicalObstacleDto[] obstacles;
+        public PhysicalCalibrationPoseDto calibration;
     }
 
     private sealed class PhysicalObstacleDto
@@ -380,5 +468,11 @@ public static class PhysicalSpaceConfigParser
         public string id;
         public float[] center;
         public float radius;
+    }
+
+    private sealed class PhysicalCalibrationPoseDto
+    {
+        public float[] point;
+        public float forward_yaw_degrees;
     }
 }
