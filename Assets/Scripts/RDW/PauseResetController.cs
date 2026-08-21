@@ -23,6 +23,8 @@ public enum ResetLifecycleState
 /// </summary>
 public sealed class ResetEventInfo
 {
+    /// <summary>本次 Reset 的稳定唯一标识，供事件与逐帧 telemetry 关联。</summary>
+    public string ResetId { get; }
     /// <summary>协调层选择并冻结的恢复航向计划。</summary>
     public RecoveryHeadingPlan RecoveryPlan { get; }
     /// <summary>相对恢复开始朝向的有符号偏航角，单位：度；负值为左转。</summary>
@@ -31,19 +33,44 @@ public sealed class ResetEventInfo
     public float ApproximateTurnDegrees => Mathf.Abs(RelativeYawDegrees);
     /// <summary>本次 Reset 固定的 Physical Room 目标朝向。</summary>
     public Vector2 SafePhysicalForward { get; }
+    /// <summary>本次 Reset 使用的 mapping 策略。</summary>
+    public RdwResetMappingStrategy MappingStrategy { get; }
+    /// <summary>本次 Reset 实际要求的 Physical 转角，单位：度。</summary>
+    public float PhysicalTurnDegrees { get; }
+    /// <summary>本次 Reset 实际注入的 Virtual Root yaw，单位：度。</summary>
+    public float InjectedYawDegrees { get; }
+    /// <summary>本次 Reset 预计产生的 Virtual 总偏航，单位：度。</summary>
+    public float TotalVirtualYawDegrees { get; }
     /// <summary>触发本次 Reset 的原因。</summary>
     public string Reason { get; }
 
     /// <summary>使用协调层冻结的恢复计划创建不可变 Reset 事件。</summary>
-    public ResetEventInfo(RecoveryHeadingPlan recoveryPlan, string reason)
+    public ResetEventInfo(
+        RecoveryHeadingPlan recoveryPlan,
+        string reason,
+        float? relativeYawOverride = null,
+        Vector2? safePhysicalForwardOverride = null,
+        string resetId = null,
+        RdwResetMappingStrategy mappingStrategy = RdwResetMappingStrategy.SafeHeadingMapping,
+        float? physicalTurnOverride = null,
+        float? injectedYawOverride = null,
+        float? totalVirtualYawOverride = null)
     {
+        ResetId = resetId ?? string.Empty;
         RecoveryPlan = recoveryPlan;
-        RelativeYawDegrees = recoveryPlan != null && recoveryPlan.IsSuccess
-            ? recoveryPlan.RelativeYawDegrees
-            : 0f;
-        SafePhysicalForward = recoveryPlan != null && recoveryPlan.IsSuccess
-            ? recoveryPlan.SafePhysicalForward
-            : Vector2.up;
+        RelativeYawDegrees = relativeYawOverride ??
+                             (recoveryPlan != null && recoveryPlan.IsSuccess
+                                 ? recoveryPlan.RelativeYawDegrees
+                                 : 0f);
+        SafePhysicalForward = safePhysicalForwardOverride ??
+                              (recoveryPlan != null && recoveryPlan.IsSuccess
+                                  ? recoveryPlan.SafePhysicalForward
+                                  : Vector2.up);
+        MappingStrategy = mappingStrategy;
+        PhysicalTurnDegrees = physicalTurnOverride ?? ApproximateTurnDegrees;
+        InjectedYawDegrees = injectedYawOverride ?? 0f;
+        TotalVirtualYawDegrees = totalVirtualYawOverride ??
+                                 PhysicalTurnDegrees + InjectedYawDegrees;
         Reason = reason ?? string.Empty;
     }
 }
@@ -66,12 +93,10 @@ public sealed class PauseResetController : MonoBehaviour
     [SerializeField] private float completionToleranceDegrees = 12f;
 
     [Header("Mapping Reset")]
-    [Tooltip("运行时使用的 Mapping Resetter；TwoOneTurnLike 仅用于管线验证。")]
+    [Tooltip("运行时使用的 Mapping Resetter；FixedTwoOneTurn 固定 Physical 180 度转身并实现 Virtual 360 度。")]
     [SerializeField] private RdwResetMappingStrategy mappingStrategy = RdwResetMappingStrategy.SafeHeadingMapping;
     [Tooltip("每度 Physical yaw 请求注入的 Virtual Root yaw 倍率。")]
     [SerializeField, Min(0f)] private float mappingInjectionRatio = 1f;
-    [Tooltip("TwoOneTurnLike 的累计注入目标，单位：度；不影响 SafeHeadingMapping。")]
-    [SerializeField, Min(0f)] private float twoOneTargetInjectedYawDegrees = 180f;
     [Tooltip("累计 applied yaw 距离目标不超过该值时视为 mapping 完成，单位：度。")]
     [SerializeField, Min(0.01f)] private float mappingCompletionToleranceDegrees = 0.25f;
     [Tooltip("单次 Mapping Reset 的最长执行时间，单位：秒。")]
@@ -79,6 +104,7 @@ public sealed class PauseResetController : MonoBehaviour
 
     private ResetLifecycleState state = ResetLifecycleState.Inactive;
     private string resetReason = string.Empty;
+    private string activeResetId = string.Empty;
     private Vector2 safePhysicalForward = Vector2.up;
     private RecoveryHeadingPlan activePlan;
     private bool mappingResetEnabled;
@@ -93,6 +119,8 @@ public sealed class PauseResetController : MonoBehaviour
     public event Action<ResetEventInfo> ResetStarted;
     /// <summary>Physical heading 与 mapping target 均完成时触发。</summary>
     public event Action<ResetEventInfo> ResetCompleted;
+    /// <summary>Reset 被取消时触发，携带与开始/完成相同的 Reset 标识。</summary>
+    public event Action<ResetEventInfo> ResetCancelled;
     /// <summary>Mapping Reset 超时或内部终止时触发，由 GuidanceCoordinator 决定 Hold 或 HardStop。</summary>
     public event Action<string> MappingFailed;
 
@@ -110,8 +138,14 @@ public sealed class PauseResetController : MonoBehaviour
     public RecoveryHeadingPlan ActivePlan => activePlan;
     /// <summary>当前 Mapping Reset 计划；尚未收到首个有效 RDW 帧时为空。</summary>
     public RdwResetPlan ActiveMappingPlan => activeMappingPlan;
+    /// <summary>当前 Mapping 实际要求到达的 Physical Room 目标朝向。</summary>
+    public Vector2 MappingTargetPhysicalForward => activeMappingPlan != null
+        ? RdwYawConvention.YawToForward(activeMappingPlan.TargetPhysicalHeading)
+        : safePhysicalForward;
     /// <summary>当前 mapping 是否已接入 RDW 帧事务。</summary>
     public bool MappingResetEnabled => mappingResetEnabled;
+    /// <summary>当前是否使用固定 Physical 180 度到 Virtual 360 度模式。</summary>
+    public bool IsFixedTwoOneTurn => mappingStrategy == RdwResetMappingStrategy.FixedTwoOneTurn;
     /// <summary>当前用户绝对 Physical heading 是否已进入目标容差。</summary>
     public bool PhysicalHeadingReached => physicalHeadingReached;
     /// <summary>当前 Resetter 是否已累计完成 mapping target。</summary>
@@ -142,7 +176,7 @@ public sealed class PauseResetController : MonoBehaviour
     /// <summary>当前 Physical Forward 到安全目标的剩余角度，单位：度。</summary>
     public float RemainingYawDegrees => userPoseTracker == null
         ? 180f
-        : Vector2.Angle(userPoseTracker.PhysicalForwardXZ, safePhysicalForward);
+        : Vector2.Angle(userPoseTracker.PhysicalForwardXZ, MappingTargetPhysicalForward);
 
     /// <summary>
     /// 预测从当前 Physical Forward 转到目标朝向后，Virtual Forward 的总偏航变化。
@@ -155,10 +189,13 @@ public sealed class PauseResetController : MonoBehaviour
         var physicalTurn = RdwYawConvention.SignedDeltaYaw(
             NormalizeForward(currentPhysicalForward),
             NormalizeForward(targetPhysicalForward));
-        var injectedYaw = mappingStrategy == RdwResetMappingStrategy.TwoOneTurnLike
-            ? DirectionSign(physicalTurn) * Mathf.Max(0f, twoOneTargetInjectedYawDegrees)
+        var injectedYaw = mappingStrategy == RdwResetMappingStrategy.FixedTwoOneTurn
+            ? DirectionSign(physicalTurn) * 180f
             : physicalTurn * Mathf.Max(0f, mappingInjectionRatio);
-        return physicalTurn + injectedYaw;
+        var effectivePhysicalTurn = mappingStrategy == RdwResetMappingStrategy.FixedTwoOneTurn
+            ? DirectionSign(physicalTurn) * 180f
+            : physicalTurn;
+        return effectivePhysicalTurn + injectedYaw;
     }
 
     private void Update()
@@ -235,6 +272,7 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_required" : reason;
+        activeResetId = Guid.NewGuid().ToString("N");
         TransitionTo(ResetLifecycleState.Required);
         activePlan = plan;
         safePhysicalForward = plan.SafePhysicalForward;
@@ -255,8 +293,7 @@ public sealed class PauseResetController : MonoBehaviour
         }
 
         currentForward = NormalizeForward(currentForward);
-        physicalHeadingReached = Vector2.Angle(currentForward, safePhysicalForward) <=
-                                 Mathf.Max(0.1f, completionToleranceDegrees);
+        physicalHeadingReached = IsPhysicalMappingTargetReached(currentForward);
         TryCompleteReset();
     }
 
@@ -282,9 +319,9 @@ public sealed class PauseResetController : MonoBehaviour
             pose,
             mappingStrategy,
             mappingInjectionRatio,
-            twoOneTargetInjectedYawDegrees,
             mappingCompletionToleranceDegrees,
-            mappingMaxDurationSeconds);
+            mappingMaxDurationSeconds,
+            activeResetId);
         if (activeMappingPlan == null)
         {
             return false;
@@ -292,8 +329,7 @@ public sealed class PauseResetController : MonoBehaviour
 
         activeResetter.Initialize(activeMappingPlan, pose);
         mappingFailureRaised = false;
-        physicalHeadingReached = Vector2.Angle(pose.PhysicalForwardXZ, safePhysicalForward) <=
-                                 Mathf.Max(0.1f, completionToleranceDegrees);
+        physicalHeadingReached = IsPhysicalMappingTargetReached(pose.PhysicalForwardXZ);
         return true;
     }
 
@@ -337,9 +373,7 @@ public sealed class PauseResetController : MonoBehaviour
             return;
         }
 
-        physicalHeadingReached = Vector2.Angle(
-            NormalizeForward(currentPhysicalForward), safePhysicalForward) <=
-            Mathf.Max(0.1f, completionToleranceDegrees);
+        physicalHeadingReached = IsPhysicalMappingTargetReached(currentPhysicalForward);
         TryCompleteReset();
     }
 
@@ -368,6 +402,7 @@ public sealed class PauseResetController : MonoBehaviour
         IsPaused = false;
         activePlan = null;
         activeMappingPlan = null;
+        activeResetId = string.Empty;
         TransitionTo(ResetLifecycleState.Inactive);
         return true;
     }
@@ -382,8 +417,10 @@ public sealed class PauseResetController : MonoBehaviour
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_cancelled" : reason;
         IsPaused = preservePause;
+        ResetCancelled?.Invoke(CreateEventInfo());
         InvalidateMappingChain(resetReason);
         activePlan = null;
+        activeResetId = string.Empty;
         TransitionTo(ResetLifecycleState.Cancelled);
     }
 
@@ -401,7 +438,7 @@ public sealed class PauseResetController : MonoBehaviour
 
     private static IRdwResetter CreateResetter(RdwResetMappingStrategy strategy)
     {
-        return strategy == RdwResetMappingStrategy.TwoOneTurnLike
+        return strategy == RdwResetMappingStrategy.FixedTwoOneTurn
             ? (IRdwResetter)new TwoOneTurnLikeResetter()
             : new SafeHeadingMappingResetter();
     }
@@ -412,9 +449,41 @@ public sealed class PauseResetController : MonoBehaviour
             0f, 0f, Vector2.zero, RdwGainOwner.Resetter, reason, poseSequence);
     }
 
-    private ResetEventInfo CreateEventInfo()
+    /// <summary>创建当前 Reset 的不可变事件快照，供 UI、日志和恢复链路复用。</summary>
+    public ResetEventInfo CreateEventInfo(string reasonOverride = null)
     {
-        return new ResetEventInfo(activePlan, resetReason);
+        var strategy = activeMappingPlan != null ? activeMappingPlan.MappingStrategy : mappingStrategy;
+        var direction = DirectionSign(activeMappingPlan != null
+            ? activeMappingPlan.TargetPhysicalTurnDelta
+            : activePlan != null ? activePlan.RelativeYawDegrees : 0f);
+        var relativeYawOverride = strategy == RdwResetMappingStrategy.FixedTwoOneTurn
+            ? direction * 180f
+            : (float?)null;
+        var physicalForwardOverride = strategy == RdwResetMappingStrategy.FixedTwoOneTurn &&
+                                      userPoseTracker != null
+            ? activeMappingPlan != null
+                ? MappingTargetPhysicalForward
+                : -NormalizeForward(userPoseTracker.PhysicalForwardXZ)
+            : (Vector2?)null;
+        var physicalTurn = activeMappingPlan != null
+            ? activeMappingPlan.TargetPhysicalTurnDelta
+            : strategy == RdwResetMappingStrategy.FixedTwoOneTurn ? direction * 180f : (float?)null;
+        var injectedYaw = activeMappingPlan != null
+            ? activeMappingPlan.TargetInjectedYawDelta
+            : strategy == RdwResetMappingStrategy.FixedTwoOneTurn ? direction * 180f : (float?)null;
+        var totalVirtualYaw = strategy == RdwResetMappingStrategy.FixedTwoOneTurn
+            ? direction * 360f
+            : (float?)null;
+        return new ResetEventInfo(
+            activePlan,
+            reasonOverride ?? resetReason,
+            relativeYawOverride,
+            physicalForwardOverride,
+            activeResetId,
+            strategy,
+            physicalTurn,
+            injectedYaw,
+            totalVirtualYaw);
     }
 
     private void TransitionTo(ResetLifecycleState nextState)
@@ -436,6 +505,17 @@ public sealed class PauseResetController : MonoBehaviour
     private static float DirectionSign(float signedTurnDegrees)
     {
         return Mathf.Abs(signedTurnDegrees) > 0.01f ? Mathf.Sign(signedTurnDegrees) : 1f;
+    }
+
+    /// <summary>按当前 mapping 模式判断用户是否到达对应的 Physical 目标朝向。</summary>
+    private bool IsPhysicalMappingTargetReached(Vector2 currentForward)
+    {
+        var targetForward = activeMappingPlan != null &&
+                            activeMappingPlan.MappingStrategy == RdwResetMappingStrategy.FixedTwoOneTurn
+            ? MappingTargetPhysicalForward
+            : safePhysicalForward;
+        return Vector2.Angle(NormalizeForward(currentForward), targetForward) <=
+               Mathf.Max(0.1f, completionToleranceDegrees);
     }
 
 }

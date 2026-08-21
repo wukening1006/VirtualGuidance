@@ -2058,7 +2058,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (frozenRecoveryPlan != null && frozenRecoveryPlan.IsSuccess)
         {
-            lastCompletedRecoveryForward = frozenRecoveryPlan.SafePhysicalForward;
+            lastCompletedRecoveryForward = pauseResetController != null
+                ? pauseResetController.MappingTargetPhysicalForward
+                : frozenRecoveryPlan.SafePhysicalForward;
             hasLastCompletedRecoveryForward = true;
         }
 
@@ -3418,6 +3420,50 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             bestContinuation = HoldContinuation("fixed_target_unavailable", false);
             return null;
         }
+        var minimumHeadingDeltaDegrees = isRecoveryReset
+            ? Mathf.Clamp(minimumRecoveryResetHeadingDeltaDegrees, 1f, 180f)
+            : MinimumMeaningfulResetTurnDegrees;
+
+        // 固定 2:1 模式不使用候选朝向作为 Reset 终点；实际执行终点固定为起始
+        // Physical Forward 的反向，必须在启动前和完成后都用同一个事实做安全复验。
+        if (pauseResetController != null && pauseResetController.IsFixedTwoOneTurn)
+        {
+            var fixedPhysicalForward = (-riskState.user_physical_forward).sqrMagnitude > 0.0001f
+                ? (-riskState.user_physical_forward).normalized
+                : Vector2.down;
+            if (excludedForward.HasValue &&
+                Vector2.Angle(fixedPhysicalForward, excludedForward.Value) < minimumHeadingDeltaDegrees)
+            {
+                bestContinuation = HoldContinuation("previous_recovery_heading_excluded", true);
+                return null;
+            }
+
+            if (!riskEvaluator.TryEvaluateAbsoluteHeading(riskState, fixedPhysicalForward, out var fixedHeading) ||
+                !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(fixedHeading))
+            {
+                bestContinuation = HoldContinuation("fixed_two_one_heading_not_safe", false);
+                return null;
+            }
+
+            var fixedPlan = new RecoveryHeadingPlan(fixedHeading, fixedHeading.ClearanceMeters);
+            var predictedVirtualYawDelta = pauseResetController.PredictVirtualYawDelta(
+                riskState.user_physical_forward,
+                fixedPhysicalForward);
+            bestContinuation = postResetContinuationEvaluator.EvaluateFixedTarget(
+                riskState,
+                fixedPhysicalForward,
+                predictedVirtualYawDelta,
+                fixedTarget,
+                riskEvaluator,
+                fixedPlan.Score);
+            if (!bestContinuation.IsTargetExecutable)
+            {
+                return null;
+            }
+
+            latestPostResetContinuation = bestContinuation;
+            return fixedPlan;
+        }
         RecoveryHeadingPlan bestPlan = null;
         var samples = new List<HeadingSample>(searchResult.Evaluations ?? Array.Empty<HeadingSample>());
         if (searchResult.Plan != null && searchResult.Plan.IsSuccess)
@@ -3432,9 +3478,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var seenHeadings = new HashSet<int>();
         var assessedHeadings = new List<HeadingSample>();
         var assessedContinuations = new List<PostResetContinuationAssessment>();
-        var minimumHeadingDeltaDegrees = isRecoveryReset
-            ? Mathf.Clamp(minimumRecoveryResetHeadingDeltaDegrees, 1f, 180f)
-            : MinimumMeaningfulResetTurnDegrees;
         var minimumTurnDegrees = isRecoveryReset
             ? Mathf.Clamp(minimumRecoveryResetTurnDegrees, 1f, 180f)
             : MinimumMeaningfulResetTurnDegrees;
@@ -3747,12 +3790,18 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         out HeadingSample heading)
     {
         heading = default;
+        var physicalForward = pauseResetController != null &&
+                              pauseResetController.ActiveMappingPlan != null
+            ? pauseResetController.MappingTargetPhysicalForward
+            : frozenRecoveryPlan != null
+                ? frozenRecoveryPlan.SafePhysicalForward
+                : Vector2.zero;
         return riskEvaluator != null &&
                frozenRecoveryPlan != null &&
                frozenRecoveryPlan.IsSuccess &&
                riskEvaluator.TryEvaluateAbsoluteHeading(
                    riskState,
-                   frozenRecoveryPlan.SafePhysicalForward,
+                   physicalForward,
                    out heading);
     }
 

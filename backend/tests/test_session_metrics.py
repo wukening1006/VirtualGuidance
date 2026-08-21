@@ -133,3 +133,20 @@ def test_legacy_logs_fall_back_to_llm_call_intervals(tmp_path: Path) -> None:
 
     assert result["llm_efficiency"]["blocking_time_s"] == 1
     assert result["source_counts"]["planner_waiting_valid_n"] == 1
+
+
+def test_cancelled_reset_closes_duration_interval(tmp_path: Path) -> None:
+    session = _session(tmp_path, "P4_S1", reset_count=0)
+    events_path = session / "events.jsonl"
+    events = [
+        {"elapsed_s": 0, "data": {"event_type": "session_started"}},
+        {"elapsed_s": 2, "data": {"event_type": "reset_started", "reset_id": "cancelled-1"}},
+        {"elapsed_s": 5, "data": {"event_type": "reset_cancelled", "reset_id": "cancelled-1"}},
+        {"elapsed_s": 6, "data": {"event_type": "session_ended"}},
+    ]
+    _write_jsonl(events_path, events)
+
+    result = build_session_result(session)
+
+    assert result["reset"]["reset_count"] == 1
+    assert result["reset"]["reset_duration_s"] == 3

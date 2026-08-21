@@ -6,8 +6,8 @@ using UnityEngine;
 /// </summary>
 public enum RdwResetMappingStrategy
 {
-    /// <summary>用于验证完整 mapping 管线的 Two-One Turn 类策略。</summary>
-    TwoOneTurnLike,
+    /// <summary>固定 Physical 180 度转身并注入 Virtual 180 度，实现 Virtual 360 度。</summary>
+    FixedTwoOneTurn,
     /// <summary>围绕冻结 Recovery Heading 执行配置化 mapping 的生产策略。</summary>
     SafeHeadingMapping
 }
@@ -81,23 +81,29 @@ public sealed class RdwResetPlan
         in RdwPoseFrame startPose,
         RdwResetMappingStrategy strategy,
         float injectionRatio,
-        float twoOneTargetInjectedYawDegrees,
         float mappingCompletionTolerance,
-        float maxDuration)
+        float maxDuration,
+        string resetId = null)
     {
         if (recoveryPlan == null || !recoveryPlan.IsSuccess || !startPose.IsValid)
         {
             return null;
         }
 
-        var targetHeading = RdwYawConvention.ForwardToYaw(recoveryPlan.SafePhysicalForward);
-        var targetPhysicalTurn = RdwYawConvention.SignedDeltaYaw(startPose.PhysicalYaw, targetHeading);
-        var ratio = Mathf.Max(0f, injectionRatio);
-        var targetInjectedYaw = strategy == RdwResetMappingStrategy.TwoOneTurnLike
-            ? DirectionSign(targetPhysicalTurn) * Mathf.Max(0f, twoOneTargetInjectedYawDegrees)
+        var recoveryTargetHeading = RdwYawConvention.ForwardToYaw(recoveryPlan.SafePhysicalForward);
+        var recoveryTurn = RdwYawConvention.SignedDeltaYaw(startPose.PhysicalYaw, recoveryTargetHeading);
+        var fixedTwoOneTurn = strategy == RdwResetMappingStrategy.FixedTwoOneTurn;
+        var targetPhysicalTurn = fixedTwoOneTurn
+            ? DirectionSign(recoveryTurn) * 180f
+            : recoveryTurn;
+        var targetHeading = RdwYawConvention.NormalizeYaw(startPose.PhysicalYaw + targetPhysicalTurn);
+        // 固定 2:1 模式只允许 1:1 的 mapping 增量；配置倍率不影响该实验条件。
+        var ratio = fixedTwoOneTurn ? 1f : Mathf.Max(0f, injectionRatio);
+        var targetInjectedYaw = fixedTwoOneTurn
+            ? DirectionSign(targetPhysicalTurn) * 180f
             : targetPhysicalTurn * ratio;
         return new RdwResetPlan(
-            Guid.NewGuid().ToString("N"),
+            resetId,
             startPose.Sequence,
             startPose.Timestamp,
             startPose.PhysicalYaw,

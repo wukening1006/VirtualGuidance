@@ -752,7 +752,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             info);
     }
 
-    private void HandleResetCompleted(ResetEventInfo _)
+    private void HandleResetCompleted(ResetEventInfo info)
     {
         if (runState != ExperimentRunState.Paused)
         {
@@ -762,7 +762,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
         experimentLogger?.LogResetCompleted(
             activeGuidanceTrace,
             taskController?.RuntimeState,
-            riskEvaluator?.CurrentRiskState);
+            riskEvaluator?.CurrentRiskState,
+            info);
         if (taskController != null &&
             taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
         {
@@ -1293,8 +1294,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive)
         {
-            var plan = pauseResetController != null ? pauseResetController.ActivePlan : null;
-            participantUiController?.ShowRecoveryStarted(new ResetEventInfo(plan, "tracking recovered"));
+            participantUiController?.ShowRecoveryStarted(
+                pauseResetController != null
+                    ? pauseResetController.CreateEventInfo("tracking recovered")
+                    : new ResetEventInfo(null, "tracking recovered"));
             return;
         }
 
@@ -1352,12 +1355,16 @@ public sealed class ExperimentDashboard : MonoBehaviour
         }
 
         participantUiController?.HideResetHud();
-        experimentLogger?.LogStatus(
-            "reset_cancelled",
+    }
+
+    private void HandleResetCancelled(ResetEventInfo info)
+    {
+        participantUiController?.HideResetHud();
+        experimentLogger?.LogResetCancelled(
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            "reset cancelled");
+            info);
     }
 
     private void HandleRecoveryStateChanged(GuidanceRecoveryState state)
@@ -1601,6 +1608,8 @@ public sealed class ExperimentDashboard : MonoBehaviour
             pauseResetController.ResetStarted += HandleResetStarted;
             pauseResetController.ResetCompleted -= HandleResetCompleted;
             pauseResetController.ResetCompleted += HandleResetCompleted;
+            pauseResetController.ResetCancelled -= HandleResetCancelled;
+            pauseResetController.ResetCancelled += HandleResetCancelled;
             pauseResetController.StateChanged -= HandleResetStateChanged;
             pauseResetController.StateChanged += HandleResetStateChanged;
         }
@@ -1661,6 +1670,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
         {
             pauseResetController.ResetStarted -= HandleResetStarted;
             pauseResetController.ResetCompleted -= HandleResetCompleted;
+            pauseResetController.ResetCancelled -= HandleResetCancelled;
             pauseResetController.StateChanged -= HandleResetStateChanged;
         }
         if (rotationGainController != null) rotationGainController.LifecycleEventOccurred -= HandleRotationGainEvent;

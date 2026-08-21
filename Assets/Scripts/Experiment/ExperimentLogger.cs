@@ -699,7 +699,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         PhysicalRiskState riskState,
         ResetEventInfo info)
     {
-        activeMetricResetId = Guid.NewGuid().ToString("N");
+        activeMetricResetId = info != null && !string.IsNullOrWhiteSpace(info.ResetId)
+            ? info.ResetId
+            : Guid.NewGuid().ToString("N");
         Write(
             "reset_started",
             null,
@@ -707,7 +709,9 @@ public sealed class ExperimentLogger : MonoBehaviour
             null,
             riskState,
             runtimeState,
-            info != null ? $"safe heading yaw: {info.RelativeYawDegrees:F1} deg" : "reset started",
+            info != null
+                ? $"{info.MappingStrategy} physical {info.PhysicalTurnDegrees:F1} deg, virtual {info.TotalVirtualYawDegrees:F1} deg"
+                : "reset started",
             trace,
             resetId: activeMetricResetId,
             metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
@@ -717,7 +721,8 @@ public sealed class ExperimentLogger : MonoBehaviour
     public void LogResetCompleted(
         LogTraceContext trace,
         GuidanceRuntimeState runtimeState,
-        PhysicalRiskState riskState)
+        PhysicalRiskState riskState,
+        ResetEventInfo info = null)
     {
         Write(
             "reset_completed",
@@ -726,9 +731,32 @@ public sealed class ExperimentLogger : MonoBehaviour
             null,
             riskState,
             runtimeState,
-            "safe heading reached",
+            info != null ? $"safe heading reached; virtual {info.TotalVirtualYawDegrees:F1} deg" : "safe heading reached",
             trace,
             resetId: activeMetricResetId,
+            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+        activeMetricResetId = string.Empty;
+    }
+
+    /// <summary>记录 Reset 取消，并闭合后端 Reset 时长区间。</summary>
+    public void LogResetCancelled(
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ResetEventInfo info)
+    {
+        Write(
+            "reset_cancelled",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            "reset cancelled",
+            trace,
+            resetId: !string.IsNullOrWhiteSpace(activeMetricResetId)
+                ? activeMetricResetId
+                : info != null ? info.ResetId : string.Empty,
             metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
         activeMetricResetId = string.Empty;
     }
@@ -1113,7 +1141,8 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["reset_id"] = resetId;
                 data["reset_phase"] = string.Equals(eventType, "reset_started", StringComparison.Ordinal)
                     ? "start"
-                    : string.Equals(eventType, "reset_completed", StringComparison.Ordinal) ? "end" : string.Empty;
+                    : (string.Equals(eventType, "reset_completed", StringComparison.Ordinal) ||
+                       string.Equals(eventType, "reset_cancelled", StringComparison.Ordinal)) ? "end" : string.Empty;
                 if (riskState != null)
                 {
                     data["reset_position"] = new JObject

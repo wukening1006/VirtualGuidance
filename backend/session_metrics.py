@@ -262,7 +262,12 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
 
     reset_starts = [row for row in events if _event_type(row) in {"reset_started", "reset_start"}]
     reset_count = len({str(_payload(row).get("reset_id") or index) for index, row in enumerate(reset_starts)})
-    reset_intervals = _intervals(events, {"reset_started", "reset_start"}, {"reset_completed", "reset_end"})
+    # 取消同样结束一次已开始的 Reset，避免中止会话时丢失 Reset 时长。
+    reset_intervals = _intervals(
+        events,
+        {"reset_started", "reset_start"},
+        {"reset_completed", "reset_end", "reset_cancelled"},
+    )
     waiting = _intervals(events, {"planner_waiting_start", "planning_waiting_start", "holding_for_replan"}, {"planner_waiting_end", "planning_waiting_end", "replan_hold_resumed"})
     dwell_intervals = _intervals(events, {"exhibit_dwell_start", "exhibit_dwell"}, {"exhibit_dwell_end", "exhibit_dwell_exit"})
     has_explicit_waiting = any(

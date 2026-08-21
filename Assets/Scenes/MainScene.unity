@@ -27568,9 +27568,8 @@ MonoBehaviour:
   rotationGainController: {fileID: 1039273993}
   userPoseTracker: {fileID: 2100100002}
   completionToleranceDegrees: 12
-  mappingStrategy: 1
+  mappingStrategy: 0
   mappingInjectionRatio: 1
-  twoOneTargetInjectedYawDegrees: 180
   mappingCompletionToleranceDegrees: 0.25
   mappingMaxDurationSeconds: 12
 --- !u!114 &1039273993
