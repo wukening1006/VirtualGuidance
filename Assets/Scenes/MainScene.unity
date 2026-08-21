@@ -16991,7 +16991,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3598fdd5c8d34185b5ecc132b3eb4ac9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  experimentDataRoot: D:\SoftwareFiles\MyCode\实验数据
+  experimentDataRoot: "D:\\SoftwareFiles\\MyCode\\\u5B9E\u9A8C\u6570\u636E"
   autoFlush: 1
   bufferSizeBytes: 65536
   flushIntervalSeconds: 1
@@ -36271,7 +36271,6 @@ MonoBehaviour:
   rotationGainController: {fileID: 1039273993}
   motionDetector: {fileID: 2100100006}
   rejectionPanel: {fileID: 1780042335}
-  enableSoftRerouteSafetyPolicy: 0
   turnCueNoCueToleranceDegrees: 12
   turnCueReverseAbortDegrees: 5
   turnCueStableCompletionSeconds: 0.25
@@ -38237,7 +38236,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
-  m_AnchoredPosition: {x: 1093.9004, y: -23.999878}
+  m_AnchoredPosition: {x: 1093.9004, y: -23.999756}
   m_SizeDelta: {x: 568.1, y: 543.9}
   m_Pivot: {x: 0, y: 1}
 --- !u!1 &1969055405
@@ -39196,7 +39195,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 1896314442}
-  inputMode: 0
+  inputMode: 1
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
   simulatedMoveSpeedMetersPerSecond: 1.5

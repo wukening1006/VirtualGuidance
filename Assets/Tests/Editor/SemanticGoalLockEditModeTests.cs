@@ -1,11 +1,9 @@
 using System;
-using System.Collections.Generic;
-using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
 /// <summary>
-/// 验证语义目标锁、候选预留释放和 SoftReroute 默认关闭策略。
+/// 验证语义目标锁、候选预留释放和运行期安全策略。
 /// </summary>
 public sealed class SemanticGoalLockEditModeTests
 {
@@ -160,50 +158,24 @@ public sealed class SemanticGoalLockEditModeTests
             Is.LessThan(0.01f));
     }
 
-    /// <summary>验证安全策略默认不选择 SoftReroute。</summary>
+    /// <summary>验证可信物理事实下的安全介入只进入 PauseReset。</summary>
     [Test]
-    public void RuntimeSafetyPolicy_DefaultsSoftRerouteToDisabled()
+    public void RuntimeSafetyPolicy_TrustedUnsafeInputRequestsPauseReset()
     {
         var decision = new RuntimeGuidanceSafetyPolicy().Evaluate(CreateUnsafeInput());
 
         Assert.That(decision, Is.EqualTo(RuntimeGuidanceSafetyDecision.PauseReset));
     }
 
-    /// <summary>验证只有显式启用开关后才会选择 SoftReroute。</summary>
+    /// <summary>验证安全事实不完整或计划方向不可解析时必须停止。</summary>
     [Test]
-    public void RuntimeSafetyPolicy_UsesSoftRerouteOnlyWhenEnabled()
+    public void RuntimeSafetyPolicy_InvalidInputRequestsHardStop()
     {
-        var policy = new RuntimeGuidanceSafetyPolicy { SoftRerouteEnabled = true };
+        var policy = new RuntimeGuidanceSafetyPolicy();
 
-        Assert.That(policy.Evaluate(CreateUnsafeInput()), Is.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
-    }
-
-    /// <summary>验证 Coordinator 的计划方向失效入口不能绕过默认关闭开关。</summary>
-    [Test]
-    public void CoordinatorUnavailableDirection_DoesNotBypassDisabledSoftReroute()
-    {
-        var root = new GameObject("SoftRerouteDisabledTest");
-        try
-        {
-            var coordinator = root.AddComponent<GuidanceCoordinator>();
-            var decisions = new List<RuntimeGuidanceSafetyDecision>();
-            coordinator.RuntimeIntervention += info => decisions.Add(info.Decision);
-            var risk = CreateRisk();
-            var routed = (bool)InvokePrivate(
-                coordinator,
-                "TryRouteUnavailablePlannedDirection",
-                CreateUnsafeInput(false),
-                new GuidanceTarget("E3", NavigationTargetRole.NavigableDetour),
-                risk);
-
-            Assert.That(coordinator.SoftRerouteSafetyPolicyEnabled, Is.False);
-            Assert.That(routed, Is.False);
-            Assert.That(decisions, Has.None.EqualTo(RuntimeGuidanceSafetyDecision.SoftReroute));
-        }
-        finally
-        {
-            UnityEngine.Object.DestroyImmediate(root);
-        }
+        Assert.That(
+            policy.Evaluate(CreateUnsafeInput(plannedDirectionAvailable: false)),
+            Is.EqualTo(RuntimeGuidanceSafetyDecision.HardStop));
     }
 
     private static GuidanceRuntimeState CreateNavigatingState()
@@ -267,7 +239,6 @@ public sealed class SemanticGoalLockEditModeTests
             ResetLifecycleState.Inactive,
             2,
             true,
-            true,
             true);
     }
 
@@ -286,13 +257,6 @@ public sealed class SemanticGoalLockEditModeTests
                 new Vector2(2f, 2f),
                 new Vector2(-2f, 2f)
             });
-    }
-
-    private static object InvokePrivate(object target, string methodName, params object[] arguments)
-    {
-        var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.That(method, Is.Not.Null, methodName);
-        return method.Invoke(target, arguments);
     }
 
     private sealed class CapturingHeadingEvaluator : IPhysicalHeadingEvaluator

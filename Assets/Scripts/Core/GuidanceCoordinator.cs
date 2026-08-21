@@ -42,8 +42,6 @@ public sealed class RuntimeInterventionInfo
     public bool StartReset { get; }
     /// <summary>本次自动 Reset 是会话内第几次尝试；非 Reset 决策为 0。</summary>
     public int ResetAttempt { get; }
-    /// <summary>作出决策时是否存在本地验证通过的安全语义候选。</summary>
-    public bool SafeCandidateAvailable { get; }
 
     /// <summary>创建一条不可变 Runtime Intervention 事件。</summary>
     public RuntimeInterventionInfo(
@@ -51,15 +49,13 @@ public sealed class RuntimeInterventionInfo
         string reason,
         RuntimeGuidanceSafetyDecision decision = RuntimeGuidanceSafetyDecision.HardStop,
         bool startReset = false,
-        int resetAttempt = 0,
-        bool safeCandidateAvailable = false)
+        int resetAttempt = 0)
     {
         Response = response;
         Reason = reason;
         Decision = decision;
         StartReset = startReset;
         ResetAttempt = Math.Max(0, resetAttempt);
-        SafeCandidateAvailable = safeCandidateAvailable;
     }
 }
 
@@ -165,16 +161,12 @@ public enum SemanticReplanReason
     TaskStarted,
     /// <summary>当前目标已到达。</summary>
     TargetArrived,
-    /// <summary>当前目标或规划方向已不可达。</summary>
-    TargetUnreachable,
     /// <summary>当前 Guidance 已过期。</summary>
     GuidanceExpired,
     /// <summary>用户或研究员意图发生变化。</summary>
     UserIntentChanged,
     /// <summary>Reset 已完成并通过复验。</summary>
     ResetCompleted,
-    /// <summary>用户未按当前转向动作继续执行。</summary>
-    UserDeviated,
     /// <summary>后端服务已恢复。</summary>
     BackendRecovered,
     /// <summary>位姿、风险或其他运行期事实已更新。</summary>
@@ -229,10 +221,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     [SerializeField] private MotionDetector motionDetector;
     [SerializeField] private RejectionPanel rejectionPanel;
 
-    [Header("运行期安全策略")]
-    [Tooltip("是否允许在当前目标不安全但存在安全语义候选时执行 SoftReroute；默认关闭，关闭后回退到 Reset 或 HardStop。")]
-    [SerializeField] private bool enableSoftRerouteSafetyPolicy = false;
-
     [Header("TurnCue 物理完成")]
     [Tooltip("目标相对偏航不超过该角度时不创建 TurnCue，单位：度。")]
     [SerializeField] private float turnCueNoCueToleranceDegrees = 12f;
@@ -282,7 +270,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private int consecutiveUnsafeSamples;
     private string sampledUnsafeTargetId = string.Empty;
     private string lastRuntimeRiskSnapshotId = string.Empty;
-    private bool runtimeReplanPending;
     private readonly TurnCueCompletionTracker turnCueCompletionTracker = new TurnCueCompletionTracker();
     private bool handlingGainTermination;
     private bool recoveryDecisionPending;
@@ -502,9 +489,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public PlanCache RdwPlanCache => rdwPlanCache;
     /// <summary>当前路线选择调用门。</summary>
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
-    /// <summary>当前是否允许运行期 SoftReroute 安全策略。</summary>
-    public bool SoftRerouteSafetyPolicyEnabled => enableSoftRerouteSafetyPolicy;
-
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
 
     private void Update()
@@ -1206,8 +1190,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             reason,
             RuntimeGuidanceSafetyDecision.HardStop,
             false,
-            0,
-            false));
+            0));
     }
 
     /// <summary>
@@ -2185,8 +2168,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             resolvedReason,
             RuntimeGuidanceSafetyDecision.HardStop,
             startReset,
-            automaticResetAttempts,
-            false));
+            automaticResetAttempts));
     }
 
     private void ExpireAndReplan(GuidanceResponse response, string reason)
@@ -2254,11 +2236,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (runtimeReplanPending)
-        {
-            return;
-        }
-
         if (holdForReplan)
         {
             if (string.IsNullOrEmpty(GetReplanHoldWakeReason(riskState)))
@@ -2307,15 +2284,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             activeResponse.selected_target,
             directionAvailable,
             plannedHeading.Safety);
-        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeResponse.selected_target);
         var plannedDirectionCritical = directionAvailable && plannedHeading.Safety == HeadingSafety.Critical;
         var requiresSafetyIntervention = RequiresRuntimeSafetyIntervention(
             directionAvailable,
             plannedHeading.Safety,
             plannedDirectionCritical);
-        // 仅在确实需要安全介入且没有语义绕行时执行全角域搜索，避免正常安全帧重复查询物理几何。
-        var shouldSearchRecovery = safeCandidate == null &&
-                                   (requiresSafetyIntervention || !directionAvailable);
+        // 仅在确实需要安全介入时执行全角域搜索，避免正常安全帧重复查询物理几何。
+        var shouldSearchRecovery = requiresSafetyIntervention || !directionAvailable;
         var hasRecoveryHeading = shouldSearchRecovery &&
                                  SearchRecoveryHeading(riskState).Plan.IsSuccess;
         var input = new RuntimeGuidanceSafetyInput(
@@ -2333,23 +2308,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             pauseResetController != null ? pauseResetController.State : ResetLifecycleState.Inactive,
             consecutiveUnsafeSamples,
             requiresSafetyIntervention,
-            safeCandidate != null,
             hasRecoveryHeading);
 
-        // 方向事实缺失不必然代表实验不可恢复；基础身份有效时优先复用现有绕行或 Reset 链。
+        // 方向事实缺失不必然代表实验不可恢复；基础身份有效时优先进入物理朝向恢复。
         if (!input.PlannedDirectionAvailable &&
-            TryRouteUnavailablePlannedDirection(input, safeCandidate, riskState))
+            TryRouteUnavailablePlannedDirection(input, riskState))
         {
             return;
         }
 
-        runtimeSafetyPolicy.SoftRerouteEnabled = enableSoftRerouteSafetyPolicy;
         var decision = runtimeSafetyPolicy.Evaluate(input);
-        if (decision == RuntimeGuidanceSafetyDecision.SoftReroute)
-        {
-            TriggerSoftReroute(safeCandidate);
-        }
-        else if (decision == RuntimeGuidanceSafetyDecision.PauseReset)
+        if (decision == RuntimeGuidanceSafetyDecision.PauseReset)
         {
             if (HasTrustedRecoveryFacts(riskState))
             {
@@ -2489,49 +2458,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             "Frozen recovery heading is no longer explicitly Safe; waiting for new risk facts.");
     }
 
-    private void TriggerSoftReroute(
-        GuidanceTarget safeCandidate,
-        string reason = "Active planned direction remained unsafe for two consecutive risk samples.",
-        SemanticReplanReason replanReason = SemanticReplanReason.TargetUnreachable)
-    {
-        if (!enableSoftRerouteSafetyPolicy || runtimeReplanPending || safeCandidate == null)
-        {
-            return;
-        }
-
-        runtimeReplanPending = true;
-        var interruptedResponse = activeResponse;
-        try
-        {
-            InvalidateRdwPlanning(
-                RoutePlanInvalidationReason.FirstStepRejected,
-                reason);
-            requestClient?.CancelPendingRequest();
-            guidanceExecutor?.Clear();
-            rotationGainController?.AbortGain("soft_reroute");
-            arrivalDetector?.WatchReservation(null);
-            AbandonReservations();
-            activeSnapshot = null;
-            activeResponse = null;
-            turnCueCompletionTracker.Cancel();
-            ResetRuntimeSafetySampling();
-            SetRequestPhase(GuidanceRequestPhase.Cancelled);
-            RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
-                interruptedResponse,
-                reason,
-                RuntimeGuidanceSafetyDecision.SoftReroute,
-                false,
-                0,
-                true));
-            Replanning?.Invoke(taskController != null ? taskController.RuntimeState : null);
-            RequestNextGuidance(replanReason);
-        }
-        finally
-        {
-            runtimeReplanPending = false;
-        }
-    }
-
     private void TriggerPauseReset(
         GuidanceResponse response,
         PhysicalRiskState riskState,
@@ -2623,8 +2549,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             resolvedReason,
             RuntimeGuidanceSafetyDecision.PauseReset,
             true,
-            automaticResetAttempts,
-            false));
+            automaticResetAttempts));
         if (!pauseResetController.PauseForReset(resolvedReason, frozenRecoveryPlan))
         {
             TriggerRecoveryHardStop("Automatic recovery controller rejected the frozen heading plan.");
@@ -2838,42 +2763,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryHoldPoseCaptured = false;
     }
 
-    private GuidanceTarget FindRuntimeSafetyCandidate(
-        PhysicalRiskState riskState,
-        string activeTargetId,
-        bool allowPausedForReset = false)
-    {
-        if (semanticTargetSelector == null || taskController == null || riskState == null)
-        {
-            return null;
-        }
-
-        var candidateSet = semanticTargetSelector.BuildCandidateSet(
-            taskController.RuntimeState,
-            riskState,
-            ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition),
-            allowPausedForReset);
-        if (candidateSet == null)
-        {
-            return null;
-        }
-
-        foreach (var candidate in candidateSet.Candidates)
-        {
-            if (candidate == null ||
-                string.Equals(candidate.TargetId, activeTargetId, StringComparison.Ordinal) ||
-                semanticTargetSelector.GetCandidateSafetyState(candidate.TargetId, riskState) !=
-                CandidateSafetyState.Eligible)
-            {
-                continue;
-            }
-
-            return new GuidanceTarget(candidate.TargetId, candidate.TargetRole);
-        }
-
-        return null;
-    }
-
     private void HandlePendingRequestRiskChanged(PhysicalRiskState riskState)
     {
         if (taskController == null)
@@ -3073,8 +2962,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 recoveryResetReason,
                 RuntimeGuidanceSafetyDecision.PauseReset,
                 true,
-                navigationRecoveryResetAttempts,
-                continuation.Level != PostResetContinuationLevel.HoldOnly));
+                navigationRecoveryResetAttempts));
 
             if (pauseResetController == null ||
                 !pauseResetController.PauseForReset(recoveryResetReason, frozenRecoveryPlan))
@@ -3835,7 +3723,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private bool TryRouteUnavailablePlannedDirection(
         RuntimeGuidanceSafetyInput input,
-        GuidanceTarget safeCandidate,
         PhysicalRiskState riskState)
     {
         if (input == null || input.PlannedDirectionAvailable)
@@ -3852,15 +3739,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        if (enableSoftRerouteSafetyPolicy && safeCandidate != null)
-        {
-            TriggerSoftReroute(
-                safeCandidate,
-                "Planned physical direction became unavailable; rerouting to a safe semantic candidate.");
-            return true;
-        }
-
-        // SoftReroute 关闭或没有安全候选时，优先进入可信的物理朝向恢复。
+        // 方向无法解析时只允许进入可信的物理朝向恢复，不改变锁定目标。
         if (HasTrustedRecoveryFacts(riskState))
         {
             TriggerPauseReset(
@@ -4029,8 +3908,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             input.ResetState == ResetLifecycleState.Completed) return "Physical reset is active.";
         if (!input.HasRecoveryHeading) return "No acceptable physical recovery heading is available.";
         if (input.LatestRisk.reset_required) return "The risk protocol reports no acceptable automatic recovery state.";
-        if (input.PlannedDirectionCritical) return "Planned physical direction is critical and no eligible safety candidate is available.";
-        return "No eligible runtime safety candidate is available.";
+        if (input.PlannedDirectionCritical) return "Planned physical direction is critical and requires heading recovery.";
+        return "Runtime physical safety intervention is required.";
     }
 
     private void BindRequestCapture()
@@ -4136,11 +4015,6 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             CompleteTurnCueAfterRiskReevaluation();
             return;
         }
-
-        rotationGainController?.QueueFromMovementInstruction(
-            response.movement_instruction,
-            activeSnapshot != null ? activeSnapshot.decisionId : string.Empty,
-            turnCueCompletionTracker.RequiredTurnYawDegrees);
     }
 
     private void HandleTurnSampled(bool isTurning, float signedYawDeltaDegrees, float deltaTimeSeconds)
@@ -4182,10 +4056,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         rotationGainController?.AbortGain(reason);
         handlingGainTermination = false;
         turnCueCompletionTracker.Cancel();
-        TriggerSoftRerouteFromLatestRisk(reason);
+        HandleExecutionSoftFailureFromLatestRisk(reason);
     }
 
-    private void TriggerSoftRerouteFromLatestRisk(string reason)
+    private void HandleExecutionSoftFailureFromLatestRisk(string reason)
     {
         if (IsResetRecoveryActive)
         {
@@ -4199,28 +4073,32 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        var activeTargetId = activeResponse != null ? activeResponse.selected_target : string.Empty;
-        var safeCandidate = FindRuntimeSafetyCandidate(riskState, activeTargetId);
-        if (safeCandidate != null && enableSoftRerouteSafetyPolicy)
+        var requiresReset = riskState.reset_required ||
+                            IsCurrentHeadingCritical(riskState) ||
+                            !IsUserInsidePhysicalBoundary(riskState);
+        if (requiresReset)
         {
-            TriggerSoftReroute(safeCandidate, reason, SemanticReplanReason.UserDeviated);
+            if (HasTrustedRecoveryFacts(riskState))
+            {
+                TriggerPauseReset(
+                    activeResponse,
+                    riskState,
+                    $"{reason}: execution became physically unsafe; starting heading recovery.");
+            }
+            else
+            {
+                TriggerRuntimeIntervention(
+                    activeResponse,
+                    $"{reason}: execution became unsafe without trusted recovery facts.");
+            }
             return;
         }
 
-        if (safeCandidate != null && HasTrustedRecoveryFacts(riskState))
-        {
-            TriggerPauseReset(
-                activeResponse,
-                riskState,
-                $"{reason}: SoftReroute is disabled; starting trusted heading recovery.");
-            return;
-        }
-
-        // 动作软失败和候选耗尽都不是物理危险证据；保持任务运行并等待新事实重规划。
+        // 动作软失败不是物理危险证据；停止当前执行并等待现有规划链重新尝试。
         EnterHoldAndReplan(
             riskState,
             BuildPlanningFingerprint(riskState),
-            $"{reason}: no eligible reroute candidate; holding for replanning.");
+            $"{reason}: execution could not continue; holding for replanning.");
     }
 
     private void CompleteTurnCueAfterRiskReevaluation()
@@ -4304,7 +4182,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             info.Reason == "turn_stopped_timeout")
         {
             turnCueCompletionTracker.Cancel();
-            TriggerSoftRerouteFromLatestRisk(info.Reason);
+            HandleExecutionSoftFailureFromLatestRisk(info.Reason);
         }
         else if (info.Reason == "tracking_invalid" ||
                   info.Reason == "planned_heading_critical" ||

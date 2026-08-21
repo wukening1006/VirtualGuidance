@@ -984,21 +984,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
             intervention != null ? intervention.Decision : RuntimeGuidanceSafetyDecision.HardStop,
             intervention != null && intervention.StartReset,
             intervention != null ? intervention.ResetAttempt : 0,
-            intervention != null && intervention.SafeCandidateAvailable,
             xrTrackingAdapter != null && xrTrackingAdapter.IsTrackingActive,
             physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid,
             guidanceCoordinator?.FrozenRecoveryPlan);
-        if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.SoftReroute)
-        {
-            if (intervention.Response != null)
-            {
-                LogTargetAbandoned(interventionTrace, intervention.Reason);
-            }
-            activeGuidanceTrace = LogTraceContext.Empty;
-            participantUiController?.ShowRuntimeIntervention();
-            return;
-        }
-
         if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.PauseReset)
         {
             LogTargetAbandoned(interventionTrace, intervention.Reason);

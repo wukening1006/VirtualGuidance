@@ -7,10 +7,8 @@ public enum RuntimeGuidanceSafetyDecision
 {
     /// <summary>当前导览可以继续执行。</summary>
     Continue,
-    /// <summary>停止当前导览，并基于最新风险重新规划。</summary>
-    SoftReroute,
-    /// <summary>当前物理动作不安全且无法语义绕行，执行自动安全朝向恢复。</summary>
-    PauseReset,
+    /// <summary>当前物理动作不安全，执行自动安全朝向恢复。</summary>
+    PauseReset = 2,
     /// <summary>立即停止全部导览行为并进入安全保持。</summary>
     HardStop
 }
@@ -20,8 +18,6 @@ public enum RuntimeGuidanceSafetyDecision
 /// </summary>
 public sealed class RuntimeGuidanceSafetyInput
 {
-    private const int UnsafeSamplesRequiredForIntervention = 2;
-
     /// <summary>当前活动决策 ID。</summary>
     public string ActiveDecisionId { get; }
     /// <summary>当前活动目标 ID。</summary>
@@ -48,52 +44,10 @@ public sealed class RuntimeGuidanceSafetyInput
     public ResetLifecycleState ResetState { get; }
     /// <summary>当前计划方向连续进入 unsafe 的风险样本数。</summary>
     public int ConsecutiveUnsafeSamples { get; }
-    /// <summary>最新风险下是否存在明确 Eligible 的替代候选。</summary>
-    public bool HasSafeSemanticCandidate { get; }
     /// <summary>当前风险下是否存在可供自动恢复的明确 Safe Heading。</summary>
     public bool HasRecoveryHeading { get; }
     /// <summary>当前计划方向是否已经需要安全层介入。</summary>
     public bool RequiresSafetyIntervention { get; }
-    /// <summary>兼容旧日志字段的安全语义候选别名。</summary>
-    public bool SafeCandidateAvailable => HasSafeSemanticCandidate;
-
-    /// <summary>
-    /// 创建一次不依赖 Unity 场景对象的运行期安全输入。
-    /// </summary>
-    public RuntimeGuidanceSafetyInput(
-        string activeDecisionId,
-        string targetId,
-        string movementInstruction,
-        PhysicalRiskState latestRisk,
-        bool trackingValid,
-        bool calibrationValid,
-        bool physicalSpaceMatches,
-        string plannedDirection,
-        float plannedDirectionClearanceMeters,
-        bool plannedDirectionAvailable,
-        bool plannedDirectionCritical,
-        ResetLifecycleState resetState,
-        int consecutiveUnsafeSamples,
-        bool safeCandidateAvailable)
-        : this(
-            activeDecisionId,
-            targetId,
-            movementInstruction,
-            latestRisk,
-            trackingValid,
-            calibrationValid,
-            physicalSpaceMatches,
-            plannedDirection,
-            plannedDirectionClearanceMeters,
-            plannedDirectionAvailable,
-            plannedDirectionCritical,
-            resetState,
-            consecutiveUnsafeSamples,
-            ComputeRequiresSafetyIntervention(latestRisk, plannedDirection, plannedDirectionCritical, consecutiveUnsafeSamples),
-            safeCandidateAvailable,
-            false)
-    {
-    }
 
     /// <summary>创建包含三项内部安全事实的不可变策略输入。</summary>
     public RuntimeGuidanceSafetyInput(
@@ -111,7 +65,6 @@ public sealed class RuntimeGuidanceSafetyInput
         ResetLifecycleState resetState,
         int consecutiveUnsafeSamples,
         bool requiresSafetyIntervention,
-        bool hasSafeSemanticCandidate,
         bool hasRecoveryHeading)
     {
         ActiveDecisionId = activeDecisionId ?? string.Empty;
@@ -128,31 +81,7 @@ public sealed class RuntimeGuidanceSafetyInput
         ResetState = resetState;
         ConsecutiveUnsafeSamples = Math.Max(0, consecutiveUnsafeSamples);
         RequiresSafetyIntervention = requiresSafetyIntervention;
-        HasSafeSemanticCandidate = hasSafeSemanticCandidate;
         HasRecoveryHeading = hasRecoveryHeading;
-    }
-
-    private static bool ComputeRequiresSafetyIntervention(
-        PhysicalRiskState risk,
-        string plannedDirection,
-        bool plannedDirectionCritical,
-        int consecutiveUnsafeSamples)
-    {
-        if (risk == null)
-        {
-            return true;
-        }
-
-        // Runtime Safety 的连续 HeadingSample 由 Coordinator 计算；labels 仅保留为兼容 DTO。
-        var requiresIntervention = plannedDirectionCritical || risk.reset_required;
-        if (!requiresIntervention)
-        {
-            return false;
-        }
-
-        return plannedDirectionCritical ||
-               risk.reset_required ||
-               consecutiveUnsafeSamples >= UnsafeSamplesRequiredForIntervention;
     }
 
 }
@@ -163,12 +92,6 @@ public sealed class RuntimeGuidanceSafetyInput
 /// </summary>
 public sealed class RuntimeGuidanceSafetyPolicy
 {
-    /// <summary>
-    /// 是否允许在当前目标方向不安全且存在安全语义候选时执行 SoftReroute。
-    /// 默认关闭，关闭后回退到 Reset 或 HardStop 安全路径。
-    /// </summary>
-    public bool SoftRerouteEnabled { get; set; }
-
     /// <summary>
     /// 对一份运行期安全输入做无副作用判定。
     /// </summary>
@@ -196,11 +119,6 @@ public sealed class RuntimeGuidanceSafetyPolicy
         if (!input.RequiresSafetyIntervention)
         {
             return RuntimeGuidanceSafetyDecision.Continue;
-        }
-
-        if (input.HasSafeSemanticCandidate && SoftRerouteEnabled)
-        {
-            return RuntimeGuidanceSafetyDecision.SoftReroute;
         }
 
         return input.HasRecoveryHeading || HasTrustedRecoveryHoldFacts(input)

@@ -492,7 +492,6 @@ public sealed class ExperimentLogger : MonoBehaviour
         RuntimeGuidanceSafetyDecision decision,
         bool startReset,
         int resetAttempt = 0,
-        bool safeCandidateAvailable = false,
         bool? trackingValid = null,
         bool? calibrationValid = null,
         RecoveryHeadingPlan recoveryPlan = null)
@@ -511,7 +510,6 @@ public sealed class ExperimentLogger : MonoBehaviour
             interventionDecision: decision,
             startReset: startReset,
             resetAttempt: resetAttempt,
-            safeCandidateAvailable: safeCandidateAvailable,
             trackingValid: trackingValid,
             calibrationValid: calibrationValid,
             recoveryPlan: recoveryPlan);
@@ -966,7 +964,6 @@ public sealed class ExperimentLogger : MonoBehaviour
         RuntimeGuidanceSafetyDecision interventionDecision = RuntimeGuidanceSafetyDecision.Continue,
         bool startReset = false,
         int resetAttempt = 0,
-        bool safeCandidateAvailable = false,
         bool? trackingValid = null,
         bool? calibrationValid = null,
         CandidateSetReservation candidateReservation = null,
@@ -1207,7 +1204,6 @@ public sealed class ExperimentLogger : MonoBehaviour
                 data["intervention_type"] = SafetyDecisionLabel(interventionDecision);
                 data["start_reset"] = startReset;
                 data["reset_attempt"] = Math.Max(0, resetAttempt);
-                data["safe_candidate_available"] = safeCandidateAvailable;
                 if (trackingValid.HasValue) data["tracking_valid"] = trackingValid.Value;
                 if (calibrationValid.HasValue) data["calibration_valid"] = calibrationValid.Value;
             }
@@ -2048,7 +2044,6 @@ public sealed class ExperimentLogger : MonoBehaviour
     {
         switch (decision)
         {
-            case RuntimeGuidanceSafetyDecision.SoftReroute: return "soft_reroute";
             case RuntimeGuidanceSafetyDecision.PauseReset: return "pause_reset";
             case RuntimeGuidanceSafetyDecision.HardStop: return "hard_stop";
             default: return "continue";

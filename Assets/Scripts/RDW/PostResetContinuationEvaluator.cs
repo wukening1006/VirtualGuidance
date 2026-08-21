@@ -9,10 +9,6 @@ public enum PostResetContinuationLevel
 {
     /// <summary>没有可以主动恢复导航的方式。</summary>
     HoldOnly = 0,
-    /// <summary>可以通过受控转向或 RDW 规划继续恢复。</summary>
-    RdwRecovery = 1,
-    /// <summary>存在安全语义绕行目标。</summary>
-    SafeReroute = 2,
     /// <summary>当前任务目标可以直接继续。</summary>
     DirectTarget = 3
 }
@@ -24,7 +20,7 @@ public readonly struct PostResetContinuationAssessment
 {
     /// <summary>该朝向对应的导航可行性等级。</summary>
     public PostResetContinuationLevel Level { get; }
-    /// <summary>可继续导航时对应的目标 ID；RDW 恢复或 Hold 时为空。</summary>
+    /// <summary>可继续导航时对应的锁定目标 ID；Hold 时为空。</summary>
     public string TargetId { get; }
     /// <summary>候选方向是否通过 Physical Safety Authority 的精确评估。</summary>
     public bool IsPhysicalSafe { get; }
@@ -145,101 +141,6 @@ public sealed class PostResetContinuationEvaluator
             true,
             baseScore,
             "fixed_target_executable_after_reset");
-    }
-
-    /// <summary>
-    /// 评估一个恢复计划；候选方向使用当前 Virtual Pose 的相对偏航预测 Reset 后的 Physical Heading。
-    /// </summary>
-    public PostResetContinuationAssessment Evaluate(
-        PhysicalRiskState riskState,
-        RecoveryHeadingPlan recoveryPlan,
-        NavigationCandidateSet candidateSet,
-        IPhysicalHeadingEvaluator physicalEvaluator,
-        bool hasExecutableRdwRecovery = false)
-    {
-        if (recoveryPlan == null || !recoveryPlan.IsSuccess || physicalEvaluator == null)
-        {
-            return Hold("recovery_heading_unavailable");
-        }
-
-        return EvaluateHeading(
-            riskState,
-            recoveryPlan.SafePhysicalForward,
-            recoveryPlan.Score,
-            candidateSet != null ? candidateSet.Candidates : null,
-            physicalEvaluator,
-            hasExecutableRdwRecovery);
-    }
-
-    /// <summary>
-    /// 评估一个已知 Safe Heading，供 Coordinator 对全角域 Safe 样本排序。
-    /// </summary>
-    public PostResetContinuationAssessment EvaluateHeading(
-        PhysicalRiskState riskState,
-        Vector2 safePhysicalForward,
-        float baseScore,
-        IEnumerable<NavigationCandidate> candidates,
-        IPhysicalHeadingEvaluator physicalEvaluator,
-        bool hasExecutableRdwRecovery = false)
-    {
-        if (riskState == null || physicalEvaluator == null || safePhysicalForward.sqrMagnitude <= 0.0001f)
-        {
-            return Hold("post_reset_facts_unavailable");
-        }
-
-        var bestLevel = hasExecutableRdwRecovery
-            ? PostResetContinuationLevel.RdwRecovery
-            : PostResetContinuationLevel.HoldOnly;
-        var bestTargetId = string.Empty;
-        var bestScore = baseScore;
-        var inspectedCandidate = false;
-        foreach (var candidate in candidates ?? Array.Empty<NavigationCandidate>())
-        {
-            if (candidate == null || string.IsNullOrWhiteSpace(candidate.TargetId))
-            {
-                continue;
-            }
-
-            inspectedCandidate = true;
-            var predictedDirection = Rotate(safePhysicalForward, candidate.RelativeYawDegrees);
-            if (!physicalEvaluator.TryEvaluateAbsoluteHeading(riskState, predictedDirection, out var heading) ||
-                !PhysicalRiskEvaluator.IsMovementSafe(heading))
-            {
-                continue;
-            }
-
-            var candidateLevel = candidate.TargetRole == NavigationTargetRole.FinalTarget
-                ? PostResetContinuationLevel.DirectTarget
-                : PostResetContinuationLevel.SafeReroute;
-            if (candidateLevel > bestLevel ||
-                (candidateLevel == bestLevel && baseScore > bestScore))
-            {
-                bestLevel = candidateLevel;
-                bestTargetId = candidate.TargetId;
-                bestScore = baseScore;
-            }
-        }
-
-        if (bestLevel == PostResetContinuationLevel.HoldOnly)
-        {
-            return Hold(
-                inspectedCandidate
-                    ? "safe_heading_has_no_executable_continuation"
-                    : "no_continuation_candidate_and_rdw_unverified",
-                true);
-        }
-
-        var reason = bestLevel == PostResetContinuationLevel.RdwRecovery
-            ? "rdw_recovery_executable"
-            : bestLevel == PostResetContinuationLevel.DirectTarget
-                ? "direct_target_executable_after_reset"
-                : "safe_reroute_executable_after_reset";
-        return new PostResetContinuationAssessment(
-            bestLevel,
-            bestTargetId,
-            true,
-            bestScore,
-            reason);
     }
 
     private static PostResetContinuationAssessment Hold(string reason, bool physicalSafe = false)
