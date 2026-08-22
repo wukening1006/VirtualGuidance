@@ -17000,7 +17000,8 @@ MonoBehaviour:
   autoFlush: 1
   bufferSizeBytes: 65536
   flushIntervalSeconds: 1
-  riskTelemetrySamplingRateHz: 5
+  riskTelemetrySamplingRateHz: 10
+  nearBoundaryThresholdMeters: 0.5
   mirrorToUnityConsole: 0
 --- !u!114 &891366376
 MonoBehaviour:
@@ -36330,10 +36331,10 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   resetSemanticInterventionManager: {fileID: 0}
-  resetSemanticInterventionEnabled: 0
+  resetSemanticInterventionEnabled: 1
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 0
-  continuousRedirectorMode: 3
+  continuousRedirectorMode: 1
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5
   s2cCurvatureRadiusMeters: 10
@@ -36360,8 +36361,8 @@ MonoBehaviour:
     maximumGainCost: 0.5
     routeSearch:
       maximumDepth: 3
-      beamWidth: 4
-      topK: 3
+      beamWidth: 5
+      topK: 5
       distanceNormalizationMeters: 12
       clearanceNormalizationMeters: 3
       depthDiscount: 0.857
@@ -36656,7 +36657,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   outlineEffect: {fileID: 1462606606}
-  highlightColor: {r: 1, g: 0.86, b: 0.25, a: 1}
+  highlightColor: {r: 1, g: 0.7985139, b: 0, a: 1}
   outlineWidth: 4
   outlineIntensity: 1.5
   collectOnAwake: 1
@@ -36700,7 +36701,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   narrationText: {fileID: 1971076563}
-  idleText: Guide narration will appear here.
+  idleText: "\u60A8\u5DF2\u5230\u8FBE\u5C55\u67DC\uFF0C\u770B\u770B\u6709\u54EA\u4E9B\u503C\u5F97\u4E86\u89E3\u7684\u5185\u5BB9\u5427\uFF01"
 --- !u!114 &1780042341
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -39200,7 +39201,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 1896314442}
-  inputMode: 0
+  inputMode: 1
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
   simulatedMoveSpeedMetersPerSecond: 1.5

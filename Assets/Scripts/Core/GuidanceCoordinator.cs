@@ -281,6 +281,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     private PhysicalRiskState deferredNavigationRecoveryRiskState;
     private string deferredNavigationRecoveryPlanningFingerprint = string.Empty;
     private int automaticResetAttempts;
+    private int resetGeneration;
+    private readonly HashSet<string> handledCollisionPredictionIds = new HashSet<string>(StringComparer.Ordinal);
+    private CollisionPrediction pendingCollisionPrediction;
+    private CollisionPrediction activeCollisionPrediction;
+    private LockedTargetContext lockedTargetContext;
+    private PhysicalRuntimeState physicalRuntimeState = PhysicalRuntimeState.Inactive;
     private string resetTargetId = string.Empty;
     private NavigationTargetRole resetTargetRole = NavigationTargetRole.RouteSubgoal;
     private string resetPlanId = string.Empty;
@@ -378,6 +384,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public event Action<NavigationRecoveryDiagnosticInfo> NavigationRecoveryDiagnosed;
     /// <summary>进入、更新或退出重规划等待时触发。</summary>
     public event Action<ReplanHoldInfo> ReplanHoldChanged;
+    /// <summary>自动连续运行内部的物理状态发生变化时触发。</summary>
+    public event Action<PhysicalRuntimeState> PhysicalRuntimeStateChanged;
 
     /// <summary>
     /// 当前任务运行状态；任务控制器未配置时返回 null。
@@ -393,6 +401,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public GuidanceTarget CurrentGuidanceTarget => taskController != null
         ? taskController.RuntimeState.CurrentGuidanceTarget
         : null;
+    /// <summary>Reset 前后保持不变的当前目标身份。</summary>
+    public LockedTargetContext CurrentLockedTargetContext => lockedTargetContext;
+    /// <summary>自动连续运行内部的当前物理状态。</summary>
+    public PhysicalRuntimeState CurrentPhysicalRuntimeState => physicalRuntimeState;
+    /// <summary>当前活动 Reset 对应的碰撞预测。</summary>
+    public CollisionPrediction ActiveCollisionPrediction => activeCollisionPrediction;
     /// <summary>当前 Guidance 最近一次使用的讲解文本；Reset 语义旁路只读该字段。</summary>
     public string ActiveNarration => resetInterruptedResponse?.narration ?? activeResponse?.narration ?? string.Empty;
 
@@ -773,6 +787,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <summary>当前路线选择调用门。</summary>
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
+    private static bool UsesAutonomousCollisionPredictionSafety => true;
 
     private void Update()
     {
@@ -1398,18 +1413,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 out _,
                 out var safetyReason))
         {
-            if (riskState != null)
-            {
-                TriggerPauseReset(
-                    guidanceResponse,
-                    riskState,
-                    "Locked semantic target is not physically safe; starting heading recovery: " +
-                    safetyReason);
-                return;
-            }
-            TriggerRecoveryHardStop(
-                "Locked semantic target is unsafe and current Physical Risk facts are unavailable.");
-            return;
+            // 目标方向评估只限制当前 Guidance 诊断，不替代实际运动的碰撞预测。
+            guidanceResponse.physical_intent = "collision_prediction_guarded_local_execution";
+            guidanceResponse.verifier.reason = string.IsNullOrWhiteSpace(safetyReason)
+                ? "target_direction_requires_runtime_prediction"
+                : safetyReason;
         }
 
         SetRequestPhase(GuidanceRequestPhase.Verified);
@@ -2098,6 +2106,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         FinishActiveGuidanceForProgress();
+        lockedTargetContext = null;
+        resetGeneration = 0;
 
         if (guidanceTarget.TargetRole == NavigationTargetRole.NavigableDetour)
         {
@@ -2128,6 +2138,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             TargetReached?.Invoke(guidanceTarget);
             if (state.IsCompleted)
             {
+                SetPhysicalRuntimeState(PhysicalRuntimeState.Completed);
+                rdwPlanningLogger?.LogStatus(
+                    "final_target_completed",
+                    LogTraceContext.Empty,
+                    state,
+                    riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+                    reservation.TargetId);
                 InvalidateRdwPlanning(
                     RoutePlanInvalidationReason.RouteExhausted,
                     "Final task goal reached after the active RDW route step arrived.");
@@ -2158,6 +2175,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         TargetReached?.Invoke(guidanceTarget);
         if (state.IsCompleted)
         {
+            SetPhysicalRuntimeState(PhysicalRuntimeState.Completed);
+            rdwPlanningLogger?.LogStatus(
+                "final_target_completed",
+                LogTraceContext.Empty,
+                state,
+                riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+                reservation.TargetId);
             InvalidateRdwPlanning(
                 RoutePlanInvalidationReason.RouteExhausted,
                 "Task completed after the active route step arrived.");
@@ -2226,6 +2250,12 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
         automaticResetAttempts = 0;
+        resetGeneration = 0;
+        pendingCollisionPrediction = null;
+        activeCollisionPrediction = null;
+        handledCollisionPredictionIds.Clear();
+        lockedTargetContext = null;
+        SetPhysicalRuntimeState(PhysicalRuntimeState.Inactive);
         ClearResetTargetContext();
         postResetNavigationRecoveryPending = false;
         navigationRecoveryResetAttempts = 0;
@@ -2280,35 +2310,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         recoveryDecisionPending = true;
         try
         {
-            // EvaluateNow 会同步发布 RiskStateChanged；Reset 抑制门保证该事件只更新事实与日志。
+            SetPhysicalRuntimeState(PhysicalRuntimeState.RevalidatingPhysicalState);
+            // 这里只刷新物理事实和预测基线，不判断目标方向是否可执行。
             var riskState = riskEvaluator != null ? riskEvaluator.EvaluateNow() : null;
             TransitionRecoveryTo(GuidanceRecoveryState.Revalidating, "stabilization_completed");
-            if (!HasTrustedRecoveryFacts(riskState))
+            if (riskState == null || riskEvaluator == null ||
+                !riskEvaluator.IsTrackingValid || !riskEvaluator.IsCalibrationValid ||
+                !riskEvaluator.IsRiskIdentityCurrent(riskState))
             {
-                TriggerRecoveryHardStop(
-                    "Reset completed but the latest risk state is unavailable or invalid.");
-                return;
-            }
-
-            // 兼容由 Dashboard 或旧场景直接启动的 Reset：桥层已经持有同一冻结物理朝向。
-            if (frozenRecoveryPlan == null && pauseResetController.ActivePlan != null)
-            {
-                frozenRecoveryPlan = pauseResetController.ActivePlan;
-            }
-
-            if (!TryEvaluateFrozenRecoveryHeading(riskState, out var frozenHeading) ||
-                !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(frozenHeading))
-            {
-                if (!pauseResetController.ResumeAfterReset())
-                {
-                    TriggerRecoveryHardStop("Completed Reset could not return to the inactive state.");
-                    return;
-                }
-
-                TriggerPauseReset(
-                    null,
-                    riskState,
-                    "Frozen recovery heading is not explicitly safe; selecting a new physical heading.");
+                SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
                 return;
             }
 
@@ -2323,16 +2333,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void CompleteResetAndResumeFixedTarget(PhysicalRiskState riskState)
     {
-        if (!TryPrepareFixedTargetGuidance(riskState, out var resumedResponse, out var failureReason))
+        if (!ResetTargetContextMatches() || lockedTargetContext == null)
         {
-            EnterRecoveryHold(
-                riskState,
-                string.IsNullOrWhiteSpace(failureReason)
-                    ? "The locked target is not executable from the actual post-Reset pose."
-                    : failureReason);
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
 
+        SetPhysicalRuntimeState(PhysicalRuntimeState.ResumingLockedTarget);
+        var completedResetInfo = pauseResetController.CreateEventInfo("automatic_reset_completed");
         if (frozenRecoveryPlan != null && frozenRecoveryPlan.IsSuccess)
         {
             lastCompletedRecoveryForward = pauseResetController != null
@@ -2343,7 +2351,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
         if (!pauseResetController.ResumeAfterReset())
         {
-            TriggerRecoveryHardStop("Reset completed but could not be released.");
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
 
@@ -2351,38 +2359,71 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var state = taskController.RuntimeState;
         if (!state.IsNavigating)
         {
-            TriggerRuntimeIntervention(null, "Task could not resume navigation after Reset.");
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
 
+        var resumedResponse = resetInterruptedResponse;
         InvalidateRdwPlanning(
             RoutePlanInvalidationReason.ResetCompleted,
-            "Reset completed; local movement was rebuilt for the locked target.");
-        SetRequestPhase(GuidanceRequestPhase.Verified);
-        guidanceExecutor?.Apply(resumedResponse);
+            "Reset completed; prediction baseline was refreshed for the locked target.",
+            true);
+        if (resumedResponse != null)
+        {
+            resumedResponse.calibration_id = riskState.calibration_id;
+            resumedResponse.risk_snapshot_id = riskState.risk_snapshot_id;
+            resumedResponse.risk_revision = riskState.risk_revision;
+            SetRequestPhase(GuidanceRequestPhase.Verified);
+            guidanceExecutor?.Apply(resumedResponse);
+        }
         if (resetTargetRole != NavigationTargetRole.TurnCueAnchor)
         {
             arrivalDetector?.WatchReservation(resetTargetReservation);
         }
         activeResponse = resumedResponse;
         ResetRuntimeSafetySampling();
-        SetRequestPhase(GuidanceRequestPhase.Executing);
+        SetRequestPhase(resumedResponse != null
+            ? GuidanceRequestPhase.Executing
+            : GuidanceRequestPhase.Failed);
         GuidanceTargetSelected?.Invoke(new GuidanceTarget(resetTargetId, resetTargetRole));
-        GuidanceExecuted?.Invoke(resumedResponse);
-        if (resetTargetRole == NavigationTargetRole.TurnCueAnchor)
+        if (resumedResponse != null)
         {
-            BeginTurnCueTracking(resumedResponse);
+            GuidanceExecuted?.Invoke(resumedResponse);
+            if (resetTargetRole == NavigationTargetRole.TurnCueAnchor)
+            {
+                BeginTurnCueTracking(resumedResponse);
+            }
+            else
+            {
+                turnCueCompletionTracker.Cancel();
+            }
         }
         else
         {
             turnCueCompletionTracker.Cancel();
         }
 
-        automaticResetAttempts = 0;
+        rdwPlanningFrameCoordinator?.RearmCollisionPrediction();
+        rdwPlanningLogger?.LogAutomaticResetCompleted(
+            activeCollisionPrediction,
+            lockedTargetContext,
+            taskController.RuntimeState,
+            riskState,
+            completedResetInfo);
+        rdwPlanningLogger?.LogAutomaticResetRearmed(
+            activeCollisionPrediction,
+            lockedTargetContext,
+            taskController.RuntimeState,
+            riskState);
+        rdwPlanningLogger?.LogLockedTargetPreserved(
+            lockedTargetContext,
+            taskController.RuntimeState,
+            riskState);
         ExitReplanHold("reset_recovery_completed");
         TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "automatic_recovery_completed");
+        SetPhysicalRuntimeState(PhysicalRuntimeState.Executing);
         frozenRecoveryPlan = null;
-        CompletePostResetNavigationRecovery("fixed_target_guidance_resumed");
+        activeCollisionPrediction = null;
         ClearResetTargetContext();
     }
 
@@ -2513,6 +2554,77 @@ public sealed class GuidanceCoordinator : MonoBehaviour
 
     private void HandleRuntimeRiskStateChanged(PhysicalRiskState riskState)
     {
+        if (IsResetRecoveryActive)
+        {
+            // Reset 生命周期只消费已经冻结的物理计划；风险刷新不得启动第二次 Reset。
+            return;
+        }
+
+        if (UsesAutonomousCollisionPredictionSafety)
+        {
+            var previousPhysicalState = physicalRuntimeState;
+            var physicalInput = new RuntimeGuidanceSafetyInput(
+                ActiveDecisionId,
+                CurrentGuidanceTarget != null ? CurrentGuidanceTarget.TargetId : string.Empty,
+                activeResponse != null ? activeResponse.movement_instruction : string.Empty,
+                riskState,
+                riskEvaluator != null && riskEvaluator.IsTrackingValid,
+                riskEvaluator != null && riskEvaluator.IsCalibrationValid,
+                riskEvaluator != null && riskEvaluator.IsRiskIdentityCurrent(riskState),
+                string.Empty,
+                0f,
+                true,
+                false,
+                pauseResetController != null ? pauseResetController.State : ResetLifecycleState.Inactive,
+                0,
+                false,
+                false);
+            var physicalDecision = runtimeSafetyPolicy.Evaluate(physicalInput);
+            if (physicalDecision == RuntimeGuidanceSafetyDecision.TrackingRecovery)
+            {
+                rotationGainController?.AbortGain("tracking_recovery");
+                SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
+                if (previousPhysicalState != PhysicalRuntimeState.TrackingRecovery)
+                {
+                    rdwPlanningLogger?.LogStatus(
+                        "tracking_recovery_started",
+                        LogTraceContext.Empty,
+                        taskController != null ? taskController.RuntimeState : null,
+                        riskState,
+                        "tracking or calibration facts are temporarily unavailable");
+                }
+                return;
+            }
+
+            if (physicalDecision == RuntimeGuidanceSafetyDecision.BoundaryRecovery)
+            {
+                rotationGainController?.AbortGain("boundary_recovery");
+                SetPhysicalRuntimeState(PhysicalRuntimeState.BoundaryRecovery);
+                if (previousPhysicalState != PhysicalRuntimeState.BoundaryRecovery)
+                {
+                    rdwPlanningLogger?.LogStatus(
+                        "boundary_breach_detected",
+                        LogTraceContext.Empty,
+                        taskController != null ? taskController.RuntimeState : null,
+                        riskState,
+                        "physical boundary breach detected; waiting for local recovery prediction");
+                }
+                return;
+            }
+
+            if (previousPhysicalState == PhysicalRuntimeState.TrackingRecovery)
+            {
+                rdwPlanningLogger?.LogStatus(
+                    "tracking_recovery_completed",
+                    LogTraceContext.Empty,
+                    taskController != null ? taskController.RuntimeState : null,
+                    riskState,
+                    "tracking and calibration facts recovered");
+            }
+            SetPhysicalRuntimeState(PhysicalRuntimeState.Executing);
+            return;
+        }
+
         if (recoveryState == GuidanceRecoveryState.HoldingForSafeHeading)
         {
             TryResumeRecoveryHold(riskState, false);
@@ -2662,6 +2774,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         if (state == ResetLifecycleState.Required ||
             state == ResetLifecycleState.TurningToSafeHeading)
         {
+            SetPhysicalRuntimeState(PhysicalRuntimeState.Resetting);
             InvalidateRdwPlanning(
                 RoutePlanInvalidationReason.ResetStarted,
                 "Reset started; physical route identities are stale, semantic target is retained.",
@@ -2669,6 +2782,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
         else if (state == ResetLifecycleState.Completed)
         {
+            SetPhysicalRuntimeState(PhysicalRuntimeState.Stabilizing);
             InvalidateRdwPlanning(
                 RoutePlanInvalidationReason.ResetCompleted,
                 "Reset completed; waiting for fresh physical facts while retaining semantic target.",
@@ -2683,6 +2797,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                  recoveryState != GuidanceRecoveryState.Terminated)
         {
             recoveryRevalidationAt = float.PositiveInfinity;
+            activeCollisionPrediction = null;
             TransitionRecoveryTo(GuidanceRecoveryState.Inactive, "reset_cancelled");
         }
     }
@@ -2701,7 +2816,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        EnterRecoveryHold(
+        SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
+        rdwPlanningLogger?.LogStatus(
+            "automatic_reset_mapping_failed",
+            LogTraceContext.Empty,
+            taskController != null ? taskController.RuntimeState : null,
             riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
             string.IsNullOrWhiteSpace(reason) ? "Reset mapping failed." : reason);
     }
@@ -2760,9 +2879,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         PhysicalRiskState riskState,
         string reason)
     {
+        var collisionPrediction = pendingCollisionPrediction;
+        pendingCollisionPrediction = null;
+        if (collisionPrediction == null || !collisionPrediction.IsValid)
+        {
+            // 自动连续模式下，风险等级和目标方向都不能替代新的碰撞预测。
+            return;
+        }
+
         if (pauseResetController == null || taskController == null)
         {
-            TriggerRuntimeIntervention(response, "Automatic reset dependencies are unavailable.");
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
 
@@ -2772,19 +2899,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         var resolvedReason = string.IsNullOrWhiteSpace(reason)
-            ? "Planned movement is physically unsafe; starting automatic heading recovery."
+            ? $"New collision prediction {collisionPrediction.PredictionId} requires an automatic reset."
             : reason;
         if (!TryCaptureResetTargetContext(response))
         {
-            TriggerRecoveryHardStop(
-                "Reset cannot start because the active local target is not locked consistently.");
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
+
+        resetGeneration++;
+        RefreshLockedTargetContext(resetGeneration);
+        activeCollisionPrediction = collisionPrediction;
+        SetPhysicalRuntimeState(PhysicalRuntimeState.ResetRequired);
 
         TransitionRecoveryTo(GuidanceRecoveryState.StoppingGuidance, resolvedReason);
         InvalidateRdwPlanning(
             RoutePlanInvalidationReason.ResetStarted,
-            resolvedReason);
+            resolvedReason,
+            true);
         requestClient?.CancelPendingRequest();
         guidanceExecutor?.Clear();
         handlingGainTermination = true;
@@ -2801,45 +2933,21 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         TransitionRecoveryTo(GuidanceRecoveryState.SelectingHeading, "guidance_stopped");
         taskController.PauseForReset();
         var searchResult = SearchRecoveryHeading(riskState);
-        var selectedPostResetPlan = SelectPostResetRecoveryPlan(
-            riskState,
-            searchResult,
-            null,
-            out _);
-        var nextPlan = selectedPostResetPlan;
-        if (nextPlan == null || !nextPlan.IsSuccess ||
-            !TryEvaluateRecoveryPlanHeading(riskState, nextPlan, out var exactRecoveryHeading) ||
-            !PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(exactRecoveryHeading))
+        var nextPlan = searchResult != null ? searchResult.Plan : null;
+        if ((nextPlan == null || !nextPlan.IsSuccess) &&
+            collisionPrediction.SourceType == CollisionPredictionSourceType.Boundary)
         {
-            EnterRecoveryHold(
-                riskState,
-                nextPlan != null && nextPlan.IsSuccess
-                    ? "Selected recovery heading failed exact final validation."
-                    : RecoveryFailureReason(
-                        searchResult != null && searchResult.Plan != null
-                            ? searchResult.Plan.Failure
-                            : RecoveryHeadingFailure.InvalidSearchContext));
-            return;
+            nextPlan = CreateBoundaryRecoveryPlan(riskState);
         }
 
-        var isInitialReset = !postResetNavigationRecoveryPending;
-        if (!TryConsumeNavigationRecoveryResetBudget())
+        if (nextPlan == null || !nextPlan.IsSuccess)
         {
-            EnterNavigationRecoveryHold(
-                riskState,
-                BuildPlanningFingerprint(riskState),
-                "Navigation Recovery Reset budget has been exhausted; waiting for new facts.");
+            SetPhysicalRuntimeState(PhysicalRuntimeState.BoundaryRecovery);
             return;
         }
 
         ClearRecoveryHold();
         automaticResetAttempts++;
-        postResetNavigationRecoveryPending = true;
-        if (isInitialReset)
-        {
-            navigationRecoveryResetAttempts = 0;
-        }
-        navigationRecoveryHoldStartedAt = float.PositiveInfinity;
         frozenRecoveryPlan = nextPlan;
         RememberRecoveryHeading(nextPlan);
         RuntimeIntervention?.Invoke(new RuntimeInterventionInfo(
@@ -2848,13 +2956,65 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             RuntimeGuidanceSafetyDecision.PauseReset,
             true,
             automaticResetAttempts));
-        if (!pauseResetController.PauseForReset(resolvedReason, frozenRecoveryPlan))
+        if (!pauseResetController.PauseForReset(
+                resolvedReason,
+                frozenRecoveryPlan,
+                collisionPrediction,
+                resetGeneration))
         {
-            TriggerRecoveryHardStop("Automatic recovery controller rejected the frozen heading plan.");
+            activeCollisionPrediction = null;
+            SetPhysicalRuntimeState(PhysicalRuntimeState.TrackingRecovery);
             return;
         }
 
+        handledCollisionPredictionIds.Add(collisionPrediction.PredictionId);
+        rdwPlanningLogger?.LogCollisionPrediction(
+            collisionPrediction,
+            lockedTargetContext,
+            taskController.RuntimeState,
+            riskState);
+        rdwPlanningLogger?.LogAutonomousResetStarted(
+            collisionPrediction,
+            lockedTargetContext,
+            taskController.RuntimeState,
+            riskState,
+            pauseResetController.CreateEventInfo("automatic_reset_started"));
+        SetPhysicalRuntimeState(PhysicalRuntimeState.Resetting);
         TransitionRecoveryTo(GuidanceRecoveryState.WaitingForUserTurn, "recovery_heading_selected");
+    }
+
+    /// <summary>
+    /// 接受 RDW 本地闭环产生的新碰撞预测并启动一次独立自动 Reset。
+    /// </summary>
+    /// <param name="prediction">当前 Tracking Sample 产生的新预测。</param>
+    /// <returns>该预测真正启动 Reset 时返回 true。</returns>
+    public bool BeginAutomaticReset(CollisionPrediction prediction)
+    {
+        if (prediction == null || !prediction.IsValid || IsResetRecoveryActive ||
+            handledCollisionPredictionIds.Contains(prediction.PredictionId) ||
+            activeCollisionPrediction != null || taskController == null ||
+            !taskController.RuntimeState.IsNavigating ||
+            !string.Equals(
+                prediction.PhysicalSpaceId,
+                riskEvaluator != null && riskEvaluator.CurrentRiskState != null
+                    ? riskEvaluator.CurrentRiskState.physical_space
+                    : string.Empty,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        pendingCollisionPrediction = prediction;
+        TriggerPauseReset(
+            activeResponse,
+            riskEvaluator != null ? riskEvaluator.CurrentRiskState : null,
+            $"collision_prediction:{prediction.SourceType}:{prediction.SourceId}");
+        return activeCollisionPrediction != null &&
+               string.Equals(
+                   activeCollisionPrediction.PredictionId,
+                   prediction.PredictionId,
+                   StringComparison.Ordinal) &&
+               pauseResetController != null && pauseResetController.IsActive;
     }
 
     /// <summary>
@@ -2865,25 +3025,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <returns>已处于或成功进入自动恢复状态时返回 true。</returns>
     public bool BeginAutomaticRecovery(PhysicalRiskState riskState, string reason)
     {
-        if (IsResetRecoveryActive)
-        {
-            return true;
-        }
-
-        if (taskController == null || !taskController.RuntimeState.IsNavigating)
-        {
-            TriggerRecoveryHardStop("Automatic recovery requires an active navigating task.");
-            return false;
-        }
-
-        if (!HasTrustedRecoveryFacts(riskState))
-        {
-            TriggerRecoveryHardStop(
-                "Automatic recovery has no trusted tracking, calibration, or boundary facts.");
-            return false;
-        }
-
-        TriggerPauseReset(null, riskState, reason);
+        // 兼容旧调用入口：没有 CollisionPrediction 时只更新恢复语义，不启动 Reset。
+        SetPhysicalRuntimeState(
+            riskState != null && IsUserInsidePhysicalBoundary(riskState)
+                ? PhysicalRuntimeState.Executing
+                : PhysicalRuntimeState.BoundaryRecovery);
         return IsAutomaticRecoveryActive;
     }
 
@@ -3875,10 +4021,11 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         var target = state != null ? state.CurrentGuidanceTarget : null;
         var reservation = state != null ? state.ActiveReservation : null;
         var interruptedResponse = response ?? activeResponse ?? resetInterruptedResponse;
-        if (state == null || target == null || reservation == null || interruptedResponse == null ||
+        if (state == null || target == null || reservation == null ||
             !state.MatchesActiveReservation(reservation) ||
             !string.Equals(target.TargetId, reservation.TargetId, StringComparison.Ordinal) ||
-            !string.Equals(interruptedResponse.selected_target, target.TargetId, StringComparison.Ordinal))
+            (interruptedResponse != null &&
+             !string.Equals(interruptedResponse.selected_target, target.TargetId, StringComparison.Ordinal)))
         {
             return false;
         }
@@ -3896,7 +4043,57 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         resetPlanGeneration = state.planGeneration;
         resetTargetReservation = reservation;
         resetInterruptedResponse = interruptedResponse;
+        RefreshLockedTargetContext(resetGeneration);
         return true;
+    }
+
+    private void RefreshLockedTargetContext(int generation)
+    {
+        var state = taskController != null ? taskController.RuntimeState : null;
+        var reservation = state != null ? state.ActiveReservation : null;
+        var target = state != null ? state.CurrentGuidanceTarget : null;
+        if (state == null || reservation == null || target == null)
+        {
+            return;
+        }
+
+        lockedTargetContext = new LockedTargetContext(
+            state.finalTargetId,
+            target.TargetId,
+            target.TargetRole,
+            $"{reservation.DecisionId}:{reservation.Generation}",
+            ActiveRequestId,
+            generation);
+    }
+
+    private static RecoveryHeadingPlan CreateBoundaryRecoveryPlan(PhysicalRiskState riskState)
+    {
+        if (riskState == null || riskState.boundary_context == null ||
+            riskState.boundary_context.Count < 3)
+        {
+            return RecoveryHeadingPlan.Failed(RecoveryHeadingFailure.InvalidSearchContext);
+        }
+
+        var center = Vector2.zero;
+        for (var index = 0; index < riskState.boundary_context.Count; index++)
+        {
+            center += riskState.boundary_context[index];
+        }
+
+        center /= riskState.boundary_context.Count;
+        var inward = center - riskState.user_physical_position;
+        if (inward.sqrMagnitude <= 0.0001f)
+        {
+            inward = -riskState.user_physical_forward;
+        }
+
+        inward.Normalize();
+        var relativeYaw = RdwYawConvention.SignedDeltaYaw(
+            riskState.user_physical_forward,
+            inward);
+        return new RecoveryHeadingPlan(
+            new HeadingSample(relativeYaw, inward, 0f, HeadingSafety.Safe),
+            0f);
     }
 
     private bool ResetTargetContextMatches()
@@ -4010,6 +4207,17 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         resetPlanGeneration = 0;
         resetTargetReservation = null;
         resetInterruptedResponse = null;
+    }
+
+    private void SetPhysicalRuntimeState(PhysicalRuntimeState nextState)
+    {
+        if (physicalRuntimeState == nextState)
+        {
+            return;
+        }
+
+        physicalRuntimeState = nextState;
+        PhysicalRuntimeStateChanged?.Invoke(physicalRuntimeState);
     }
 
     private static PostResetContinuationAssessment HoldContinuation(
@@ -4375,15 +4583,26 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
     }
 
-    private void HandleRequestFailed(string _)
+    private void HandleRequestFailed(string reason)
     {
-        arrivalDetector?.WatchReservation(null);
-        AbandonReservations();
+        var state = taskController != null ? taskController.RuntimeState : null;
+        if (state != null && state.HasLockedSemanticGoal)
+        {
+            // 技术失败只使本次 Guidance 请求过期，当前目标和 Reservation 继续有效。
+            arrivalDetector?.WatchReservation(state.ActiveReservation);
+            RefreshLockedTargetContext(resetGeneration);
+        }
+        else
+        {
+            taskController?.AbandonCandidateSetReservation();
+        }
         activeSnapshot = null;
-        activeResponse = null;
         turnCueCompletionTracker.Cancel();
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Failed);
+        PlanningFailed?.Invoke(string.IsNullOrWhiteSpace(reason)
+            ? "Guidance request failed; the locked target was preserved."
+            : reason);
     }
 
     private void AbandonReservations()

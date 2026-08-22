@@ -154,9 +154,13 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             }
         }
 
-        // 安全过滤开启时模型仅见过滤后候选；基线条件模型仍见完整集合。
+        // 正式 OURS 先把完整基础候选交给 RDW Top-K 规划；
+        // 其他启用安全过滤的条件仍在模型入口提前裁剪。
         var useSafeFilter = policy != null && policy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled;
-        var modelCandidateIds = useSafeFilter ? allowedCandidateIds : candidateIds;
+        var useRdwTopKSelection = UsesRdwTopKCandidateSelection(policy);
+        var modelCandidateIds = useRdwTopKSelection
+            ? candidateIds
+            : useSafeFilter ? allowedCandidateIds : candidateIds;
         return new NavigationCandidateSet(
             candidateIds,
             modelCandidateIds,
@@ -164,6 +168,20 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             candidates,
             navigationTargets.RegistryRevision,
             assessments);
+    }
+
+    /// <summary>
+    /// 判断当前条件是否由 RDW Top-K 规划负责候选筛选。
+    /// </summary>
+    private static bool UsesRdwTopKCandidateSelection(ExperimentConditionPolicy policy)
+    {
+        if (policy == null)
+        {
+            return false;
+        }
+
+        var profile = ExperimentConditionMatrix.GetProfile(policy.Condition);
+        return profile != null && profile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK;
     }
 
     /// <summary>重新构建候选并确认冻结 Reservation 的成员、角色和方向仍然一致。</summary>

@@ -7,10 +7,14 @@ public enum RuntimeGuidanceSafetyDecision
 {
     /// <summary>当前导览可以继续执行。</summary>
     Continue,
-    /// <summary>当前物理动作不安全，执行自动安全朝向恢复。</summary>
+    /// <summary>新的碰撞预测要求执行独立物理 Reset。</summary>
     PauseReset = 2,
-    /// <summary>立即停止全部导览行为并进入安全保持。</summary>
-    HardStop
+    /// <summary>立即停止全部导览行为并进入安全保持；仅保留给明确外部故障。</summary>
+    HardStop = 3,
+    /// <summary>Tracking 或 Calibration 暂时不可用，停止增益并等待恢复。</summary>
+    TrackingRecovery = 4,
+    /// <summary>已经越界但物理身份仍可信，进入本地边界恢复。</summary>
+    BoundaryRecovery = 5
 }
 
 /// <summary>
@@ -48,6 +52,8 @@ public sealed class RuntimeGuidanceSafetyInput
     public bool HasRecoveryHeading { get; }
     /// <summary>当前计划方向是否已经需要安全层介入。</summary>
     public bool RequiresSafetyIntervention { get; }
+    /// <summary>当前 Tracking Sample 产生的新碰撞预测。</summary>
+    public CollisionPrediction CollisionPrediction { get; }
 
     /// <summary>创建包含三项内部安全事实的不可变策略输入。</summary>
     public RuntimeGuidanceSafetyInput(
@@ -65,7 +71,8 @@ public sealed class RuntimeGuidanceSafetyInput
         ResetLifecycleState resetState,
         int consecutiveUnsafeSamples,
         bool requiresSafetyIntervention,
-        bool hasRecoveryHeading)
+        bool hasRecoveryHeading,
+        CollisionPrediction collisionPrediction = null)
     {
         ActiveDecisionId = activeDecisionId ?? string.Empty;
         TargetId = targetId ?? string.Empty;
@@ -82,6 +89,7 @@ public sealed class RuntimeGuidanceSafetyInput
         ConsecutiveUnsafeSamples = Math.Max(0, consecutiveUnsafeSamples);
         RequiresSafetyIntervention = requiresSafetyIntervention;
         HasRecoveryHeading = hasRecoveryHeading;
+        CollisionPrediction = collisionPrediction;
     }
 
 }
@@ -97,17 +105,10 @@ public sealed class RuntimeGuidanceSafetyPolicy
     /// </summary>
     public RuntimeGuidanceSafetyDecision Evaluate(RuntimeGuidanceSafetyInput input)
     {
-        if (input == null ||
-            string.IsNullOrWhiteSpace(input.ActiveDecisionId) ||
-            string.IsNullOrWhiteSpace(input.TargetId) ||
-            string.IsNullOrWhiteSpace(input.MovementInstruction) ||
-            input.LatestRisk == null ||
-            !input.TrackingValid ||
-            !input.CalibrationValid ||
-            !input.PhysicalSpaceMatches ||
-            !input.PlannedDirectionAvailable)
+        if (input == null || input.LatestRisk == null ||
+            !input.TrackingValid || !input.CalibrationValid || !input.PhysicalSpaceMatches)
         {
-            return RuntimeGuidanceSafetyDecision.HardStop;
+            return RuntimeGuidanceSafetyDecision.TrackingRecovery;
         }
 
         // Reset 期间由恢复链路统一复验，普通策略不能恢复旧 Guidance 或重复启动 Reset。
@@ -116,29 +117,16 @@ public sealed class RuntimeGuidanceSafetyPolicy
             return RuntimeGuidanceSafetyDecision.Continue;
         }
 
-        if (!input.RequiresSafetyIntervention)
+        if (!PhysicalSpaceGeometry.ContainsPoint(
+                input.LatestRisk.boundary_context,
+                input.LatestRisk.user_physical_position))
         {
-            return RuntimeGuidanceSafetyDecision.Continue;
+            return RuntimeGuidanceSafetyDecision.BoundaryRecovery;
         }
 
-        return input.HasRecoveryHeading || HasTrustedRecoveryHoldFacts(input)
+        return input.CollisionPrediction != null && input.CollisionPrediction.IsValid
             ? RuntimeGuidanceSafetyDecision.PauseReset
-            : RuntimeGuidanceSafetyDecision.HardStop;
-    }
-
-    private static bool HasTrustedRecoveryHoldFacts(RuntimeGuidanceSafetyInput input)
-    {
-        var risk = input != null ? input.LatestRisk : null;
-        return input != null &&
-               input.TrackingValid &&
-               input.CalibrationValid &&
-               input.PhysicalSpaceMatches &&
-               risk != null &&
-               risk.boundary_context != null &&
-               risk.boundary_context.Count >= 3 &&
-               PhysicalSpaceGeometry.ContainsPoint(
-                   risk.boundary_context,
-                   risk.user_physical_position);
+            : RuntimeGuidanceSafetyDecision.Continue;
     }
 
     private static bool IsResetActive(ResetLifecycleState state)

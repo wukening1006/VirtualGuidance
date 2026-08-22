@@ -43,6 +43,16 @@ public sealed class ResetEventInfo
     public float TotalVirtualYawDegrees { get; }
     /// <summary>触发本次 Reset 的原因。</summary>
     public string Reason { get; }
+    /// <summary>触发本次 Reset 的碰撞预测 ID。</summary>
+    public string PredictionId { get; }
+    /// <summary>当前锁定目标经历的 Reset 代际。</summary>
+    public int ResetGeneration { get; }
+    /// <summary>事件发生时的 Physical XZ 位置，单位：米。</summary>
+    public Vector2 PhysicalPosition { get; }
+    /// <summary>事件发生时的 Physical Forward。</summary>
+    public Vector2 PhysicalForward { get; }
+    /// <summary>Reset 从开始到该事件的持续时间，单位：秒。</summary>
+    public float ResetDurationSeconds { get; }
 
     /// <summary>使用协调层冻结的恢复计划创建不可变 Reset 事件。</summary>
     public ResetEventInfo(
@@ -54,7 +64,12 @@ public sealed class ResetEventInfo
         RdwResetMappingStrategy mappingStrategy = RdwResetMappingStrategy.SafeHeadingMapping,
         float? physicalTurnOverride = null,
         float? injectedYawOverride = null,
-        float? totalVirtualYawOverride = null)
+        float? totalVirtualYawOverride = null,
+        string predictionId = null,
+        int resetGeneration = 0,
+        Vector2 physicalPosition = default(Vector2),
+        Vector2 physicalForward = default(Vector2),
+        float resetDurationSeconds = 0f)
     {
         ResetId = resetId ?? string.Empty;
         RecoveryPlan = recoveryPlan;
@@ -72,6 +87,13 @@ public sealed class ResetEventInfo
         TotalVirtualYawDegrees = totalVirtualYawOverride ??
                                  PhysicalTurnDegrees + InjectedYawDegrees;
         Reason = reason ?? string.Empty;
+        PredictionId = predictionId ?? string.Empty;
+        ResetGeneration = Math.Max(0, resetGeneration);
+        PhysicalPosition = physicalPosition;
+        PhysicalForward = physicalForward.sqrMagnitude > 0.0001f
+            ? physicalForward.normalized
+            : Vector2.up;
+        ResetDurationSeconds = Mathf.Max(0f, resetDurationSeconds);
     }
 }
 
@@ -105,6 +127,9 @@ public sealed class PauseResetController : MonoBehaviour
     private ResetLifecycleState state = ResetLifecycleState.Inactive;
     private string resetReason = string.Empty;
     private string activeResetId = string.Empty;
+    private string activePredictionId = string.Empty;
+    private int activeResetGeneration;
+    private float activeResetStartedAt;
     private Vector2 safePhysicalForward = Vector2.up;
     private RecoveryHeadingPlan activePlan;
     private bool mappingResetEnabled;
@@ -242,7 +267,25 @@ public sealed class PauseResetController : MonoBehaviour
     /// <returns>成功启动恢复时返回 true。</returns>
     public bool PauseForReset(string reason, RecoveryHeadingPlan plan)
     {
-        if (plan == null || !plan.IsSuccess)
+        // 自动连续模式禁止无 CollisionPrediction 的旧入口启动 Reset。
+        return false;
+    }
+
+    /// <summary>
+    /// 使用新的碰撞预测启动独立 Reset；活动 Reset 期间重复调用保持幂等。
+    /// </summary>
+    /// <param name="reason">触发 Reset 的诊断原因。</param>
+    /// <param name="plan">只依据物理净空选择的冻结恢复航向。</param>
+    /// <param name="prediction">触发本次 Reset 的新碰撞预测。</param>
+    /// <param name="resetGeneration">当前锁定目标的 Reset 代际。</param>
+    /// <returns>已处于或成功进入 Reset 时返回 true。</returns>
+    public bool PauseForReset(
+        string reason,
+        RecoveryHeadingPlan plan,
+        CollisionPrediction prediction,
+        int resetGeneration)
+    {
+        if (plan == null || !plan.IsSuccess || prediction == null || !prediction.IsValid)
         {
             return false;
         }
@@ -273,6 +316,9 @@ public sealed class PauseResetController : MonoBehaviour
 
         resetReason = string.IsNullOrWhiteSpace(reason) ? "reset_required" : reason;
         activeResetId = Guid.NewGuid().ToString("N");
+        activePredictionId = prediction != null ? prediction.PredictionId : string.Empty;
+        activeResetGeneration = Math.Max(0, resetGeneration);
+        activeResetStartedAt = Time.realtimeSinceStartup;
         TransitionTo(ResetLifecycleState.Required);
         activePlan = plan;
         safePhysicalForward = plan.SafePhysicalForward;
@@ -403,6 +449,9 @@ public sealed class PauseResetController : MonoBehaviour
         activePlan = null;
         activeMappingPlan = null;
         activeResetId = string.Empty;
+        activePredictionId = string.Empty;
+        activeResetGeneration = 0;
+        activeResetStartedAt = 0f;
         TransitionTo(ResetLifecycleState.Inactive);
         return true;
     }
@@ -421,6 +470,9 @@ public sealed class PauseResetController : MonoBehaviour
         InvalidateMappingChain(resetReason);
         activePlan = null;
         activeResetId = string.Empty;
+        activePredictionId = string.Empty;
+        activeResetGeneration = 0;
+        activeResetStartedAt = 0f;
         TransitionTo(ResetLifecycleState.Cancelled);
     }
 
@@ -483,7 +535,14 @@ public sealed class PauseResetController : MonoBehaviour
             strategy,
             physicalTurn,
             injectedYaw,
-            totalVirtualYaw);
+            totalVirtualYaw,
+            activePredictionId,
+            activeResetGeneration,
+            userPoseTracker != null ? userPoseTracker.PhysicalPositionXZ : Vector2.zero,
+            userPoseTracker != null ? userPoseTracker.PhysicalForwardXZ : Vector2.up,
+            activeResetStartedAt > 0f
+                ? Time.realtimeSinceStartup - activeResetStartedAt
+                : 0f);
     }
 
     private void TransitionTo(ResetLifecycleState nextState)

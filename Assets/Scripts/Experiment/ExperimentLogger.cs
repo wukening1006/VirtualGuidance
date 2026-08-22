@@ -132,7 +132,11 @@ public sealed class ExperimentLogger : MonoBehaviour
     [Tooltip("自动批量 Flush 的最长间隔，单位：秒。")]
     [SerializeField, Min(0.1f)] private float flushIntervalSeconds = 1f;
     [Tooltip("写入 session_meta.json 的风险 Telemetry 采样率，单位：Hz；应与 PhysicalRiskEvaluator 保持一致。")]
-    [SerializeField, Min(0.1f)] private float riskTelemetrySamplingRateHz = 5f;
+    [SerializeField, Min(0.1f)] private float riskTelemetrySamplingRateHz = 10f;
+
+    [Header("指标口径")]
+    [Tooltip("Near-boundary 事件使用的最小净空阈值，单位：米；从不小于阈值进入小于阈值时计 1 次。")]
+    [SerializeField, Min(0f)] private float nearBoundaryThresholdMeters = 0.5f;
 
     [Header("Unity Console")]
     [Tooltip("启用后将关键实验事件实时镜像到 Unity Console；完整数据仍写入 JSONL。默认关闭以避免运行期刷屏。")]
@@ -153,7 +157,6 @@ public sealed class ExperimentLogger : MonoBehaviour
     private string lastConsoleSafetyHoldKey = string.Empty;
     private bool wasNearBoundary;
     private bool wasBoundaryBreached;
-    private readonly HashSet<string> activeObstacleCollisions = new HashSet<string>();
     private long lastStorageErrorTimestamp;
     private readonly Dictionary<string, long> requestStartedTimestamps = new Dictionary<string, long>();
     private readonly HashSet<string> activePlannerWaitingIds = new HashSet<string>();
@@ -169,6 +172,10 @@ public sealed class ExperimentLogger : MonoBehaviour
     private Vector3 lastVirtualForward;
     private string lastMetricState = "unknown";
     private string lastTelemetryTimestamp = string.Empty;
+    private double nextTelemetrySampleElapsedSeconds;
+    private double lastTelemetryElapsedSeconds;
+    private double lastTelemetrySpeedMetersPerSecond;
+    private bool hasPreviousTelemetrySample;
     private readonly List<PendingCalibrationEvent> pendingCalibrationEvents = new List<PendingCalibrationEvent>();
 
     /// <summary>当前实验会话；尚未开始时为 null。</summary>
@@ -239,7 +246,6 @@ public sealed class ExperimentLogger : MonoBehaviour
         lastConsoleSafetyHoldKey = string.Empty;
         wasNearBoundary = false;
         wasBoundaryBreached = false;
-        activeObstacleCollisions.Clear();
         requestStartedTimestamps.Clear();
         activePlannerWaitingIds.Clear();
         hasPreviousVirtualPosition = false;
@@ -249,6 +255,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         activeExhibitId = string.Empty;
         lastMetricState = "unknown";
         lastTelemetryTimestamp = string.Empty;
+        nextTelemetrySampleElapsedSeconds = 0d;
+        lastTelemetryElapsedSeconds = 0d;
+        lastTelemetrySpeedMetersPerSecond = 0d;
+        hasPreviousTelemetrySample = false;
         InitializeSessionFiles();
         if (!string.IsNullOrWhiteSpace(logPath))
         {
@@ -632,9 +642,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             virtualPosition,
             virtualForward);
 
-        var isNearBoundary = string.Equals(riskState.boundary_risk, "medium", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(riskState.boundary_risk, "high", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(riskState.boundary_risk, "critical", StringComparison.OrdinalIgnoreCase);
+        var isNearBoundary = riskState.minimum_clearance_m < Mathf.Max(0f, nearBoundaryThresholdMeters);
         if (isNearBoundary != wasNearBoundary)
         {
             Write(
@@ -659,26 +667,6 @@ public sealed class ExperimentLogger : MonoBehaviour
             LogBoundaryBreach(riskState);
         }
         wasBoundaryBreached = boundaryBreached;
-
-        var currentCollisions = new HashSet<string>();
-        foreach (var obstacle in riskState.obstacle_context)
-        {
-            if (obstacle == null) continue;
-            var collisionRadius = Mathf.Max(0f, obstacle.radius) + Mathf.Max(0f, riskState.user_radius_meters);
-            if ((riskState.user_physical_position - obstacle.center).sqrMagnitude > collisionRadius * collisionRadius)
-            {
-                continue;
-            }
-
-            var obstacleId = string.IsNullOrWhiteSpace(obstacle.id) ? "unnamed_obstacle" : obstacle.id;
-            currentCollisions.Add(obstacleId);
-            if (!activeObstacleCollisions.Contains(obstacleId))
-            {
-                LogCollision(obstacleId, riskState);
-            }
-        }
-        activeObstacleCollisions.Clear();
-        foreach (var obstacleId in currentCollisions) activeObstacleCollisions.Add(obstacleId);
 
         var signature = BuildRiskSignature(riskState);
         if (string.Equals(signature, lastRiskEventSignature, StringComparison.Ordinal))
@@ -715,7 +703,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         LogTraceContext trace,
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
-        ResetEventInfo info)
+        ResetEventInfo info,
+        Vector3 virtualPosition,
+        Vector3 virtualForward)
     {
         activeMetricResetId = info != null && !string.IsNullOrWhiteSpace(info.ResetId)
             ? info.ResetId
@@ -732,7 +722,12 @@ public sealed class ExperimentLogger : MonoBehaviour
                 : "reset started",
             trace,
             resetId: activeMetricResetId,
-            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+            metricSnapshot: CreateMetricSnapshot(
+                runtimeState,
+                riskState,
+                virtualPosition,
+                virtualForward,
+                "reset_start"));
     }
 
     /// <summary>记录与最近一次 Reset 开始配对的完成事件。</summary>
@@ -740,7 +735,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         LogTraceContext trace,
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
-        ResetEventInfo info = null)
+        ResetEventInfo info,
+        Vector3 virtualPosition,
+        Vector3 virtualForward)
     {
         Write(
             "reset_completed",
@@ -752,7 +749,12 @@ public sealed class ExperimentLogger : MonoBehaviour
             info != null ? $"safe heading reached; virtual {info.TotalVirtualYawDegrees:F1} deg" : "safe heading reached",
             trace,
             resetId: activeMetricResetId,
-            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+            metricSnapshot: CreateMetricSnapshot(
+                runtimeState,
+                riskState,
+                virtualPosition,
+                virtualForward,
+                "reset_end"));
         activeMetricResetId = string.Empty;
     }
 
@@ -761,7 +763,9 @@ public sealed class ExperimentLogger : MonoBehaviour
         LogTraceContext trace,
         GuidanceRuntimeState runtimeState,
         PhysicalRiskState riskState,
-        ResetEventInfo info)
+        ResetEventInfo info,
+        Vector3 virtualPosition,
+        Vector3 virtualForward)
     {
         Write(
             "reset_cancelled",
@@ -775,7 +779,12 @@ public sealed class ExperimentLogger : MonoBehaviour
             resetId: !string.IsNullOrWhiteSpace(activeMetricResetId)
                 ? activeMetricResetId
                 : info != null ? info.ResetId : string.Empty,
-            metricSnapshot: CreateMetricSnapshot(runtimeState, riskState));
+            metricSnapshot: CreateMetricSnapshot(
+                runtimeState,
+                riskState,
+                virtualPosition,
+                virtualForward,
+                "reset_cancelled"));
         activeMetricResetId = string.Empty;
     }
 
@@ -791,6 +800,108 @@ public sealed class ExperimentLogger : MonoBehaviour
             null,
             string.IsNullOrWhiteSpace(colliderId) ? "collision" : $"collision: {colliderId}",
             LogTraceContext.FromRisk(riskState));
+    }
+
+    /// <summary>记录本地实时闭环创建并接受的一条新碰撞预测。</summary>
+    public void LogCollisionPrediction(
+        CollisionPrediction prediction,
+        LockedTargetContext lockedTarget,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        Write(
+            "collision_prediction_created",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            prediction != null ? prediction.SourceId : string.Empty,
+            LogTraceContext.Empty,
+            collisionPrediction: prediction,
+            lockedTargetContext: lockedTarget);
+    }
+
+    /// <summary>记录一次由新碰撞预测启动的独立自动 Reset。</summary>
+    public void LogAutonomousResetStarted(
+        CollisionPrediction prediction,
+        LockedTargetContext lockedTarget,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ResetEventInfo resetInfo)
+    {
+        Write(
+            "automatic_reset_started",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            prediction != null ? prediction.PredictionId : string.Empty,
+            LogTraceContext.Empty,
+            collisionPrediction: prediction,
+            lockedTargetContext: lockedTarget,
+            autonomousResetInfo: resetInfo);
+    }
+
+    /// <summary>记录独立自动 Reset 完成及其最新 Physical Pose。</summary>
+    public void LogAutomaticResetCompleted(
+        CollisionPrediction prediction,
+        LockedTargetContext lockedTarget,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        ResetEventInfo resetInfo)
+    {
+        Write(
+            "automatic_reset_completed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            resetInfo != null ? resetInfo.ResetId : string.Empty,
+            LogTraceContext.Empty,
+            collisionPrediction: prediction,
+            lockedTargetContext: lockedTarget,
+            autonomousResetInfo: resetInfo);
+    }
+
+    /// <summary>记录 Reset 后碰撞预测器已使用最新物理事实重新武装。</summary>
+    public void LogAutomaticResetRearmed(
+        CollisionPrediction prediction,
+        LockedTargetContext lockedTarget,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        Write(
+            "automatic_reset_rearmed",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            prediction != null ? prediction.PredictionId : string.Empty,
+            LogTraceContext.Empty,
+            collisionPrediction: prediction,
+            lockedTargetContext: lockedTarget);
+    }
+
+    /// <summary>记录 Reset 前后目标身份和 Reservation 保持不变。</summary>
+    public void LogLockedTargetPreserved(
+        LockedTargetContext lockedTarget,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState)
+    {
+        Write(
+            "locked_target_preserved",
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            lockedTarget != null ? lockedTarget.CurrentTargetId : string.Empty,
+            LogTraceContext.Empty,
+            lockedTargetContext: lockedTarget);
     }
 
     /// <summary>由物理边界检测在首次越界时调用，持续越界不得逐帧调用。</summary>
@@ -1043,7 +1154,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         string intervalReason = "",
         string exhibitId = "",
         JObject metricSnapshot = null,
-        string consoleDedupKey = "")
+        string consoleDedupKey = "",
+        CollisionPrediction collisionPrediction = null,
+        LockedTargetContext lockedTargetContext = null,
+        ResetEventInfo autonomousResetInfo = null)
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -1128,7 +1242,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             };
             var data = new JObject
             {
-                ["log_schema_version"] = "natural-language-task-experiment-v3",
+                ["log_schema_version"] = "natural-language-task-experiment-v4",
                 ["event_type"] = eventType,
                 ["participant_id"] = participantId,
                 ["condition"] = condition,
@@ -1150,9 +1264,64 @@ public sealed class ExperimentLogger : MonoBehaviour
                 ["boundary_risk"] = riskState != null ? riskState.boundary_risk : string.Empty,
                 ["reset_risk"] = riskState != null ? riskState.reset_risk : string.Empty,
                 ["reset_required"] = riskState != null && riskState.reset_required,
+                ["boundary_breached"] = riskState != null && riskState.boundary_breached,
+                ["minimum_clearance_m"] = riskState != null ? riskState.minimum_clearance_m : 0f,
                 ["current_heading"] = SerializeHeadingSample(
                     riskState != null ? riskState.current_heading : default(HeadingSample))
             };
+
+            if (string.Equals(eventType, "near_boundary_enter", StringComparison.Ordinal) ||
+                string.Equals(eventType, "near_boundary_exit", StringComparison.Ordinal))
+            {
+                data["near_boundary_threshold_m"] = Mathf.Max(0f, nearBoundaryThresholdMeters);
+            }
+
+            if (lockedTargetContext != null)
+            {
+                data["final_target_id"] = lockedTargetContext.FinalTargetId;
+                data["current_target_id"] = lockedTargetContext.CurrentTargetId;
+                data["current_target_role"] = lockedTargetContext.CurrentTargetRole.ToString();
+                data["reservation_id"] = lockedTargetContext.ReservationId;
+                data["guidance_request_id"] = lockedTargetContext.GuidanceRequestId;
+                data["reset_generation"] = lockedTargetContext.ResetGeneration;
+            }
+            if (collisionPrediction != null)
+            {
+                data["prediction_id"] = collisionPrediction.PredictionId;
+                data["prediction_fingerprint"] = collisionPrediction.Fingerprint;
+                data["prediction_source_type"] = collisionPrediction.SourceType.ToString();
+                data["prediction_source_id"] = collisionPrediction.SourceId;
+                data["predicted_distance_meters"] = collisionPrediction.PredictedDistanceMeters;
+                data["predicted_time_seconds"] = collisionPrediction.PredictedTimeSeconds;
+                data["prediction_risk_revision"] = collisionPrediction.RiskRevision;
+                data["physical_space_id"] = collisionPrediction.PhysicalSpaceId;
+                data["collision_point"] = new JObject
+                {
+                    ["x"] = collisionPrediction.CollisionPoint.x,
+                    ["z"] = collisionPrediction.CollisionPoint.y
+                };
+                data["physical_pose"] = new JObject
+                {
+                    ["position_x"] = collisionPrediction.PhysicalPosition.x,
+                    ["position_z"] = collisionPrediction.PhysicalPosition.y,
+                    ["forward_x"] = collisionPrediction.PhysicalForward.x,
+                    ["forward_z"] = collisionPrediction.PhysicalForward.y
+                };
+            }
+            if (autonomousResetInfo != null)
+            {
+                data["reset_id"] = autonomousResetInfo.ResetId;
+                data["prediction_id"] = autonomousResetInfo.PredictionId;
+                data["reset_generation"] = autonomousResetInfo.ResetGeneration;
+                data["reset_duration"] = autonomousResetInfo.ResetDurationSeconds;
+                data["physical_pose"] = new JObject
+                {
+                    ["position_x"] = autonomousResetInfo.PhysicalPosition.x,
+                    ["position_z"] = autonomousResetInfo.PhysicalPosition.y,
+                    ["forward_x"] = autonomousResetInfo.PhysicalForward.x,
+                    ["forward_z"] = autonomousResetInfo.PhysicalForward.y
+                };
+            }
 
             if (string.Equals(eventType, "guidance_requested", StringComparison.Ordinal) ||
                 string.Equals(eventType, "guidance_received", StringComparison.Ordinal))
@@ -1194,6 +1363,14 @@ public sealed class ExperimentLogger : MonoBehaviour
             if (metricSnapshot != null)
             {
                 data["metric_snapshot"] = metricSnapshot;
+                if (string.Equals(eventType, "reset_started", StringComparison.Ordinal))
+                {
+                    data["virtual_distance_at_reset_start_m"] = metricSnapshot.Value<double?>("virtual_distance_m") ?? 0d;
+                }
+                else if (string.Equals(eventType, "reset_completed", StringComparison.Ordinal))
+                {
+                    data["virtual_distance_at_reset_end_m"] = metricSnapshot.Value<double?>("virtual_distance_m") ?? 0d;
+                }
             }
 
             var profile = ExperimentConditionMatrix.GetProfile(condition);
@@ -1820,19 +1997,36 @@ public sealed class ExperimentLogger : MonoBehaviour
         try
         {
             trace = trace ?? LogTraceContext.Empty;
+            var elapsedSeconds = session.ElapsedMilliseconds / 1000d;
+            var samplingInterval = 1d / Math.Max(0.1f, riskTelemetrySamplingRateHz);
+            if (hasPreviousTelemetrySample && elapsedSeconds < nextTelemetrySampleElapsedSeconds)
+            {
+                return;
+            }
+            nextTelemetrySampleElapsedSeconds = elapsedSeconds + samplingInterval;
             var calibrationId = FirstNonEmpty(riskState.calibration_id, trace.CalibrationId);
             var stateVersion = trace.HasGuidanceIdentity
                 ? trace.StateVersion
                 : runtimeState != null ? runtimeState.stateVersion : 0;
+            var distanceDelta = 0d;
+            var sampleDeltaSeconds = 0d;
+            if (hasPreviousTelemetrySample)
+            {
+                sampleDeltaSeconds = Math.Max(0d, elapsedSeconds - lastTelemetryElapsedSeconds);
+            }
             if (hasPreviousVirtualPosition)
             {
                 var delta = virtualPosition - previousVirtualPosition;
                 delta.y = 0f;
-                accumulatedVirtualDistanceMeters += delta.magnitude;
+                distanceDelta = delta.magnitude;
+                accumulatedVirtualDistanceMeters += distanceDelta;
             }
             previousVirtualPosition = virtualPosition;
             hasPreviousVirtualPosition = true;
-            var state = ResolveMetricState(runtimeState);
+            lastTelemetrySpeedMetersPerSecond = sampleDeltaSeconds > 0d
+                ? distanceDelta / sampleDeltaSeconds
+                : 0d;
+            var state = ResolveMetricState(runtimeState, lastTelemetrySpeedMetersPerSecond);
             var timestamp = DateTime.UtcNow.ToString("o");
             lastPhysicalPosition = riskState.user_physical_position;
             lastPhysicalForward = riskState.user_physical_forward;
@@ -1840,6 +2034,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             lastVirtualForward = virtualForward;
             lastMetricState = state;
             lastTelemetryTimestamp = timestamp;
+            lastTelemetryElapsedSeconds = elapsedSeconds;
+            hasPreviousTelemetrySample = true;
             var traceObject = new JObject
             {
                 ["calibration_id"] = calibrationId,
@@ -1850,6 +2046,7 @@ public sealed class ExperimentLogger : MonoBehaviour
             };
             var data = new JObject
             {
+                ["log_schema_version"] = "natural-language-task-experiment-v4",
                 ["task_id"] = FirstNonEmpty(runtimeState?.taskId, session.taskId),
                 ["runtime_phase"] = runtimeState != null ? runtimeState.phase.ToString() : string.Empty,
                 ["state"] = state,
@@ -1902,11 +2099,18 @@ public sealed class ExperimentLogger : MonoBehaviour
                     ["forward_z"] = virtualForward.z
                 },
                 ["virtual_distance_m"] = accumulatedVirtualDistanceMeters,
-                ["clearance_m"] = riskState.current_heading.ClearanceMeters,
+                ["distance_delta_m"] = distanceDelta,
+                ["sample_dt_s"] = sampleDeltaSeconds,
+                ["virtual_speed_mps"] = lastTelemetrySpeedMetersPerSecond,
+                ["clearance_m"] = riskState.minimum_clearance_m,
+                ["minimum_clearance_m"] = riskState.minimum_clearance_m,
+                ["heading_clearance_m"] = riskState.current_heading.ClearanceMeters,
                 ["current_heading"] = SerializeHeadingSample(riskState.current_heading),
                 ["boundary_risk"] = riskState.boundary_risk ?? string.Empty,
                 ["reset_risk"] = riskState.reset_risk ?? string.Empty,
                 ["reset_required"] = riskState.reset_required,
+                ["boundary_breached"] = riskState.boundary_breached,
+                ["near_boundary_threshold_m"] = Mathf.Max(0f, nearBoundaryThresholdMeters),
                 ["active_target"] = FirstNonEmpty(runtimeState?.guidanceTargetId, trace.TargetId),
                 ["active_decision_id"] = trace.DecisionId,
                 ["active_guidance_intent"] = trace.GuidanceIntent,
@@ -2501,6 +2705,7 @@ public sealed class ExperimentLogger : MonoBehaviour
         {
             var meta = new SessionMeta
             {
+                log_schema_version = "natural-language-task-experiment-v4",
                 session_id = session.sessionId,
                 participant_id = session.participantId,
                 condition = session.condition,
@@ -2516,6 +2721,8 @@ public sealed class ExperimentLogger : MonoBehaviour
                 device_model = SystemInfo.deviceModel,
                 operating_system = SystemInfo.operatingSystem,
                 telemetry_sampling_hz = riskTelemetrySamplingRateHz,
+                near_boundary_threshold_m = Mathf.Max(0f, nearBoundaryThresholdMeters),
+                minimum_clearance_convention = "user_body_edge_to_boundary_or_obstacle_surface",
                 flush_interval_seconds = flushIntervalSeconds,
                 buffer_bytes = bufferSizeBytes,
                 position_unit = "meter",
@@ -2739,28 +2946,46 @@ public sealed class ExperimentLogger : MonoBehaviour
         EndExhibitDwell(trace, null, null, reason);
     }
 
-    private JObject CreateMetricSnapshot(GuidanceRuntimeState runtimeState, PhysicalRiskState riskState)
+    private JObject CreateMetricSnapshot(
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        Vector3 virtualPosition,
+        Vector3 virtualForward,
+        string boundaryType)
     {
         var physicalPosition = riskState != null ? riskState.user_physical_position : lastPhysicalPosition;
         var physicalForward = riskState != null ? riskState.user_physical_forward : lastPhysicalForward;
+        var projectedDistance = accumulatedVirtualDistanceMeters;
+        if (hasPreviousVirtualPosition)
+        {
+            var delta = virtualPosition - previousVirtualPosition;
+            delta.y = 0f;
+            projectedDistance += delta.magnitude;
+        }
         return new JObject
         {
             ["telemetry_available"] = hasPreviousVirtualPosition,
             ["telemetry_timestamp"] = lastTelemetryTimestamp,
-            ["state"] = runtimeState != null ? ResolveMetricState(runtimeState) : lastMetricState,
-            ["virtual_distance_m"] = accumulatedVirtualDistanceMeters,
+            ["snapshot_elapsed_s"] = session != null ? session.ElapsedMilliseconds / 1000d : 0d,
+            ["snapshot_source"] = "event_boundary",
+            ["boundary_type"] = boundaryType ?? string.Empty,
+            ["state"] = runtimeState != null
+                ? ResolveMetricState(runtimeState, lastTelemetrySpeedMetersPerSecond)
+                : lastMetricState,
+            ["virtual_distance_m"] = projectedDistance,
             ["virtual_position_m"] = new JObject
             {
-                ["x"] = lastVirtualPosition.x,
-                ["y"] = lastVirtualPosition.y,
-                ["z"] = lastVirtualPosition.z
+                ["x"] = virtualPosition.x,
+                ["y"] = virtualPosition.y,
+                ["z"] = virtualPosition.z
             },
             ["virtual_rotation"] = new JObject
             {
-                ["forward_x"] = lastVirtualForward.x,
-                ["forward_y"] = lastVirtualForward.y,
-                ["forward_z"] = lastVirtualForward.z
+                ["forward_x"] = virtualForward.x,
+                ["forward_y"] = virtualForward.y,
+                ["forward_z"] = virtualForward.z
             },
+            ["minimum_clearance_m"] = riskState != null ? riskState.minimum_clearance_m : 0f,
             ["physical_position_m"] = new JObject
             {
                 ["x"] = physicalPosition.x,
@@ -2785,14 +3010,15 @@ public sealed class ExperimentLogger : MonoBehaviour
         return Math.Max(0d, (Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency);
     }
 
-    private string ResolveMetricState(GuidanceRuntimeState runtimeState)
+    private string ResolveMetricState(GuidanceRuntimeState runtimeState, double virtualSpeedMetersPerSecond = 0d)
     {
         if (runtimeState == null) return "unknown";
         if (runtimeState.phase == GuidanceRuntimePhase.PausedForReset) return "reset";
         if (!string.IsNullOrWhiteSpace(activeExhibitDwellId)) return "exhibit_dwell";
         switch (runtimeState.phase)
         {
-            case GuidanceRuntimePhase.Navigating: return "active_walking";
+            case GuidanceRuntimePhase.Navigating:
+                return virtualSpeedMetersPerSecond >= 0.05d ? "active_walking" : "idle";
             case GuidanceRuntimePhase.PausedByResearcher: return "paused";
             case GuidanceRuntimePhase.Completed:
             case GuidanceRuntimePhase.Ended: return "ended";
@@ -2845,6 +3071,7 @@ public sealed class ExperimentLogger : MonoBehaviour
     [Serializable]
     private sealed class SessionMeta
     {
+        public string log_schema_version;
         public string session_id;
         public string participant_id;
         public string condition;
@@ -2860,6 +3087,8 @@ public sealed class ExperimentLogger : MonoBehaviour
         public string device_model;
         public string operating_system;
         public float telemetry_sampling_hz;
+        public float near_boundary_threshold_m;
+        public string minimum_clearance_convention;
         public float flush_interval_seconds;
         public int buffer_bytes;
         public string position_unit;

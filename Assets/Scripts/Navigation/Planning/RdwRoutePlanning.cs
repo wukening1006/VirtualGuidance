@@ -3,21 +3,16 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 在 Utility 之前执行不可被语义价值覆盖的硬安全筛选。
+/// 在 Utility 之前检查路线边及其评估数据是否完整。
 /// </summary>
 public sealed class RdwHardSafetyFilter
 {
-    private readonly float minimumClearanceMeters;
-    private readonly float maximumGainCost;
-
-    /// <summary>创建 Hard Safety Filter。</summary>
+    /// <summary>创建路线边数据检查器；保留参数以兼容现有规划配置。</summary>
     public RdwHardSafetyFilter(float minimumClearance = 1.2f, float maximumAllowedGainCost = 1f)
     {
-        minimumClearanceMeters = Mathf.Max(0f, minimumClearance);
-        maximumGainCost = Mathf.Clamp01(maximumAllowedGainCost);
     }
 
-    /// <summary>检查 Exact Safety、净空和标准化 Gain 代价。</summary>
+    /// <summary>只检查评分所需数据是否存在，不再按物理指标硬过滤。</summary>
     public bool Allows(PlanningEdge edge, RdwEdgeEvaluation evaluation, out string reason)
     {
         if (edge == null)
@@ -25,26 +20,9 @@ public sealed class RdwHardSafetyFilter
             reason = "edge_missing";
             return false;
         }
-        if (evaluation == null || !evaluation.Feasible)
+        if (evaluation == null)
         {
-            reason = evaluation != null && !string.IsNullOrWhiteSpace(evaluation.RejectionReason)
-                ? evaluation.RejectionReason
-                : "edge_evaluation_unavailable";
-            return false;
-        }
-        if (evaluation.SafetyLevel != HeadingSafety.Safe)
-        {
-            reason = "hard_filter_requires_safe";
-            return false;
-        }
-        if (evaluation.ClearanceMeters < minimumClearanceMeters)
-        {
-            reason = "hard_filter_clearance";
-            return false;
-        }
-        if (evaluation.GainCost > maximumGainCost)
-        {
-            reason = "hard_filter_gain_cost";
+            reason = "edge_evaluation_unavailable";
             return false;
         }
 

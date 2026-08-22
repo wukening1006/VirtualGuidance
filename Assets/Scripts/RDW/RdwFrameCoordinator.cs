@@ -63,6 +63,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
     private readonly RdwOwnerArbiter ownerArbiter;
     private readonly RdwGainLimiter gainLimiter;
     private readonly RdwGainApplier gainApplier;
+    private readonly RdwCollisionPredictor collisionPredictor;
     private readonly ExperimentDashboard sessionDashboard;
     private bool continuousRdwEnabled;
     private readonly float poseJumpDistanceMeters;
@@ -83,8 +84,12 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
 
     /// <summary>每个 tracking sample 完成 RDW 事务后触发一次。</summary>
     public event Action<RdwFrameEventInfo> FrameProcessed;
+    /// <summary>本地实时闭环接受一条新的碰撞预测时触发。</summary>
+    public event Action<CollisionPrediction> CollisionPredictionCreated;
     /// <summary>最近一次关闭的帧事务。</summary>
     public RdwFrameEventInfo LastFrame { get; private set; }
+    /// <summary>最近一次真正启动自动 Reset 的碰撞预测。</summary>
+    public CollisionPrediction LastCollisionPrediction { get; private set; }
     /// <summary>当前单调 pose sequence。</summary>
     public long CurrentSequence => sequence;
     /// <summary>当前帧使用的 Continuous Redirector。</summary>
@@ -122,6 +127,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         IRdwRedirector continuousRedirector = null,
         RdwOwnerArbiter arbiter = null,
         RdwGainLimiter limiter = null,
+        RdwCollisionPredictor predictor = null,
         float maxPoseJumpMeters = 1f,
         float maxPoseJumpYaw = 60f,
         ExperimentDashboard dashboard = null,
@@ -146,6 +152,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         }
         ownerArbiter = arbiter ?? new RdwOwnerArbiter();
         gainLimiter = limiter ?? new RdwGainLimiter();
+        collisionPredictor = predictor ?? new RdwCollisionPredictor();
         poseJumpDistanceMeters = Mathf.Max(0.01f, maxPoseJumpMeters);
         poseJumpYawDegrees = Mathf.Clamp(maxPoseJumpYaw, 1f, 180f);
     }
@@ -164,9 +171,26 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             motionDetector.Sample(frame.PhysicalForwardXZ, frame.DeltaTime);
         }
 
-        var hardStop = !frame.IsValid || IsImmediateHardStop();
         var resetActive = pauseResetController != null && pauseResetController.IsActive ||
                           guidanceCoordinator != null && guidanceCoordinator.IsAutomaticRecoveryActive;
+        var automaticRunActive = sessionDashboard != null &&
+                                 sessionDashboard.RunState == ExperimentRunState.Running &&
+                                 guidanceCoordinator != null &&
+                                 guidanceCoordinator.RuntimeState != null &&
+                                 guidanceCoordinator.RuntimeState.IsNavigating &&
+                                 intent.IsValid;
+        if (!resetActive && automaticRunActive && frame.IsValid && geometry.IsValid &&
+            collisionPredictor.TryPredict(frame, geometry, out var prediction) &&
+            guidanceCoordinator.BeginAutomaticReset(prediction))
+        {
+            collisionPredictor.MarkTriggered(prediction);
+            LastCollisionPrediction = prediction;
+            CollisionPredictionCreated?.Invoke(prediction);
+            resetActive = true;
+        }
+
+        // Tracking、Calibration 或越界时只禁止普通 RDW gain，不改变实验任务状态。
+        var hardStop = !frame.IsValid || ShouldSuppressRdwGains(resetActive);
         var guidanceTurnActive = rotationGainController != null && rotationGainController.IsActive;
         var redirectorChannels = redirector as IRdwRedirectorChannels;
         var redirectorAvailable = RdwContinuousAvailability.IsAvailable(
@@ -275,7 +299,22 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
         previousTimestamp = 0d;
         motionDetector?.ResetSamplingState();
         pauseResetController?.InvalidateMappingChain(reason);
+        collisionPredictor.Reset();
         ResetRedirectorSmoothing();
+    }
+
+    /// <summary>
+    /// Reset 完成后用最近一帧建立碰撞预测基线；旧预测不会立即再次触发。
+    /// </summary>
+    public void RearmCollisionPrediction()
+    {
+        if (LastFrame == null || !LastFrame.Pose.IsValid || !LastFrame.Geometry.IsValid)
+        {
+            collisionPredictor.Reset();
+            return;
+        }
+
+        collisionPredictor.Rearm(LastFrame.Pose, LastFrame.Geometry);
     }
 
     private void BeginFrameProcessing(in RdwPoseFrame pose, RdwGainOwner owner, bool hardStop)
@@ -386,13 +425,21 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
                 : (riskEvaluator != null ? riskEvaluator.UserRadiusMeters : 0f));
     }
 
-    private bool IsImmediateHardStop()
+    private bool ShouldSuppressRdwGains(bool resetActive)
     {
         var risk = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
-        return riskEvaluator == null || !riskEvaluator.IsTrackingValid || !riskEvaluator.IsCalibrationValid ||
-               !riskEvaluator.PhysicalSpaceMatches ||
-               (risk != null && userPoseTracker != null && risk.boundary_context != null && risk.boundary_context.Count >= 3 &&
-                !PhysicalSpaceGeometry.ContainsPoint(risk.boundary_context, userPoseTracker.PhysicalPositionXZ));
+        if (riskEvaluator == null || !riskEvaluator.IsTrackingValid ||
+            !riskEvaluator.IsCalibrationValid || !riskEvaluator.PhysicalSpaceMatches)
+        {
+            return true;
+        }
+
+        // 身份可信的 BoundaryRecovery 允许 Resetter 独占执行；普通 RDW gain 仍在越界时被禁止。
+        return !resetActive && risk != null && userPoseTracker != null &&
+               risk.boundary_context != null && risk.boundary_context.Count >= 3 &&
+               !PhysicalSpaceGeometry.ContainsPoint(
+                   risk.boundary_context,
+                   userPoseTracker.PhysicalPositionXZ);
     }
 
     private static string OwnerReason(RdwGainOwner owner)

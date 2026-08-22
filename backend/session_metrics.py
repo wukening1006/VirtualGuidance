@@ -30,6 +30,7 @@ RESULT_HEADERS = [
 DEFAULT_DATA_ROOT = Path(r"D:\SoftwareFiles\MyCode\实验数据")
 
 MIN_WALKING_SPEED_MPS = 0.05
+DEFAULT_NEAR_BOUNDARY_THRESHOLD_M = 0.5
 CALL_START_EVENTS = {"guidance_requested", "semantic_plan_requested", "planning_route_selection_requested", "llm_call_start"}
 CALL_END_EVENTS = {"guidance_received", "semantic_plan_received", "planning_route_selected", "llm_call_end"}
 
@@ -92,7 +93,8 @@ def _event_type(row: dict[str, Any]) -> str:
 
 
 def _timestamp(row: dict[str, Any], fallback: float = 0.0) -> float:
-    for key in ("timestamp_unix_s", "time_s", "elapsed_s"):
+    # Session 内所有记录使用单调 elapsed_s；墙上时间只用于旧日志回退。
+    for key in ("elapsed_s", "time_s", "timestamp_unix_s"):
         value = row.get(key)
         if isinstance(value, (int, float)):
             return float(value)
@@ -151,6 +153,52 @@ def _position(row: dict[str, Any], name: str) -> tuple[float, float, float] | No
     if x is None:
         return None
     return x, y or 0.0, z if z is not None else (y or 0.0)
+
+
+def _metric_value(row: dict[str, Any], *keys: str) -> float | None:
+    payload = _payload(row)
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            value = payload.get(key)
+        number = _number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _clip_intervals(
+    intervals: Iterable[tuple[float, float]],
+    start: float,
+    end: float,
+) -> list[tuple[float, float]]:
+    clipped: list[tuple[float, float]] = []
+    for interval_start, interval_end in intervals:
+        left, right = max(start, interval_start), min(end, interval_end)
+        if right > left:
+            clipped.append((left, right))
+    return clipped
+
+
+def _session_bounds(
+    events: Iterable[dict[str, Any]],
+    telemetry: Iterable[dict[str, Any]],
+) -> tuple[float, float]:
+    ordered_events = sorted(events, key=_timestamp)
+    started = next(
+        (_timestamp(row) for row in ordered_events if _event_type(row) == "session_started"),
+        None,
+    )
+    ended = next(
+        (_timestamp(row) for row in reversed(ordered_events) if _event_type(row) == "session_ended"),
+        None,
+    )
+    all_times = [_timestamp(row) for row in (*ordered_events, *telemetry)]
+    if started is None:
+        started = min(all_times) if all_times else 0.0
+    if ended is None:
+        ended = max(all_times) if all_times else started
+    return started, max(started, ended)
 
 
 def _intervals(events: Iterable[dict[str, Any]], starts: set[str], ends: set[str]) -> list[tuple[float, float]]:
@@ -220,6 +268,102 @@ def _sd(values: list[float]) -> float | None:
     return statistics.stdev(values) if len(values) > 1 else (0.0 if values else None)
 
 
+def _walking_intervals(telemetry: Iterable[dict[str, Any]]) -> list[tuple[float, float]]:
+    """把每个 ACTIVE_WALKING 样本还原为以该样本结束的时间区间。"""
+    ordered = sorted(telemetry, key=_timestamp)
+    result: list[tuple[float, float]] = []
+    previous: dict[str, Any] | None = None
+    for row in ordered:
+        payload = _payload(row)
+        state = str(row.get("state", payload.get("state", payload.get("runtime_phase", "")))).lower()
+        end = _timestamp(row)
+        sample_dt = _metric_value(row, "sample_dt_s")
+        if sample_dt is not None and sample_dt > 0:
+            start = end - sample_dt
+            moved = True
+        elif previous is not None:
+            start = _timestamp(previous)
+            duration = end - start
+            previous_position = _position(previous, "virtual_position")
+            current_position = _position(row, "virtual_position")
+            moved = (
+                duration > 0
+                and previous_position is not None
+                and current_position is not None
+                and math.dist(previous_position, current_position) / duration >= MIN_WALKING_SPEED_MPS
+            )
+        else:
+            previous = row
+            continue
+
+        if end > start and state in {"active_walking", "walking", "running"} and moved:
+            result.append((start, end))
+        previous = row
+    return result
+
+
+def _count_threshold_entries(values: Iterable[float | None], threshold: float) -> int:
+    """按离散样本的 false -> true 边沿统计进入阈值区间的次数。"""
+    inside = False
+    entries = 0
+    for value in values:
+        if value is None:
+            continue
+        current = value < threshold
+        if current and not inside:
+            entries += 1
+        inside = current
+    return entries
+
+
+def _reset_id(row: dict[str, Any]) -> str:
+    return str(_payload(row).get("reset_id") or "").strip()
+
+
+def _completed_resets(
+    events: Iterable[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], int, int, int]:
+    """仅返回具有同一 reset_id 的 reset_start -> reset_end 完成配对。"""
+    active: dict[str, dict[str, Any]] = {}
+    completed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    completed_ids: set[str] = set()
+    started_ids: set[str] = set()
+    cancelled_ids: set[str] = set()
+    for row in sorted(events, key=_timestamp):
+        event = _event_type(row)
+        reset_id = _reset_id(row)
+        if not reset_id:
+            continue
+        if event in {"reset_started", "reset_start"}:
+            started_ids.add(reset_id)
+            if reset_id not in completed_ids:
+                active.setdefault(reset_id, row)
+        elif event in {"reset_completed", "reset_end"}:
+            started = active.pop(reset_id, None)
+            if started is not None and reset_id not in completed_ids and _timestamp(row) >= _timestamp(started):
+                completed.append((started, row))
+                completed_ids.add(reset_id)
+        elif event == "reset_cancelled":
+            if active.pop(reset_id, None) is not None:
+                cancelled_ids.add(reset_id)
+    completed.sort(key=lambda pair: _timestamp(pair[0]))
+    incomplete_count = len(started_ids - completed_ids - cancelled_ids)
+    return completed, len(started_ids), len(cancelled_ids), incomplete_count
+
+
+def _reset_distance(row: dict[str, Any], boundary: str) -> float | None:
+    payload = _payload(row)
+    explicit_key = "virtual_distance_at_reset_start_m" if boundary == "start" else "virtual_distance_at_reset_end_m"
+    value = _number(payload.get(explicit_key))
+    snapshot = payload.get("metric_snapshot") if isinstance(payload.get("metric_snapshot"), dict) else {}
+    return value if value is not None else _number(snapshot.get("virtual_distance_m"))
+
+
+def _candidate_reduction_enabled(condition: str) -> bool:
+    normalized = condition.strip().lower()
+    return normalized == "ours_rdw_grounded_topk" or normalized == "c3" or normalized == "c4" or normalized.startswith(("c3_", "c4_"))
+
+
 def build_session_result(session_dir: str | Path) -> dict[str, Any]:
     """重建一个 Session 的可计算指标并写入 ``result.json``。"""
     directory = Path(session_dir)
@@ -227,48 +371,42 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
     events = _read_jsonl(directory / "events.jsonl")
     telemetry = sorted(_read_jsonl(directory / "telemetry.jsonl"), key=_timestamp)
 
+    session_start, session_end = _session_bounds(events, telemetry)
     positions = [_position(row, "virtual_position") for row in telemetry]
-    positions = [item for item in positions if item is not None]
     distance = 0.0
-    for previous, current in zip(positions, positions[1:]):
+    valid_positions = [item for item in positions if item is not None]
+    for previous, current in zip(valid_positions, valid_positions[1:]):
         distance += math.dist(previous, current)
-    explicit_distances = [_number(row.get("virtual_distance_m", _payload(row).get("virtual_distance_m"))) for row in telemetry]
+    explicit_distances = [_metric_value(row, "virtual_distance_m") for row in telemetry]
     explicit_distances = [value for value in explicit_distances if value is not None]
     if explicit_distances:
-        distance = max(explicit_distances)
+        # Logger 写入的累计距离是事实源，但只接受单调非负值。
+        monotonic_distances: list[float] = []
+        last_distance = 0.0
+        for value in explicit_distances:
+            if value >= last_distance:
+                monotonic_distances.append(value)
+                last_distance = value
+        if monotonic_distances:
+            distance = monotonic_distances[-1]
 
-    event_times = [_timestamp(row) for row in events if row.get("timestamp") or row.get("elapsed_ms") is not None]
-    telemetry_times = [_timestamp(row) for row in telemetry]
-    all_times = [*event_times, *telemetry_times]
-    elapsed = max(all_times) - min(all_times) if len(all_times) > 1 else 0.0
+    walking_intervals = _walking_intervals(telemetry)
+    walking_time = _duration(_clip_intervals(walking_intervals, session_start, session_end))
 
-    active_intervals = _intervals(events, {"active_walking_start", "active_walking", "active_walking_enter"}, {"active_walking_end", "active_walking_exit"})
-    walking_time = _duration(active_intervals)
-    if not walking_time:
-        for current, following in zip(telemetry, telemetry[1:]):
-            current_payload = _payload(current)
-            state = str(current.get("state", current_payload.get("state", current_payload.get("runtime_phase", "")))).lower()
-            duration = max(0.0, _timestamp(following) - _timestamp(current))
-            current_position = _position(current, "virtual_position")
-            following_position = _position(following, "virtual_position")
-            moved = (
-                duration > 0
-                and current_position is not None
-                and following_position is not None
-                and math.dist(current_position, following_position) / duration >= MIN_WALKING_SPEED_MPS
-            )
-            if state in {"active_walking", "walking", "running"} and moved:
-                walking_time += duration
-
-    reset_starts = [row for row in events if _event_type(row) in {"reset_started", "reset_start"}]
-    reset_count = len({str(_payload(row).get("reset_id") or index) for index, row in enumerate(reset_starts)})
-    # 取消同样结束一次已开始的 Reset，避免中止会话时丢失 Reset 时长。
+    completed_resets, reset_started_n, reset_cancelled_n, reset_incomplete_n = _completed_resets(events)
+    reset_count = len(completed_resets)
+    # Reset 时长保留已完成和已取消区间，但 RC 只统计完成配对。
     reset_intervals = _intervals(
         events,
         {"reset_started", "reset_start"},
         {"reset_completed", "reset_end", "reset_cancelled"},
     )
-    waiting = _intervals(events, {"planner_waiting_start", "planning_waiting_start", "holding_for_replan"}, {"planner_waiting_end", "planning_waiting_end", "replan_hold_resumed"})
+    # holding_for_replan 是状态通知，不是一个可配对的时间区间。
+    waiting = _intervals(
+        events,
+        {"planner_waiting_start", "planning_waiting_start"},
+        {"planner_waiting_end", "planning_waiting_end"},
+    )
     dwell_intervals = _intervals(events, {"exhibit_dwell_start", "exhibit_dwell"}, {"exhibit_dwell_end", "exhibit_dwell_exit"})
     has_explicit_waiting = any(
         _event_type(row) in {"planner_waiting_start", "planning_waiting_start"}
@@ -278,71 +416,92 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
     latencies: list[float] = []
     call_intervals: list[tuple[float, float]] = []
     calls: dict[str, float] = {}
+    call_started_n = 0
+    call_completed_n = 0
+    call_cancelled_n = 0
     for index, row in enumerate(sorted(events, key=_timestamp)):
         event, payload = _event_type(row), _payload(row)
-        request_id = _call_identity(row) or f"anonymous-{index}"
+        request_id = _call_identity(row)
         if event in CALL_START_EVENTS:
-            calls[request_id] = _timestamp(row)
+            call_started_n += 1
+            if request_id:
+                calls[request_id] = _timestamp(row)
         elif event in CALL_END_EVENTS:
-            started = calls.pop(request_id, None)
-            latency = _number(payload.get("latency_s") or row.get("latency_s"))
-            if latency is None and started is not None:
-                latency = _timestamp(row) - started
-            if latency is not None and latency >= 0:
-                latencies.append(latency)
+            started = calls.pop(request_id, None) if request_id else None
             if started is not None and _timestamp(row) >= started:
+                latency = _metric_value(row, "latency_s")
+                if latency is None:
+                    latency = _timestamp(row) - started
+                call_completed_n += 1
                 call_intervals.append((started, _timestamp(row)))
+                if latency is not None and latency >= 0:
+                    latencies.append(latency)
+        elif event in {"guidance_cancelled", "guidance_expired", "guidance_failed", "llm_call_cancelled"}:
+            if request_id and request_id in calls:
+                calls.pop(request_id, None)
+                call_cancelled_n += 1
     blocking_sources = waiting if has_explicit_waiting else call_intervals
     blocking_time = _duration(_subtract_intervals(blocking_sources, [*reset_intervals, *dwell_intervals]))
-    call_count = sum(_event_type(row) in CALL_START_EVENTS for row in events)
+    call_count = call_started_n
 
-    clearances: list[float | None] = []
-    for row in telemetry:
-        payload = _payload(row)
-        heading = payload.get("current_heading") if isinstance(payload.get("current_heading"), dict) else {}
-        clearances.append(_number(payload.get("clearance_m", heading.get("clearance_m", row.get("clearance_m")))))
-    clearances = [value for value in clearances if value is not None]
-    near_boundary = sum(_event_type(row) in {"near_boundary_enter", "near_boundary"} for row in events)
-    collisions = sum(_event_type(row) == "collision" for row in events)
+    clearance_samples = [_metric_value(row, "minimum_clearance_m", "clearance_m") for row in telemetry]
+    clearances = [value for value in clearance_samples if value is not None]
+    threshold = _number(meta.get("near_boundary_threshold_m"))
+    if threshold is None:
+        threshold = next(
+            (_metric_value(row, "near_boundary_threshold_m") for row in telemetry if _metric_value(row, "near_boundary_threshold_m") is not None),
+            DEFAULT_NEAR_BOUNDARY_THRESHOLD_M,
+        )
+    threshold = max(0.0, threshold)
+    near_boundary = _count_threshold_entries(clearance_samples, threshold)
+    obstacle_collisions = sum(_event_type(row) == "collision" for row in events)
+    boundary_breaches = sum(_event_type(row) == "boundary_breach" for row in events)
+    collisions = obstacle_collisions + boundary_breaches
 
-    reset_points: list[tuple[float, float]] = []
-    for reset_row in sorted(reset_starts, key=_timestamp):
-        reset_time = _timestamp(reset_row)
-        payload = _payload(reset_row)
-        metric_snapshot = payload.get("metric_snapshot") if isinstance(payload.get("metric_snapshot"), dict) else {}
-        reset_distance = _number(metric_snapshot.get("virtual_distance_m"))
-        if reset_distance is None:
-            samples_before = [row for row in telemetry if _timestamp(row) <= reset_time]
-            sample = samples_before[-1] if samples_before else None
-            reset_distance = _number(_payload(sample).get("virtual_distance_m")) if sample else None
-        if reset_distance is not None:
-            reset_points.append((reset_time, reset_distance))
-    tebr_values = [current[0] - previous[0] for previous, current in zip(reset_points, reset_points[1:])]
-    vdbr_values = [current[1] - previous[1] for previous, current in zip(reset_points, reset_points[1:])]
+    vdbr_values: list[float] = []
+    tebr_values: list[float] = []
+    for previous, current in zip(completed_resets, completed_resets[1:]):
+        previous_end = previous[1]
+        current_start = current[0]
+        gap_start, gap_end = _timestamp(previous_end), _timestamp(current_start)
+        if gap_end < gap_start:
+            continue
+        previous_distance = _reset_distance(previous_end, "end")
+        current_distance = _reset_distance(current_start, "start")
+        if previous_distance is not None and current_distance is not None and current_distance >= previous_distance:
+            vdbr_values.append(current_distance - previous_distance)
+        tebr_values.append(_duration(_clip_intervals(walking_intervals, gap_start, gap_end)))
 
     reductions: list[float] = []
-    for row in events:
-        payload = _payload(row)
-        before = _number(payload.get("k_before"))
-        after = _number(payload.get("k_after"))
-        if before is None:
-            before = _number(payload.get("candidate_count_before"))
-        if after is None:
-            after = _number(payload.get("candidate_count_after"))
-        request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-        if before is None and isinstance(request.get("candidate_ids"), list):
-            before = float(len(request["candidate_ids"]))
-        if after is None and isinstance(request.get("model_candidate_ids"), list):
-            after = float(len(request["model_candidate_ids"]))
-        if before and after is not None and before > 0:
-            reductions.append(1.0 - after / before)
+    condition = str(meta.get("condition", ""))
+    if _candidate_reduction_enabled(condition):
+        for row in events:
+            payload = _payload(row)
+            before = _number(payload.get("k_before"))
+            after = _number(payload.get("k_after"))
+            if before is None:
+                before = _number(payload.get("candidate_count_before"))
+            if after is None:
+                after = _number(payload.get("candidate_count_after"))
+            request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+            if before is None and isinstance(request.get("candidate_ids"), list):
+                before = float(len(request["candidate_ids"]))
+            if after is None and isinstance(request.get("model_candidate_ids"), list):
+                after = float(len(request["model_candidate_ids"]))
+            if before is not None and after is not None and before > 0 and 0 <= after <= before:
+                reductions.append(1.0 - after / before)
 
-    navigation_time = max(0.0, elapsed - _duration(dwell_intervals))
+    navigation_time = max(
+        0.0,
+        session_end - session_start - _duration(
+            _clip_intervals(dwell_intervals, session_start, session_end)
+        ),
+    )
     result: dict[str, Any] = {
-        "schema_version": "session-result-v1",
+        "schema_version": "session-result-v2",
         "session_id": meta.get("session_id", directory.name),
         "participant_id": meta.get("participant_id", ""),
-        "condition": meta.get("condition", ""),
+        "condition": condition,
         "route_id": meta.get("route_id", ""),
         "navigation": {
             "virtual_distance_m": distance,
@@ -359,12 +518,16 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
             "vdbr_valid_n": len(vdbr_values), "vdbr_total_n": max(0, reset_count - 1),
             "tebr_mean": _mean(tebr_values), "tebr_median": statistics.median(tebr_values) if tebr_values else None,
             "tebr_valid_n": len(tebr_values), "tebr_total_n": max(0, reset_count - 1),
+            "vdbr_samples_m": vdbr_values,
+            "tebr_samples_s": tebr_values,
         },
         "physical_safety": {
             "minimum_clearance_m": min(clearances) if clearances else None,
+            "near_boundary_threshold_m": threshold,
             "near_boundary_events": near_boundary,
             "collision_count": collisions,
-            "boundary_breach_count": sum(_event_type(row) == "boundary_breach" for row in events),
+            "obstacle_collision_count": obstacle_collisions,
+            "boundary_breach_count": boundary_breaches,
         },
         "llm_efficiency": {
             "call_count": call_count,
@@ -375,17 +538,36 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
             "latency_median_s": statistics.median(latencies) if latencies else None,
             "latency_p95_s": _percentile(latencies, 0.95),
             "candidate_reduction_rate": _mean(reductions),
+            "latency_samples_s": latencies,
+            "candidate_reduction_samples": reductions,
         },
         "source_counts": {
             "events": len(events),
             "telemetry": len(telemetry),
             "latency_valid_n": len(latencies),
+            "call_started_n": call_started_n,
+            "call_completed_n": call_completed_n,
+            "call_cancelled_n": call_cancelled_n,
+            "reset_started_n": reset_started_n,
+            "reset_completed_n": reset_count,
+            "reset_cancelled_n": reset_cancelled_n,
+            "reset_incomplete_n": reset_incomplete_n,
             "candidate_reduction_valid_n": len(reductions),
+            "candidate_reduction_total_n": sum(
+                1
+                for row in events
+                if _number(_payload(row).get("k_before")) is not None
+                or _number(_payload(row).get("candidate_count_before")) is not None
+            ) if _candidate_reduction_enabled(condition) else 0,
             "planner_waiting_valid_n": len(waiting) if has_explicit_waiting else len(call_intervals),
+            "near_boundary_logged_n": sum(_event_type(row) in {"near_boundary_enter", "near_boundary"} for row in events),
         },
         "definitions": {
-            "vdbr": "相邻两次 reset_start 时累计虚拟距离之差，单位：米",
-            "tebr": "相邻两次 reset_start 的时间差，单位：秒",
+            "rc": "具有相同 reset_id 的 reset_start -> reset_end 完成配对数；取消和未完成不计",
+            "vdbr": "相邻已完成 Reset 的 reset_i_end 到 reset_(i+1)_start 的累计虚拟距离差，单位：米；仅 RC>=2 定义",
+            "tebr": "相邻已完成 Reset 的 reset_i_end 到 reset_(i+1)_start 内 ACTIVE_WALKING 区间总时长，单位：秒；仅 RC>=2 定义",
+            "near_boundary_events": "minimum_clearance_m 从不小于阈值进入小于阈值的次数",
+            "collision_count": "障碍物碰撞进入次数与 boundary breach 进入次数之和；同一持续区间只计一次",
         },
     }
     (directory / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -424,7 +606,7 @@ def write_results_csv(session_dirs: Iterable[str | Path], output_path: str | Pat
         writer.writeheader()
         for condition, group in sorted(groups.items()):
             row = {
-                "experiment_version": "session-result-v1", "condition": condition,
+                "experiment_version": "session-result-v2", "condition": condition,
                 "participant_count": len({str(item.get("participant_id", "")) for item in group}), "session_count": len(group),
                 "virtual_distance_mean": aggregate(group, "navigation.virtual_distance_m"), "virtual_distance_sd": aggregate(group, "navigation.virtual_distance_m", True),
                 "navigation_time_mean": aggregate(group, "navigation.navigation_time_s"), "navigation_time_sd": aggregate(group, "navigation.navigation_time_s", True),
@@ -436,9 +618,27 @@ def write_results_csv(session_dirs: Iterable[str | Path], output_path: str | Pat
                 "minimum_clearance_mean": aggregate(group, "physical_safety.minimum_clearance_m"), "minimum_clearance_sd": aggregate(group, "physical_safety.minimum_clearance_m", True),
                 "near_boundary_events_mean": aggregate(group, "physical_safety.near_boundary_events"), "collision_count_mean": aggregate(group, "physical_safety.collision_count"),
                 "blocking_time_mean": aggregate(group, "llm_efficiency.blocking_time_s"), "blocking_ratio_mean": aggregate(group, "llm_efficiency.blocking_ratio"),
-                "latency_mean": aggregate(group, "llm_efficiency.latency_mean_s"), "latency_median": statistics.median(values(group, "llm_efficiency.latency_median_s")) if values(group, "llm_efficiency.latency_median_s") else None,
-                "latency_p95": aggregate(group, "llm_efficiency.latency_p95_s"), "call_density_per_100m_mean": aggregate(group, "llm_efficiency.call_density_per_100m"),
-                "candidate_reduction_rate_mean": aggregate(group, "llm_efficiency.candidate_reduction_rate"),
+                "latency_mean": _mean([
+                    float(value)
+                    for item in group
+                    for value in item.get("llm_efficiency", {}).get("latency_samples_s", [])
+                ]),
+                "latency_median": statistics.median([
+                    float(value)
+                    for item in group
+                    for value in item.get("llm_efficiency", {}).get("latency_samples_s", [])
+                ]) if any(item.get("llm_efficiency", {}).get("latency_samples_s", []) for item in group) else None,
+                "latency_p95": _percentile([
+                    float(value)
+                    for item in group
+                    for value in item.get("llm_efficiency", {}).get("latency_samples_s", [])
+                ], 0.95),
+                "call_density_per_100m_mean": aggregate(group, "llm_efficiency.call_density_per_100m"),
+                "candidate_reduction_rate_mean": _mean([
+                    float(value)
+                    for item in group
+                    for value in item.get("llm_efficiency", {}).get("candidate_reduction_samples", [])
+                ]),
             }
             writer.writerow({key: "" if value is None else value for key, value in row.items()})
 

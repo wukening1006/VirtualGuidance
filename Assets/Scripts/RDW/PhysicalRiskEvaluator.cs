@@ -37,6 +37,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     private PhysicalRiskState currentRiskState;
     private int riskRevision;
     private string lastExecutionSignature = string.Empty;
+    private readonly HashSet<string> activeCollisionIds = new HashSet<string>();
 
     /// <summary>
     /// 每次定时或显式风险计算完成后触发，即使风险等级未变化也会重复触发。
@@ -45,7 +46,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     public event Action<PhysicalRiskState> RiskStateChanged;
 
     /// <summary>
-    /// 风险快照确认参与者与物理障碍物重叠时触发；先于 RiskStateChanged 发布，供安全暂停优先介入。
+    /// 风险快照确认参与者与物理障碍物重叠时触发；只供日志和诊断订阅。
     /// </summary>
     public event Action<string, PhysicalRiskState> CollisionDetected;
 
@@ -93,6 +94,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
 
     private void OnDisable()
     {
+        activeCollisionIds.Clear();
         if (physicalSpaceManager != null)
         {
             physicalSpaceManager.CurrentSpaceChanged -= HandleSpaceChanged;
@@ -192,9 +194,11 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     {
         if (riskState == null || riskState.obstacle_context == null)
         {
+            activeCollisionIds.Clear();
             return;
         }
 
+        var currentCollisionIds = new HashSet<string>();
         foreach (var obstacle in riskState.obstacle_context)
         {
             if (obstacle == null)
@@ -209,8 +213,17 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
             }
 
             var obstacleId = string.IsNullOrWhiteSpace(obstacle.id) ? "unnamed_obstacle" : obstacle.id;
-            CollisionDetected?.Invoke(obstacleId, riskState);
-            return;
+            currentCollisionIds.Add(obstacleId);
+            if (!activeCollisionIds.Contains(obstacleId))
+            {
+                CollisionDetected?.Invoke(obstacleId, riskState);
+            }
+        }
+
+        activeCollisionIds.Clear();
+        foreach (var obstacleId in currentCollisionIds)
+        {
+            activeCollisionIds.Add(obstacleId);
         }
     }
 
@@ -361,21 +374,24 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
 
         if (!PhysicalSpaceGeometry.ContainsPoint(space.boundary, position))
         {
-            // 用户已经离开 tracking boundary 时，当前真实朝向直接进入 Critical。
+            // 越界只作为物理事实发布；会话状态和 Reset 触发由上层独立处理。
             sample.currentHeading = new HeadingSample(0f, forward, 0f, HeadingSafety.Critical);
             sample.boundaryRisk = "critical";
             sample.resetRisk = "critical";
             sample.resetRequired = true;
+            sample.boundaryBreached = true;
             return sample;
         }
 
         var currentClearance = ComputeCorridorClearance(space, position, forward);
+        var minimumClearance = ComputeMinimumClearance(space, position);
         sample.currentHeading = new HeadingSample(
             0f, forward, currentClearance, ClassifyHeadingSafety(currentClearance));
         // boundary_risk 只描述当前真实 Physical Forward，不表达全角域可恢复性。
         sample.boundaryRisk = ClearanceToRisk(currentClearance);
         sample.resetRequired = sample.currentHeading.Safety == HeadingSafety.Critical;
         sample.resetRisk = sample.resetRequired ? "critical" : sample.boundaryRisk;
+        sample.minimumClearance = minimumClearance;
 
         return sample;
     }
@@ -410,7 +426,9 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
             isCritical: critical,
             resetRequired: sample.resetRequired,
             currentHeading: sample.currentHeading,
-            userRadiusMeters: UserRadiusMeters);
+            userRadiusMeters: UserRadiusMeters,
+            boundaryBreached: sample.boundaryBreached,
+            minimumClearanceMeters: sample.minimumClearance);
     }
 
     private static string BuildExecutionSignature(RiskSample sample, string physicalSpaceId, string calibrationId)
@@ -423,6 +441,7 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
             sample.boundaryRisk ?? string.Empty,
             sample.resetRisk ?? string.Empty,
             sample.resetRequired ? "reset" : "no_reset",
+            sample.boundaryBreached ? "boundary_breached" : "inside_boundary",
             sample.currentHeading.ClearanceMeters.ToString("0.###"),
             sample.currentHeading.Safety);
     }
@@ -435,6 +454,8 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
         public string boundaryRisk;
         public string resetRisk;
         public bool resetRequired;
+        public bool boundaryBreached;
+        public float minimumClearance;
     }
 
     private float ComputeCorridorClearance(PhysicalSpaceConfig space, Vector2 origin, Vector2 direction)
@@ -457,6 +478,31 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
         }
 
         return Mathf.Clamp(bestDistance, 0f, maxClearanceMeters);
+    }
+
+    private float ComputeMinimumClearance(PhysicalSpaceConfig space, Vector2 position)
+    {
+        if (space == null || space.boundary == null || space.boundary.Length < 3 ||
+            !PhysicalSpaceGeometry.ContainsPoint(space.boundary, position))
+        {
+            return 0f;
+        }
+
+        var minimum = float.PositiveInfinity;
+        for (var index = 0; index < space.boundary.Length; index++)
+        {
+            var start = space.boundary[index];
+            var end = space.boundary[(index + 1) % space.boundary.Length];
+            minimum = Mathf.Min(minimum, DistanceToSegment(position, start, end));
+        }
+
+        foreach (var obstacle in space.obstacles ?? Array.Empty<PhysicalObstacle>())
+        {
+            if (obstacle == null) continue;
+            minimum = Mathf.Min(minimum, Vector2.Distance(position, obstacle.center) - Mathf.Max(0f, obstacle.radius));
+        }
+
+        return Mathf.Max(0f, minimum - Mathf.Max(0f, userRadiusMeters));
     }
 
     private float ComputeBoundaryClearance(
@@ -581,16 +627,19 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
 
     private void HandleSpaceChanged(PhysicalSpaceConfig _)
     {
+        activeCollisionIds.Clear();
         EvaluateNow();
     }
 
     private void HandleCalibrationStateChanged(PhysicalCalibrationState _)
     {
+        activeCollisionIds.Clear();
         EvaluateNow();
     }
 
     private void ClearInvalidRiskState()
     {
+        activeCollisionIds.Clear();
         if (currentRiskState == null)
         {
             return;

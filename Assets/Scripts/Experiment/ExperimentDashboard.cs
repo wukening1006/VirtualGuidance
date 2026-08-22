@@ -326,18 +326,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
         TransitionTo(ExperimentRunState.Running, "Session running");
         if (IsCritical(risk))
         {
-            if (guidanceCoordinator.BeginAutomaticRecovery(
-                    risk,
-                    "Critical physical risk at session start; selecting a safe recovery heading."))
-            {
-                return;
-            }
-
-            if (IsSessionActiveState())
-            {
-                EnterSafetyHold("unrecoverable_critical_risk_at_session_start", false);
-            }
-            return;
+            experimentLogger?.LogStatus(
+                "critical_risk_observed_at_session_start",
+                activeGuidanceTrace,
+                taskController?.RuntimeState,
+                risk,
+                "critical risk is diagnostic until a new collision prediction is produced");
         }
 
         guidanceCoordinator.RequestNextGuidance(SemanticReplanReason.TaskStarted);
@@ -724,37 +718,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
             physicalSpaceCalibration != null && physicalSpaceCalibration.IsCalibrationValid,
             userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero,
             userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward);
-        if (!IsCritical(state) || !IsSessionActiveState())
-        {
-            return;
-        }
-
-        if (runState == ExperimentRunState.Paused)
-        {
-            // 研究员暂停保持独立语义，不转换为自动恢复或 SafetyHold。
-            return;
-        }
-
-        if (guidanceCoordinator == null)
-        {
-            EnterSafetyHold("critical_risk_without_guidance_coordinator", false);
-        }
-        else if (runState == ExperimentRunState.Completing)
-        {
-            EnterSafetyHold("critical_risk_during_completion", false);
-        }
-        else if (!guidanceCoordinator.IsAutomaticRecoveryActive)
-        {
-            guidanceCoordinator.BeginAutomaticRecovery(
-                state,
-                "Critical physical risk without an executable guidance action.");
-        }
+        // Dashboard 只记录物理事实；自动 Reset 由 RDW 帧链的新碰撞预测统一启动。
     }
 
     private void HandleCollisionDetected(string obstacleId, PhysicalRiskState riskState)
     {
         var resolvedObstacleId = string.IsNullOrWhiteSpace(obstacleId) ? "unnamed_obstacle" : obstacleId;
-        PauseSession($"collision researcher intervention: {resolvedObstacleId}", riskState, true);
+        experimentLogger?.LogCollision(resolvedObstacleId, riskState);
     }
 
     private void HandleResetStarted(ResetEventInfo info)
@@ -767,7 +737,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            info);
+            info,
+            userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero,
+            userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward);
     }
 
     private void HandleResetCompleted(ResetEventInfo info)
@@ -780,27 +752,10 @@ public sealed class ExperimentDashboard : MonoBehaviour
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            info);
-        if (taskController != null &&
-            taskController.RuntimeState.phase == GuidanceRuntimePhase.PausedForReset)
-        {
-            if (guidanceCoordinator != null)
-            {
-                // 自动 Reset 必须由 Coordinator 使用最新 Physical Pose 统一复验。
-                guidanceCoordinator.ReevaluateAfterReset();
-            }
-            else if (IsSessionActiveState())
-            {
-                EnterSafetyHold("reset_completed_without_guidance_coordinator", false);
-            }
-            return;
-        }
-
-        if (runState == ExperimentRunState.SafetyHold)
-        {
-            // 研究员暂停中的手动 Reset 保留原有显式恢复语义。
-            ResumeSessionWithRisk(riskEvaluator?.EvaluateNow());
-        }
+            info,
+            userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero,
+            userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward);
+        // Coordinator 单独拥有 Reset 完成后的物理事实刷新与目标恢复。
     }
 
     private void HandleBackendOnlineChanged(bool online)
@@ -828,7 +783,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
 
         if (info.Status == BackendHealthStatus.Offline && IsSessionActiveState())
         {
-            EnterBackendHold();
+            experimentLogger?.LogStatus(
+                "backend_degraded_local_continuation",
+                activeGuidanceTrace,
+                taskController?.RuntimeState,
+                riskEvaluator?.CurrentRiskState,
+                "backend offline; preserving the locked target and local RDW loop");
             return;
         }
 
@@ -963,14 +923,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             message);
         if (IsSessionActiveState())
         {
-            if (agentClient != null && agentClient.LastRequestFailureRecoverable)
-            {
-                EnterBackendHold();
-            }
-            else
-            {
-                EnterError(message);
-            }
+            participantUiController?.ShowGuidance();
         }
     }
 
@@ -982,10 +935,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
             string.IsNullOrWhiteSpace(message) ? "planning failed" : message);
-        if (IsSessionActiveState())
-        {
-            guidanceCoordinator?.HoldAfterPlanningFailure(message);
-        }
+        // 语义规划失败不改变当前锁定目标；后台恢复后可重新请求。
     }
 
     private void HandleGuidanceRejected(string reason)
@@ -1026,7 +976,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
             guidanceCoordinator?.FrozenRecoveryPlan);
         if (intervention != null && intervention.Decision == RuntimeGuidanceSafetyDecision.PauseReset)
         {
-            LogTargetAbandoned(interventionTrace, intervention.Reason);
             if (intervention.ResetAttempt > 1)
             {
                 experimentLogger?.LogStatus(
@@ -1036,7 +985,6 @@ public sealed class ExperimentDashboard : MonoBehaviour
                     riskEvaluator?.CurrentRiskState,
                     $"automatic reset retry {intervention.ResetAttempt}");
             }
-            activeGuidanceTrace = LogTraceContext.Empty;
             runtimeInterventionActive = false;
             participantUiController?.ShowAutomaticReset();
             lastStatusMessage = $"Automatic reset attempt {intervention.ResetAttempt}";
@@ -1221,7 +1169,7 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
-        EnterSafetyHold($"automatic_safety_hold: calibration state {state}", false);
+        BeginRuntimePrerequisiteRecovery($"calibration state {state}");
     }
 
     private void HandleTrackingStateChanged(bool trackingActive)
@@ -1319,6 +1267,12 @@ public sealed class ExperimentDashboard : MonoBehaviour
             return;
         }
 
+        if (taskController != null && taskController.RuntimeState.HasLockedSemanticGoal)
+        {
+            participantUiController?.ShowGuidance();
+            return;
+        }
+
         participantUiController?.ShowRecoveryReplanning();
         guidanceCoordinator?.RequestNextGuidance(SemanticReplanReason.RuntimeFactsChanged);
     }
@@ -1345,7 +1299,13 @@ public sealed class ExperimentDashboard : MonoBehaviour
             yield break;
         }
 
-        EnterSafetyHold("automatic_safety_hold: tracking recovery timeout", false);
+        experimentLogger?.LogStatus(
+            "tracking_recovery_waiting",
+            activeGuidanceTrace,
+            taskController?.RuntimeState,
+            riskEvaluator?.CurrentRiskState,
+            "tracking recovery timeout elapsed; automatic waiting continues");
+        participantUiController?.ShowTrackingRecovery();
     }
 
     private static double ElapsedSeconds(long startedTimestamp)
@@ -1382,7 +1342,9 @@ public sealed class ExperimentDashboard : MonoBehaviour
             activeGuidanceTrace,
             taskController?.RuntimeState,
             riskEvaluator?.CurrentRiskState,
-            info);
+            info,
+            userPoseTracker != null ? userPoseTracker.UserVirtualPosition : Vector3.zero,
+            userPoseTracker != null ? userPoseTracker.UserVirtualForward : Vector3.forward);
     }
 
     private void HandleRecoveryStateChanged(GuidanceRecoveryState state)

@@ -167,14 +167,18 @@ public sealed class PhysicalRiskState
     public IReadOnlyList<PhysicalRiskObstacleSnapshot> obstacle_context { get; }
     /// <summary>当前真实 Physical Forward 的精确走廊评估。</summary>
     public HeadingSample current_heading { get; }
+    /// <summary>用户身体外轮廓到最近边界或障碍物表面的最小净空，单位：米。</summary>
+    public float minimum_clearance_m { get; }
     /// <summary>当前真实 Physical Forward 的精确风险标签。</summary>
     public string boundary_risk { get; }
     /// <summary>面向 Reset 决策的风险标签。</summary>
     public string reset_risk { get; }
     /// <summary>快照是否达到 Critical 风险。</summary>
     public bool critical { get; }
-    /// <summary>确定性安全链是否要求 Reset。</summary>
+    /// <summary>旧风险协议计算出的 Reset 建议；仅作为诊断事实。</summary>
     public bool reset_required { get; }
+    /// <summary>用户位置是否已经越过 Physical Boundary；该字段仅为事实。</summary>
+    public bool boundary_breached { get; }
 
     /// <summary>创建完整、深拷贝且发布后不可修改的风险快照。</summary>
     public PhysicalRiskState(
@@ -194,7 +198,9 @@ public sealed class PhysicalRiskState
         bool isCritical = false,
         bool resetRequired = false,
         HeadingSample currentHeading = default(HeadingSample),
-        float userRadiusMeters = 0f)
+        float userRadiusMeters = 0f,
+        bool boundaryBreached = false,
+        float minimumClearanceMeters = 0f)
     {
         risk_snapshot_id = riskSnapshotId ?? string.Empty;
         risk_revision = Math.Max(0, riskRevision);
@@ -212,10 +218,12 @@ public sealed class PhysicalRiskState
         current_heading = currentHeading.PhysicalForward.sqrMagnitude > 0.0001f
             ? currentHeading
             : new HeadingSample(0f, physicalForward, 0f, HeadingSafety.Unknown);
+        minimum_clearance_m = Math.Max(0f, minimumClearanceMeters);
         boundary_risk = boundaryRisk ?? string.Empty;
         reset_risk = resetRisk ?? string.Empty;
         critical = isCritical;
         reset_required = resetRequired;
+        boundary_breached = boundaryBreached;
     }
 
 }
