@@ -109,13 +109,15 @@ public sealed class PostResetContinuationEvaluator
     /// <summary>
     /// 只评估 Reset 前已经锁定的目标。Reset 不得借此选择其他语义候选。
     /// </summary>
+    /// <param name="allowNonCriticalTarget">仅 2:1 模式允许目标方向为非 Critical。</param>
     public PostResetContinuationAssessment EvaluateFixedTarget(
         PhysicalRiskState riskState,
         Vector2 safePhysicalForward,
         float predictedVirtualYawDelta,
         NavigationCandidate fixedTarget,
         IPhysicalHeadingEvaluator physicalEvaluator,
-        float baseScore = 0f)
+        float baseScore = 0f,
+        bool allowNonCriticalTarget = false)
     {
         if (riskState == null || physicalEvaluator == null ||
             safePhysicalForward.sqrMagnitude <= 0.0001f || fixedTarget == null ||
@@ -128,11 +130,19 @@ public sealed class PostResetContinuationEvaluator
             0f,
             fixedTarget.RelativeYawDegrees - predictedVirtualYawDelta);
         var predictedDirection = Rotate(safePhysicalForward, postResetRelativeYaw);
+        // 2:1 模式只放宽锁定目标的延续判定；Reset 终点方向仍由调用方严格要求 Safe。
         if (!physicalEvaluator.TryEvaluateAbsoluteHeading(
                 riskState,
                 predictedDirection,
-                out var heading) ||
-            !PhysicalRiskEvaluator.IsMovementSafe(heading))
+                out var heading))
+        {
+            return Hold("fixed_target_not_executable_after_reset", true);
+        }
+
+        var targetExecutable = allowNonCriticalTarget
+            ? heading.Safety != HeadingSafety.Critical
+            : PhysicalRiskEvaluator.IsMovementSafe(heading);
+        if (!targetExecutable)
         {
             return Hold("fixed_target_not_executable_after_reset", true);
         }

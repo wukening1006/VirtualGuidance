@@ -13,12 +13,24 @@ public sealed class ParticipantUiController : MonoBehaviour
     [SerializeField] private TMP_Text actionText;
     [SerializeField] private TMP_Text gazeText;
     [SerializeField] private TMP_Text safetyText;
-    [Tooltip("显示 OURS Reset 期间语义干预话术的 TextMeshPro 文本控件。")]
-    [SerializeField] private TMP_Text resetNarrationText;
+    private string pendingResetNarration = string.Empty;
+    private string resetSafetyPrompt = string.Empty;
+    private bool semanticResetInterventionEnabled;
 
     public bool SafetyVisible => safetyPanel != null && safetyPanel.alpha > 0.5f;
     /// <summary>当前安全面板是否正在显示本次 Reset 的 participant-facing HUD。</summary>
     public bool ResetHudVisible { get; private set; }
+
+    /// <summary>设置当前实验是否使用 OURS Reset 语义干预 HUD。</summary>
+    public void SetResetSemanticInterventionEnabled(bool enabled)
+    {
+        semanticResetInterventionEnabled = enabled;
+        if (!enabled)
+        {
+            pendingResetNarration = string.Empty;
+            resetSafetyPrompt = string.Empty;
+        }
+    }
 
     private void Awake()
     {
@@ -71,39 +83,68 @@ public sealed class ParticipantUiController : MonoBehaviour
     public void ShowAutomaticReset() => ShowSafetyMessage("请停止移动并按安全提示原地转向");
     /// <summary>显示 Tracking 或临时校准状态正在自动恢复。</summary>
     public void ShowTrackingRecovery() => ShowSafetyMessage("请停止移动，正在恢复定位");
-    /// <summary>根据冻结恢复计划显示明确的原地转向方向和大致角度。</summary>
+    /// <summary>根据冻结恢复计划显示 Reset 提示；语义话术随后追加到同一 SafetyText。</summary>
     public void ShowRecoveryStarted(ResetEventInfo info)
     {
         if (info == null)
         {
-            ShowSafetyMessage("请停止前进\n请原地转身", true);
+            if (semanticResetInterventionEnabled)
+            {
+                ShowResetSafetyMessage("请稍等一下，先环视一周");
+            }
+            else
+            {
+                ShowSafetyMessage("请停止前进\n请原地转身", true);
+            }
             return;
         }
 
-        var approximateDegrees = Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5);
+        if (!semanticResetInterventionEnabled)
+        {
+            if (info.RelativeYawDegrees < -0.1f)
+            {
+                ShowSafetyMessage($"请停止前进\n请原地向左转身 ←\n约 {Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5)}°", true);
+            }
+            else if (info.RelativeYawDegrees > 0.1f)
+            {
+                ShowSafetyMessage($"请停止前进\n请原地向右转身 →\n约 {Mathf.Max(0, Mathf.RoundToInt(info.ApproximateTurnDegrees / 5f) * 5)}°", true);
+            }
+            else
+            {
+                ShowSafetyMessage("请停止前进\n请保持当前安全朝向", true);
+            }
+            return;
+        }
+
         if (info.RelativeYawDegrees < -0.1f)
         {
-            ShowSafetyMessage($"请停止前进\n请原地向左转身 ←\n约 {approximateDegrees}°", true);
+            ShowResetSafetyMessage("请稍等一下，先向左环视一周");
         }
         else if (info.RelativeYawDegrees > 0.1f)
         {
-            ShowSafetyMessage($"请停止前进\n请原地向右转身 →\n约 {approximateDegrees}°", true);
+            ShowResetSafetyMessage("请稍等一下，先向右环视一周");
         }
         else
         {
-            ShowSafetyMessage("请停止前进\n请保持当前安全朝向", true);
+            ShowResetSafetyMessage("请稍等一下，先环视一周");
         }
     }
 
-    /// <summary>在不覆盖物理安全指令的前提下显示 Reset 期间的语义干预话术。</summary>
+    /// <summary>将 Reset 期间的语义干预话术追加到 SafetyText，不改变 Reset 指令。</summary>
     public void ShowResetNarration(string narration)
     {
-        if (!ResetHudVisible || resetNarrationText == null)
+        if (!semanticResetInterventionEnabled)
         {
             return;
         }
 
-        resetNarrationText.text = string.IsNullOrWhiteSpace(narration) ? string.Empty : narration;
+        pendingResetNarration = string.IsNullOrWhiteSpace(narration) ? string.Empty : narration.Trim();
+        if (!ResetHudVisible)
+        {
+            return;
+        }
+
+        RefreshResetSafetyText();
     }
 
     /// <summary>清理 Reset HUD；不会冻结 Camera、XR Tracking 或时间流逝。</summary>
@@ -125,8 +166,25 @@ public sealed class ParticipantUiController : MonoBehaviour
         SetPanels(showGuidance: false, showSafety: false);
     }
 
+    /// <summary>仅在本次确实显示过 OURS 语义时使用观察完成提示，否则保持普通 Reset 行为。</summary>
+    public void CompleteRecoveryHud()
+    {
+        var semanticNarrationWasShown = !string.IsNullOrWhiteSpace(pendingResetNarration);
+        HideResetHud();
+        if (semanticNarrationWasShown)
+        {
+            ShowRecoveryCompleted();
+        }
+        else
+        {
+            ShowRecoveryReplanning();
+        }
+    }
+
     /// <summary>显示安全朝向已到达，系统正在复验并重新规划。</summary>
     public void ShowRecoveryReplanning() => ShowSafetyMessage("请保持朝向，正在重新规划");
+    /// <summary>显示本次观察已完成，并提示参与者保持当前朝向。</summary>
+    public void ShowRecoveryCompleted() => ShowSafetyMessage("观察完成，请保持当前朝向");
     /// <summary>显示当前没有可执行候选，系统正在等待新物理事实重新规划。</summary>
     public void ShowReplanningHold() => ShowSafetyMessage("请保持当前位置，正在更新安全路线");
     /// <summary>显示后端暂时不可用，系统正在自动等待恢复。</summary>
@@ -146,10 +204,18 @@ public sealed class ParticipantUiController : MonoBehaviour
     {
         ResetHudVisible = isResetHud;
         ClearGuidanceText();
-        ClearResetNarrationText();
         if (safetyText != null)
         {
             safetyText.text = message;
+        }
+
+        if (isResetHud)
+        {
+            RefreshResetSafetyText();
+        }
+        else
+        {
+            ClearResetNarrationText();
         }
 
         SetPanels(showGuidance: false, showSafety: true);
@@ -169,9 +235,32 @@ public sealed class ParticipantUiController : MonoBehaviour
 
     private void ClearResetNarrationText()
     {
-        if (resetNarrationText != null)
+        pendingResetNarration = string.Empty;
+        resetSafetyPrompt = string.Empty;
+    }
+
+    private void ShowResetSafetyMessage(string prompt)
+    {
+        resetSafetyPrompt = prompt ?? string.Empty;
+        ShowSafetyMessage(resetSafetyPrompt, true);
+    }
+
+    private void RefreshResetSafetyText()
+    {
+        if (!semanticResetInterventionEnabled || !ResetHudVisible || safetyText == null)
         {
-            resetNarrationText.text = string.Empty;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingResetNarration))
+        {
+            safetyText.text = string.IsNullOrWhiteSpace(resetSafetyPrompt)
+                ? pendingResetNarration
+                : resetSafetyPrompt + "\n" + pendingResetNarration;
+        }
+        else
+        {
+            safetyText.text = resetSafetyPrompt;
         }
     }
 

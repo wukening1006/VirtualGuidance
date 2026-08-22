@@ -45,10 +45,6 @@ public sealed class SystemBootstrapper : MonoBehaviour
     [Header("OURS Reset 语义旁路")]
     [Tooltip("是否在 OURS 条件下请求 Reset 期间的上下文叙事。")]
     [SerializeField] private bool resetSemanticInterventionEnabled = true;
-    [Tooltip("Medium 语义干预的 Reset 转角下限，单位：度。")]
-    [SerializeField, Range(0f, 180f)] private float resetSemanticMediumThresholdDegrees = 60f;
-    [Tooltip("High 语义干预的 Reset 转角下限，单位：度。")]
-    [SerializeField, Range(0f, 360f)] private float resetSemanticHighThresholdDegrees = 120f;
     [SerializeField] private RotationGainController rotationGainController;
     [Header("Continuous RDW - 基础设置")]
     [Tooltip("是否启用 Continuous RDW；关闭后保留 None 对照模式。")]
@@ -184,6 +180,9 @@ public sealed class SystemBootstrapper : MonoBehaviour
         rdwPlanningSettings?.SetMode(profile.rdwPlanningMode);
         rdwFrameCoordinator?.SetContinuousEnabled(profile.continuousRdwEnabled);
         guidanceCoordinator?.ApplyExperimentProfile(profile);
+        participantUiController?.SetResetSemanticInterventionEnabled(
+            resetSemanticInterventionEnabled &&
+            profile.resetMode == ExperimentResetMode.SemanticContextualized);
     }
     /// <summary>启动时加载的唯一静态场景语义图。</summary>
     public StaticSceneSemanticGraph SemanticGraph => semanticGraph;
@@ -402,9 +401,7 @@ public sealed class SystemBootstrapper : MonoBehaviour
             agentClient,
             narrationPlayer,
             experimentLogger,
-            resetSemanticInterventionEnabled,
-            resetSemanticMediumThresholdDegrees,
-            resetSemanticHighThresholdDegrees);
+            resetSemanticInterventionEnabled);
         rdwGainApplier = new RdwGainApplier(
             userPoseTracker.VirtualRotationRoot,
             userPoseTracker.VirtualPoseSource);

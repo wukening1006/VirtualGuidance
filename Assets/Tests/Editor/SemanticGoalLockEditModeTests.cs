@@ -159,6 +159,40 @@ public sealed class SemanticGoalLockEditModeTests
             Is.LessThan(0.01f));
     }
 
+    /// <summary>2:1 模式允许非 Critical 的目标延续，严格模式仍只允许 Safe。</summary>
+    [Test]
+    public void FixedTargetContinuation_TwoOneAllowsNonCriticalHeadingOnly()
+    {
+        var evaluator = new CapturingHeadingEvaluator
+        {
+            Safety = HeadingSafety.Unsafe
+        };
+        var fixedTarget = new NavigationCandidate(
+            "E5",
+            NavigationTargetRole.RouteSubgoal,
+            "right",
+            null,
+            Array.Empty<SemanticEdgeDefinition>(),
+            relativeYawDegrees: 30f);
+
+        var strictAssessment = new PostResetContinuationEvaluator().EvaluateFixedTarget(
+            CreateRisk(),
+            Vector2.right,
+            180f,
+            fixedTarget,
+            evaluator);
+        var twoOneAssessment = new PostResetContinuationEvaluator().EvaluateFixedTarget(
+            CreateRisk(),
+            Vector2.right,
+            180f,
+            fixedTarget,
+            evaluator,
+            allowNonCriticalTarget: true);
+
+        Assert.That(strictAssessment.Level, Is.EqualTo(PostResetContinuationLevel.HoldOnly));
+        Assert.That(twoOneAssessment.Level, Is.EqualTo(PostResetContinuationLevel.DirectTarget));
+    }
+
     /// <summary>验证可信物理事实下的安全介入只进入 PauseReset。</summary>
     [Test]
     public void RuntimeSafetyPolicy_TrustedUnsafeInputRequestsPauseReset()
@@ -297,6 +331,7 @@ public sealed class SemanticGoalLockEditModeTests
     private sealed class CapturingHeadingEvaluator : IPhysicalHeadingEvaluator
     {
         public Vector2 LastForward { get; private set; }
+        public HeadingSafety Safety { get; set; } = HeadingSafety.Safe;
 
         public bool TryEvaluateAbsoluteHeading(
             PhysicalRiskState riskState,
@@ -304,7 +339,7 @@ public sealed class SemanticGoalLockEditModeTests
             out HeadingSample sample)
         {
             LastForward = absolutePhysicalForward.normalized;
-            sample = new HeadingSample(0f, LastForward, 2f, HeadingSafety.Safe);
+            sample = new HeadingSample(0f, LastForward, 2f, Safety);
             return true;
         }
     }

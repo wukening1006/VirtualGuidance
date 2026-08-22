@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -10,6 +11,9 @@ from pydantic import ValidationError
 from backend.schemas import (
     ResetSemanticInterventionRequest,
     ResetSemanticInterventionResponse,
+    SceneExhibit,
+    SceneSemanticEdge,
+    SceneSemanticsDocument,
 )
 from backend.services.mllm_provider import (
     DeepSeekOpenAICompatibleProvider,
@@ -27,97 +31,261 @@ from backend.services.mllm_provider import (
 
 
 RESET_SEMANTIC_TEMPERATURE = 0.0
-RESET_SEMANTIC_MAX_TOKENS = 256
+RESET_SEMANTIC_MAX_TOKENS = 128
 RESET_SEMANTIC_SYSTEM_PROMPT = (
-    "你是博物馆导览中的 Reset 语义干预模块。"
-    "Reset 的触发、方向、角度和物理执行已经由 Unity 安全系统确定，你只能生成转身期间的叙事文本。"
-    "根据当前展品、主题、下一目标、最近话术和 reset_angle 选择 low、medium 或 high。"
-    "low 是一句轻量补充，medium 延伸当前展品背景，high 使用背景、悬念或自然过渡。"
-    "不得输出方向、目标朝向、Reset 控制、Gain、Safety、Clearance 或任何物理执行建议。"
+    "你是博物馆导览中的短语义观察模块。"
+    "只能从用户消息给出的 grounded_candidates 中选择一项，并原样返回对应的 content_key 与 narration。"
+    "不得补充候选之外的事实，不得输出方向、角度、转身动作、Reset 控制、Gain、Safety、"
+    "Clearance、边界或任何物理执行建议。"
 )
-RESET_SEMANTIC_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "intervention_level": {
-            "type": "string",
-            "enum": ["low", "medium", "high"],
-        },
-        "narration": {"type": "string", "minLength": 1, "maxLength": 500},
-    },
-    "required": ["intervention_level", "narration"],
-}
+FORBIDDEN_NARRATION_TOKENS = (
+    "左转",
+    "右转",
+    "向左",
+    "向右",
+    "转身",
+    "转一圈",
+    "朝向",
+    "角度",
+    "180",
+    "360",
+    "reset",
+    "gain",
+    "safety",
+    "clearance",
+    "安全距离",
+    "物理边界",
+)
 
 
-def classify_reset_angle(angle: float) -> str:
-    """按默认实验阈值映射语义强度；Unity 本地等级仍是最终控制依据。"""
+@dataclass(frozen=True)
+class GroundedResetSemanticCandidate:
+    """从受校验静态语义图派生的一条可展示短语义。"""
 
-    if angle >= 120.0:
-        return "high"
-    if angle >= 60.0:
-        return "medium"
-    return "low"
+    content_key: str
+    narration: str
+
+
+class ResetSemanticGrounder:
+    """把稳定展品 ID 解析为短语义候选，不读取任何物理状态。"""
+
+    def __init__(self, scene_semantics: SceneSemanticsDocument) -> None:
+        self.exhibits = {item.id: item for item in scene_semantics.exhibits}
+        self.themes = {item.id: item for item in scene_semantics.themes}
+        self.edges = tuple(scene_semantics.semantic_edges)
+
+    def candidates_for(
+        self,
+        request: ResetSemanticInterventionRequest,
+    ) -> tuple[GroundedResetSemanticCandidate, ...]:
+        current = self.exhibits.get(request.current_exhibit_id)
+        if current is None:
+            raise ValueError(
+                f"Unknown current_exhibit_id: {request.current_exhibit_id}"
+            )
+        target = self.exhibits.get(request.next_target_id)
+
+        candidates: list[GroundedResetSemanticCandidate] = []
+        if target is not None:
+            for edge in self.edges:
+                related_id = self._related_id(target.id, edge)
+                if related_id in {None, current.id, target.id}:
+                    continue
+                related = self.exhibits.get(related_id)
+                if related is None:
+                    continue
+                self._add(
+                    candidates,
+                    f"target-edge:{edge.id}",
+                    self._target_relation_narration(
+                        target,
+                        related,
+                        edge.relation_type,
+                    ),
+                )
+
+        # 有目标关联展品时只返回这些“其他展品”；无关联时才回退到当前展品语义。
+        if candidates:
+            return tuple(candidates)
+
+        for index, feature in enumerate(current.knowledge.visual_features):
+            self._add(
+                candidates,
+                f"exhibit:{current.id}:visual:{index}",
+                f"观察{current.name}时，可以特别留意{feature}这一造型细节。",
+            )
+        for index, concept in enumerate(current.knowledge.key_concepts):
+            self._add(
+                candidates,
+                f"exhibit:{current.id}:concept:{index}",
+                f"回想{current.name}时，可以注意“{concept}”这一关键线索。",
+            )
+        for theme_id in current.knowledge.themes:
+            theme = self.themes.get(theme_id)
+            if theme is not None:
+                self._add(
+                    candidates,
+                    f"theme:{theme.id}",
+                    f"{current.name}也与“{theme.name}”这一主题相连，可以回想其中的线索。",
+                )
+        for edge in self.edges:
+            neighbor = self._outgoing_neighbor(current.id, edge)
+            if neighbor is not None:
+                self._add(
+                    candidates,
+                    f"edge:{edge.id}",
+                    self._edge_narration(current, neighbor, edge.relation_type),
+                )
+
+        if not candidates:
+            self._add(
+                candidates,
+                f"exhibit:{current.id}:category",
+                f"{current.name}属于{current.knowledge.category}，可以留意它独特的文化表达。",
+            )
+        return tuple(candidates)
+
+    @staticmethod
+    def _related_id(target_id: str, edge: SceneSemanticEdge) -> str | None:
+        if edge.source == target_id:
+            return edge.target
+        if edge.target == target_id:
+            return edge.source
+        return None
+
+    def _outgoing_neighbor(
+        self,
+        current_id: str,
+        edge: SceneSemanticEdge,
+    ) -> SceneExhibit | None:
+        if edge.source == current_id:
+            return self.exhibits.get(edge.target)
+        if not edge.directed and edge.target == current_id:
+            return self.exhibits.get(edge.source)
+        return None
+
+    @staticmethod
+    def _edge_narration(
+        current: SceneExhibit,
+        neighbor: SceneExhibit,
+        relation_type: str,
+    ) -> str:
+        if relation_type == "context_of":
+            return f"{current.name}为理解{neighbor.name}提供了背景线索，可以留意两者的联系。"
+        if relation_type == "same_category":
+            return f"{current.name}与{neighbor.name}属于相近类型，可以比较它们的造型。"
+        if relation_type == "variant_of":
+            return f"{current.name}与{neighbor.name}构成变体关系，可以比较材质与造型。"
+        if relation_type == "compare_with":
+            return f"{current.name}与{neighbor.name}适合相互比较，可以留意造型差异。"
+        if relation_type == "thematic_association":
+            return f"{current.name}与{neighbor.name}共享一条主题线索，可以想想其中的联系。"
+        if relation_type == "synthesis_into":
+            return f"{current.name}为理解{neighbor.name}提供了一条重要的文化线索。"
+        return f"{current.name}与{neighbor.name}之间存在值得留意的文化联系。"
+
+    @staticmethod
+    def _target_relation_narration(
+        target: SceneExhibit,
+        related: SceneExhibit,
+        relation_type: str,
+    ) -> str:
+        if relation_type == "thematic_association":
+            return f"{target.name}与{related.name}都关联自然象征，可以一起看看。"
+        if relation_type == "compare_with":
+            return f"{target.name}与{related.name}适合比较造型细节，可以留意差异。"
+        if relation_type == "same_category":
+            return f"{target.name}与{related.name}属于相近类型，可以比较造型。"
+        if relation_type == "variant_of":
+            return f"{target.name}与{related.name}可比较材质与形制，值得留意。"
+        if relation_type == "context_of":
+            return f"{related.name}可以补充理解{target.name}的背景线索。"
+        if relation_type == "synthesis_into":
+            return f"{target.name}与{related.name}都能补充祭祀世界的线索。"
+        return f"{target.name}与{related.name}之间有语义联系，可以一起看看。"
+
+    @staticmethod
+    def _add(
+        candidates: list[GroundedResetSemanticCandidate],
+        content_key: str,
+        narration: str,
+    ) -> None:
+        normalized = _normalize_narration(narration)
+        candidates.append(GroundedResetSemanticCandidate(content_key, normalized))
 
 
 class ResetSemanticInterventionGenerator(Protocol):
     """Reset 语义生成器的最小异步接口。"""
 
     async def generate(
-        self, request: ResetSemanticInterventionRequest
+        self,
+        request: ResetSemanticInterventionRequest,
+        candidates: Sequence[GroundedResetSemanticCandidate],
     ) -> ResetSemanticInterventionResponse:
-        """生成 Reset 期间播放的语义文本。"""
+        """从服务器已落地的候选中选择 Reset 期间话术。"""
 
 
 class MLLMResetSemanticInterventionGenerator:
-    """通过现有 OpenAI-compatible provider 生成严格两字段响应。"""
+    """通过现有 OpenAI-compatible provider 选择已落地语义候选。"""
 
     def __init__(self, provider: MLLMProvider) -> None:
         self.provider = provider
 
     async def generate(
-        self, request: ResetSemanticInterventionRequest
+        self,
+        request: ResetSemanticInterventionRequest,
+        candidates: Sequence[GroundedResetSemanticCandidate],
     ) -> ResetSemanticInterventionResponse:
-        context = request.model_dump(mode="json")
+        available = _available_candidates(request, candidates)
         content = await self.provider.complete_json(
             messages=[
                 {"role": "system", "content": RESET_SEMANTIC_SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": json.dumps(context, ensure_ascii=False, sort_keys=True),
+                    "content": json.dumps(
+                        {
+                            "variation_seed": request.variation_seed,
+                            "current_topic": request.current_topic,
+                            "recent_narrations": request.recent_narrations,
+                            "grounded_candidates": [
+                                {
+                                    "content_key": item.content_key,
+                                    "narration": item.narration,
+                                }
+                                for item in available
+                            ],
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 },
             ],
-            json_schema=RESET_SEMANTIC_JSON_SCHEMA,
+            json_schema=_response_schema(available),
             temperature=RESET_SEMANTIC_TEMPERATURE,
             max_tokens=RESET_SEMANTIC_MAX_TOKENS,
         )
         try:
-            return ResetSemanticInterventionResponse.model_validate(json.loads(content))
+            response = ResetSemanticInterventionResponse.model_validate(json.loads(content))
         except (json.JSONDecodeError, ValidationError) as exc:
-            raise ValueError(f"Reset semantic response schema validation failed: {exc}") from exc
+            raise ValueError(
+                f"Reset semantic response schema validation failed: {exc}"
+            ) from exc
+        return _validate_candidate_response(response, available)
 
 
 class DeterministicResetSemanticInterventionGenerator:
-    """显式 offline mock；只按 Reset 角度选择叙事强度。"""
+    """显式 offline mock；按种子选择未展示过的落地语义候选。"""
 
     async def generate(
-        self, request: ResetSemanticInterventionRequest
+        self,
+        request: ResetSemanticInterventionRequest,
+        candidates: Sequence[GroundedResetSemanticCandidate],
     ) -> ResetSemanticInterventionResponse:
-        level = classify_reset_angle(request.reset_angle)
-        if level == "high":
-            narration = (
-                f"关于{request.current_exhibit}还有一个值得注意的问题："
-                f"它与接下来看到的{request.next_target}之间，可能存在一条重要的文化线索。"
-            )
-        elif level == "medium":
-            narration = (
-                f"值得注意的是，{request.current_exhibit}的背景与当前主题密切相关，"
-                f"这也为接下来了解{request.next_target}提供了线索。"
-            )
-        else:
-            narration = f"{request.current_exhibit}的细节还体现了当前主题中的独特审美。"
+        available = _available_candidates(request, candidates)
+        selected = available[request.variation_seed % len(available)]
         return ResetSemanticInterventionResponse(
-            intervention_level=level,
-            narration=narration,
+            narration=selected.narration,
+            content_key=selected.content_key,
         )
 
 
@@ -148,21 +316,27 @@ def create_reset_semantic_generator_from_env(
 
 
 class ResetSemanticInterventionPipeline:
-    """处理旁路生成；所有失败都转为 HTTP 错误，由 Unity 回退普通 Reset。"""
+    """使用静态语义图生成候选，并把失败隔离在 Reset 语义旁路内。"""
 
     def __init__(
         self,
+        scene_semantics: SceneSemanticsDocument,
         generator: ResetSemanticInterventionGenerator | None = None,
     ) -> None:
+        self.grounder = ResetSemanticGrounder(scene_semantics)
         self.generator = generator
 
     async def handle(
-        self, request: ResetSemanticInterventionRequest
+        self,
+        request: ResetSemanticInterventionRequest,
     ) -> ResetSemanticInterventionResponse:
         try:
+            candidates = self.grounder.candidates_for(request)
+            available = _available_candidates(request, candidates)
             if self.generator is None:
                 self.generator = create_reset_semantic_generator_from_env()
-            return await self.generator.generate(request)
+            response = await self.generator.generate(request, available)
+            return _validate_candidate_response(response, available)
         except MLLMConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except MLLMTimeoutError as exc:
@@ -172,3 +346,62 @@ class ResetSemanticInterventionPipeline:
                 status_code=502,
                 detail=f"Reset semantic intervention unavailable: {exc}",
             ) from exc
+
+
+def _available_candidates(
+    request: ResetSemanticInterventionRequest,
+    candidates: Sequence[GroundedResetSemanticCandidate],
+) -> tuple[GroundedResetSemanticCandidate, ...]:
+    recent_keys = set(request.recent_content_keys)
+    recent_narrations = set(request.recent_narrations)
+    available = tuple(
+        item
+        for item in candidates
+        if item.content_key not in recent_keys and item.narration not in recent_narrations
+    )
+    resolved = available or tuple(candidates)
+    if not resolved:
+        raise ValueError("No grounded Reset semantic candidate is available.")
+    return resolved
+
+
+def _response_schema(
+    candidates: Sequence[GroundedResetSemanticCandidate],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "narration": {
+                "type": "string",
+                "enum": [item.narration for item in candidates],
+            },
+            "content_key": {
+                "type": "string",
+                "enum": [item.content_key for item in candidates],
+            },
+        },
+        "required": ["narration", "content_key"],
+    }
+
+
+def _validate_candidate_response(
+    response: ResetSemanticInterventionResponse,
+    candidates: Sequence[GroundedResetSemanticCandidate],
+) -> ResetSemanticInterventionResponse:
+    expected = {item.content_key: item.narration for item in candidates}
+    if expected.get(response.content_key) != response.narration:
+        raise ValueError("Reset semantic response is not a matching grounded candidate.")
+    lowered = response.narration.lower()
+    if any(token in lowered for token in FORBIDDEN_NARRATION_TOKENS):
+        raise ValueError("Reset semantic response contains physical-control language.")
+    return response
+
+
+def _normalize_narration(value: str) -> str:
+    normalized = " ".join(value.split()).strip()
+    if len(normalized) < 20:
+        normalized = normalized.rstrip("。") + "，这也是理解当前主题的一条线索。"
+    if len(normalized) > 45:
+        normalized = normalized[:44].rstrip("，、；：。") + "。"
+    return normalized

@@ -42,15 +42,17 @@ def create_app(
     reset_semantic_generator: ResetSemanticInterventionGenerator | None = None,
 ) -> FastAPI:
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
-    application.state.pipeline = GuidancePipeline(
+    guidance_pipeline = GuidancePipeline(
         config_dir=config_dir,
         log_dir=log_dir,
         guide=draft_generator,
     )
+    application.state.pipeline = guidance_pipeline
     application.state.route_selection_pipeline = RouteSelectionPipeline(route_selector)
     application.state.semantic_plan_pipeline = SemanticPlanPipeline(semantic_planner)
     application.state.reset_semantic_pipeline = ResetSemanticInterventionPipeline(
-        reset_semantic_generator
+        guidance_pipeline.scene_semantics,
+        reset_semantic_generator,
     )
 
     @application.get("/health", response_model=HealthResponse)

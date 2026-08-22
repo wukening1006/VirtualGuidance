@@ -135,8 +135,8 @@ public sealed class ExperimentLogger : MonoBehaviour
     [SerializeField, Min(0.1f)] private float riskTelemetrySamplingRateHz = 5f;
 
     [Header("Unity Console")]
-    [Tooltip("启用后将关键实验事件实时镜像到 Unity Console；完整数据仍写入 JSONL。")]
-    [SerializeField] private bool mirrorToUnityConsole = true;
+    [Tooltip("启用后将关键实验事件实时镜像到 Unity Console；完整数据仍写入 JSONL。默认关闭以避免运行期刷屏。")]
+    [SerializeField] private bool mirrorToUnityConsole = false;
 
     private ExperimentSession session;
     private string logPath;
@@ -147,6 +147,10 @@ public sealed class ExperimentLogger : MonoBehaviour
     private ExperimentRunState runState = ExperimentRunState.Preparing;
     private string lastRiskEventSignature = string.Empty;
     private string lastConsoleRiskSignature = string.Empty;
+    private string lastConsolePlanningInvalidationKey = string.Empty;
+    private string lastConsoleInterventionKey = string.Empty;
+    private string lastConsoleHardStopKey = string.Empty;
+    private string lastConsoleSafetyHoldKey = string.Empty;
     private bool wasNearBoundary;
     private bool wasBoundaryBreached;
     private readonly HashSet<string> activeObstacleCollisions = new HashSet<string>();
@@ -229,6 +233,10 @@ public sealed class ExperimentLogger : MonoBehaviour
         session = ExperimentSession.Start(spec);
         lastRiskEventSignature = string.Empty;
         lastConsoleRiskSignature = string.Empty;
+        lastConsolePlanningInvalidationKey = string.Empty;
+        lastConsoleInterventionKey = string.Empty;
+        lastConsoleHardStopKey = string.Empty;
+        lastConsoleSafetyHoldKey = string.Empty;
         wasNearBoundary = false;
         wasBoundaryBreached = false;
         activeObstacleCollisions.Clear();
@@ -512,7 +520,8 @@ public sealed class ExperimentLogger : MonoBehaviour
             resetAttempt: resetAttempt,
             trackingValid: trackingValid,
             calibrationValid: calibrationValid,
-            recoveryPlan: recoveryPlan);
+            recoveryPlan: recoveryPlan,
+            consoleDedupKey: BuildInterventionConsoleKey(trace, decision, startReset, resetAttempt, reason));
     }
 
     /// <summary>记录自动恢复状态机的前后状态、原因与当时冻结的恢复计划。</summary>
@@ -689,7 +698,16 @@ public sealed class ExperimentLogger : MonoBehaviour
         PhysicalRiskState riskState,
         string message)
     {
-        Write(eventType, null, null, null, riskState, runtimeState, message, trace);
+        Write(
+            eventType,
+            null,
+            null,
+            null,
+            riskState,
+            runtimeState,
+            message,
+            trace,
+            consoleDedupKey: BuildStatusConsoleDedupKey(eventType, trace, runtimeState, riskState, message));
     }
 
     /// <summary>记录一次可重建的 Reset 开始事件，并生成稳定 reset_id。</summary>
@@ -868,7 +886,15 @@ public sealed class ExperimentLogger : MonoBehaviour
             rdwPlanningIdentity: callIdentity,
             rdwRouteSelectionResponse: selectionResponse,
             rdwRoutePlan: routePlan,
-            rdwPlanInvalidationReason: invalidationReason);
+            rdwPlanInvalidationReason: invalidationReason,
+            consoleDedupKey: BuildPlanningInvalidationConsoleKey(
+                callIdentity,
+                selectionResponse,
+                routePlan,
+                invalidationReason,
+                runtimeState,
+                riskState,
+                message));
         if (string.Equals(eventType, "planning_route_selected", StringComparison.Ordinal) ||
             string.Equals(eventType, "planning_route_selection_failed", StringComparison.Ordinal))
         {
@@ -1016,7 +1042,8 @@ public sealed class ExperimentLogger : MonoBehaviour
         string intervalId = "",
         string intervalReason = "",
         string exhibitId = "",
-        JObject metricSnapshot = null)
+        JObject metricSnapshot = null,
+        string consoleDedupKey = "")
     {
         trace = trace ?? LogTraceContext.Empty;
         var calibrationId = FirstNonEmpty(
@@ -1059,7 +1086,7 @@ public sealed class ExperimentLogger : MonoBehaviour
                     : 0;
 
         var descriptor = ResolveEventDescriptor(eventType, riskState);
-        if (emitUnityConsole && mirrorToUnityConsole && ShouldEmitUnityConsole(eventType, riskState))
+        if (emitUnityConsole && mirrorToUnityConsole && ShouldEmitUnityConsole(eventType, riskState, consoleDedupKey))
         {
             EmitUnityConsole(
                 eventType,
@@ -1475,15 +1502,38 @@ public sealed class ExperimentLogger : MonoBehaviour
                string.Equals(reason, "invalid_command", StringComparison.Ordinal);
     }
 
-    private bool ShouldEmitUnityConsole(string eventType, PhysicalRiskState riskState)
+    private bool ShouldEmitUnityConsole(string eventType, PhysicalRiskState riskState, string consoleDedupKey)
     {
+        if (string.Equals(eventType, "session_started", StringComparison.Ordinal) ||
+            string.Equals(eventType, "reset_completed", StringComparison.Ordinal) ||
+            string.Equals(eventType, "reset_cancelled", StringComparison.Ordinal) ||
+            string.Equals(eventType, "backend_recovered", StringComparison.Ordinal))
+        {
+            // 恢复事件表示新的安全介入周期可以重新输出一次。
+            lastConsoleInterventionKey = string.Empty;
+            lastConsoleHardStopKey = string.Empty;
+            lastConsoleSafetyHoldKey = string.Empty;
+        }
+
         if (!string.Equals(eventType, "risk_changed", StringComparison.Ordinal))
         {
-            return true;
+            switch (eventType)
+            {
+                case "planning_plan_invalidated":
+                    return RememberConsoleKey(ref lastConsolePlanningInvalidationKey, consoleDedupKey);
+                case "runtime_intervention":
+                    return RememberConsoleKey(ref lastConsoleInterventionKey, consoleDedupKey);
+                case "hard_stop":
+                    return RememberConsoleKey(ref lastConsoleHardStopKey, consoleDedupKey);
+                case "safety_hold":
+                    return RememberConsoleKey(ref lastConsoleSafetyHoldKey, consoleDedupKey);
+                default:
+                    return true;
+            }
         }
 
         // RiskEvaluator 每 0.2 秒生成快照；Console 与 Event 只报告安全语义变化。
-        var signature = BuildRiskSignature(riskState);
+        var signature = BuildConsoleRiskSignature(riskState);
         if (string.Equals(signature, lastConsoleRiskSignature, StringComparison.Ordinal))
         {
             return false;
@@ -1491,6 +1541,82 @@ public sealed class ExperimentLogger : MonoBehaviour
 
         lastConsoleRiskSignature = signature;
         return true;
+    }
+
+    private static bool RememberConsoleKey(ref string previousKey, string currentKey)
+    {
+        if (string.IsNullOrWhiteSpace(currentKey))
+        {
+            return true;
+        }
+
+        if (string.Equals(previousKey, currentKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        previousKey = currentKey;
+        return true;
+    }
+
+    private static string BuildInterventionConsoleKey(
+        LogTraceContext trace,
+        RuntimeGuidanceSafetyDecision decision,
+        bool startReset,
+        int resetAttempt,
+        string reason)
+    {
+        return string.Join(
+            "|",
+            trace != null ? trace.RequestId : string.Empty,
+            trace != null ? trace.DecisionId : string.Empty,
+            decision.ToString(),
+            startReset,
+            resetAttempt,
+            reason ?? string.Empty);
+    }
+
+    private static string BuildStatusConsoleDedupKey(
+        string eventType,
+        LogTraceContext trace,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string message)
+    {
+        if (!string.Equals(eventType, "hard_stop", StringComparison.Ordinal) &&
+            !string.Equals(eventType, "safety_hold", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            "|",
+            trace != null ? trace.RequestId : string.Empty,
+            trace != null ? trace.DecisionId : string.Empty,
+            runtimeState != null ? runtimeState.stateVersion.ToString(CultureInfo.InvariantCulture) : "0",
+            riskState != null ? riskState.risk_revision.ToString(CultureInfo.InvariantCulture) : "0",
+            message ?? string.Empty);
+    }
+
+    private static string BuildPlanningInvalidationConsoleKey(
+        PlanningCallIdentity planningIdentity,
+        RdwRouteSelectionResponse selectionResponse,
+        RoutePlan routePlan,
+        RoutePlanInvalidationReason invalidationReason,
+        GuidanceRuntimeState runtimeState,
+        PhysicalRiskState riskState,
+        string message)
+    {
+        return string.Join(
+            "|",
+            planningIdentity != null ? planningIdentity.PlanId : string.Empty,
+            planningIdentity != null ? planningIdentity.Generation.ToString(CultureInfo.InvariantCulture) : "0",
+            selectionResponse != null ? selectionResponse.plan_id : string.Empty,
+            routePlan != null ? routePlan.PlanId : string.Empty,
+            invalidationReason.ToString(),
+            runtimeState != null ? runtimeState.stateVersion.ToString(CultureInfo.InvariantCulture) : "0",
+            riskState != null ? riskState.risk_revision.ToString(CultureInfo.InvariantCulture) : "0",
+            message ?? string.Empty);
     }
 
     private void EmitUnityConsole(
@@ -2480,6 +2606,18 @@ public sealed class ExperimentLogger : MonoBehaviour
                 riskState.reset_risk,
                 riskState.reset_required,
                 riskState.current_heading.ClearanceMeters.ToString("0.###"),
+                riskState.current_heading.Safety);
+    }
+
+    private static string BuildConsoleRiskSignature(PhysicalRiskState riskState)
+    {
+        return riskState == null
+            ? "none"
+            : string.Join(
+                "|",
+                riskState.boundary_risk,
+                riskState.reset_risk,
+                riskState.reset_required,
                 riskState.current_heading.Safety);
     }
 

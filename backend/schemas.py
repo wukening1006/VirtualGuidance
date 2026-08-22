@@ -24,7 +24,7 @@ CANDIDATE_POLICY_VERSION = "candidate-policy-v2"
 RISK_POLICY_VERSION = "unity-risk-policy-v2"
 SEMANTIC_PLANNING_SCHEMA_VERSION = "semantic-local-planning-v2"
 RDW_ROUTE_SELECTION_SCHEMA_VERSION = "rdw-route-selection-v4"
-RESET_SEMANTIC_INTERVENTION_SCHEMA_VERSION = "reset-semantic-intervention-v1"
+RESET_SEMANTIC_INTERVENTION_SCHEMA_VERSION = "reset-semantic-intervention-v2"
 
 
 class ExperimentProfile(BaseModel):
@@ -1035,17 +1035,30 @@ class RouteSelectionResponse(BaseModel):
 
 
 class ResetSemanticInterventionRequest(BaseModel):
-    """Reset 已由 Unity 决定后提交的最小语义上下文。"""
+    """Reset 已由 Unity 决定后提交的稳定语义上下文。"""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    planning_schema_version: Literal["reset-semantic-intervention-v1"]
-    current_exhibit: str = ""
-    current_topic: str = ""
-    next_target: str = ""
-    recent_narration: str = ""
-    reset_angle: float = Field(ge=0.0, le=360.0)
-    reset_reason: str = ""
+    planning_schema_version: Literal["reset-semantic-intervention-v2"]
+    session_id: str = Field(min_length=1, max_length=160)
+    reset_id: str = Field(min_length=1, max_length=80)
+    variation_seed: int = Field(ge=0, le=2_147_483_647)
+    current_exhibit_id: str = Field(min_length=1, max_length=80)
+    current_exhibit_name: str = Field(min_length=1, max_length=120)
+    next_target_id: str = Field(default="", max_length=80)
+    next_target_name: str = Field(default="", max_length=120)
+    current_topic: str = Field(default="", max_length=500)
+    semantic_hint: str = Field(min_length=1, max_length=60)
+    semantic_hint_key: str = Field(min_length=1, max_length=160)
+    recent_narrations: list[str] = Field(default_factory=list, max_length=6)
+    recent_content_keys: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("recent_narrations", "recent_content_keys")
+    @classmethod
+    def validate_reset_history(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("Reset semantic history entries must be non-empty.")
+        return value
 
 
 class ResetSemanticInterventionResponse(BaseModel):
@@ -1053,8 +1066,8 @@ class ResetSemanticInterventionResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    intervention_level: Literal["low", "medium", "high"]
-    narration: str = Field(min_length=1, max_length=500)
+    narration: str = Field(min_length=20, max_length=45)
+    content_key: str = Field(min_length=1, max_length=160)
 
 
 class GuidanceResponse(BaseModel):

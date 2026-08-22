@@ -4,57 +4,58 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
-/// <summary>Reset 期间的语义干预强度；只由 Unity 根据 Reset 转角确定。</summary>
-public enum ResetSemanticInterventionLevel
-{
-    /// <summary>短 Reset 使用的轻量补充。</summary>
-    Low,
-    /// <summary>中等 Reset 使用的背景与细节延伸。</summary>
-    Medium,
-    /// <summary>大角度 Reset 使用的故事、悬念与叙事过渡。</summary>
-    High
-}
-
 /// <summary>
-/// Reset 语义旁路读取的最小上下文；不包含 Physical Safety、Boundary 或 Gain 事实。
+/// Reset 语义旁路读取的最小上下文；只包含稳定语义事实和去重信息。
 /// </summary>
 [Serializable]
 public sealed class ResetSemanticContext
 {
-    /// <summary>当前展品标识与名称。</summary>
-    public string current_exhibit;
+    /// <summary>当前实验会话的稳定标识。</summary>
+    public string session_id;
+    /// <summary>本次 Reset 的稳定标识。</summary>
+    public string reset_id;
+    /// <summary>由会话与 Reset 标识生成的确定性变化种子。</summary>
+    public int variation_seed;
+    /// <summary>当前展品稳定 ID。</summary>
+    public string current_exhibit_id;
+    /// <summary>当前展品显示名称。</summary>
+    public string current_exhibit_name;
+    /// <summary>Reset 后继续执行的目标稳定 ID。</summary>
+    public string next_target_id;
+    /// <summary>Reset 后继续执行的目标显示名称。</summary>
+    public string next_target_name;
     /// <summary>当前导览主题。</summary>
     public string current_topic;
-    /// <summary>Reset 后继续执行的目标标识与名称。</summary>
-    public string next_target;
-    /// <summary>Reset 前最近一次导览话术。</summary>
-    public string recent_narration;
-    /// <summary>本次 Reset 的相对转角，单位：度。</summary>
-    public float reset_angle;
-    /// <summary>触发 Reset 的稳定原因。</summary>
-    public string reset_reason;
+    /// <summary>Unity 从静态语义图选择的本地落地话术。</summary>
+    public string semantic_hint;
+    /// <summary>本地落地话术对应的稳定内容键。</summary>
+    public string semantic_hint_key;
+    /// <summary>最近展示过的导览或 Reset 话术。</summary>
+    public string[] recent_narrations = Array.Empty<string>();
+    /// <summary>最近展示过的 Reset 内容键。</summary>
+    public string[] recent_content_keys = Array.Empty<string>();
 }
 
 /// <summary>后端返回的 Reset 语义干预文本；不包含任何物理控制字段。</summary>
 [Serializable]
 public sealed class ResetSemanticInterventionResponse
 {
-    /// <summary>后端返回的文本等级；Unity 不使用它决定干预等级。</summary>
-    public string intervention_level;
     /// <summary>Reset 期间播放的语义话术。</summary>
     public string narration;
+    /// <summary>话术引用的稳定语义内容键。</summary>
+    public string content_key;
 }
 
 /// <summary>Reset 语义请求/响应的严格 JSON 协议。</summary>
 public static class ResetSemanticInterventionProtocol
 {
     /// <summary>Reset 语义干预协议版本。</summary>
-    public const string SchemaVersion = "reset-semantic-intervention-v1";
+    public const string SchemaVersion = "reset-semantic-intervention-v2";
 
     private static readonly HashSet<string> ResponseFields = new HashSet<string>(StringComparer.Ordinal)
     {
-        "intervention_level",
-        "narration"
+        "narration",
+        "content_key"
     };
 
     /// <summary>序列化最小 Reset 语义请求。</summary>
@@ -64,17 +65,23 @@ public static class ResetSemanticInterventionProtocol
         var payload = new JObject
         {
             ["planning_schema_version"] = SchemaVersion,
-            ["current_exhibit"] = context.current_exhibit ?? string.Empty,
+            ["session_id"] = context.session_id ?? string.Empty,
+            ["reset_id"] = context.reset_id ?? string.Empty,
+            ["variation_seed"] = Math.Max(0, context.variation_seed),
+            ["current_exhibit_id"] = context.current_exhibit_id ?? string.Empty,
+            ["current_exhibit_name"] = context.current_exhibit_name ?? string.Empty,
+            ["next_target_id"] = context.next_target_id ?? string.Empty,
+            ["next_target_name"] = context.next_target_name ?? string.Empty,
             ["current_topic"] = context.current_topic ?? string.Empty,
-            ["next_target"] = context.next_target ?? string.Empty,
-            ["recent_narration"] = context.recent_narration ?? string.Empty,
-            ["reset_angle"] = Mathf.Clamp(context.reset_angle, 0f, 360f),
-            ["reset_reason"] = context.reset_reason ?? string.Empty
+            ["semantic_hint"] = context.semantic_hint ?? string.Empty,
+            ["semantic_hint_key"] = context.semantic_hint_key ?? string.Empty,
+            ["recent_narrations"] = new JArray(context.recent_narrations ?? Array.Empty<string>()),
+            ["recent_content_keys"] = new JArray(context.recent_content_keys ?? Array.Empty<string>())
         };
         return payload.ToString(Formatting.None);
     }
 
-    /// <summary>解析严格的两字段响应，拒绝物理控制字段和未知属性。</summary>
+    /// <summary>解析严格的语义文本与内容键响应，拒绝物理控制字段和未知属性。</summary>
     public static bool TryParseResponse(
         string json,
         out ResetSemanticInterventionResponse response,
@@ -109,8 +116,8 @@ public static class ResetSemanticInterventionProtocol
                 }
             }
 
-            if (root["intervention_level"]?.Type != JTokenType.String ||
-                root["narration"]?.Type != JTokenType.String)
+            if (root["narration"]?.Type != JTokenType.String ||
+                root["content_key"]?.Type != JTokenType.String)
             {
                 failureReason = "reset_semantic_response_field_type_invalid";
                 return false;
@@ -130,14 +137,14 @@ public static class ResetSemanticInterventionProtocol
             return false;
         }
 
-        if (!Enum.TryParse(response.intervention_level, true, out ResetSemanticInterventionLevel level) ||
-            !Enum.IsDefined(typeof(ResetSemanticInterventionLevel), level))
+        if (string.IsNullOrWhiteSpace(response.content_key))
         {
-            failureReason = "reset_semantic_response_level_invalid";
+            failureReason = "reset_semantic_response_content_key_missing";
             return false;
         }
 
-        response.intervention_level = level.ToString().ToLowerInvariant();
+        response.narration = response.narration.Trim();
+        response.content_key = response.content_key.Trim();
         return true;
     }
 }
@@ -149,31 +156,33 @@ public static class ResetSemanticInterventionProtocol
 [DisallowMultipleComponent]
 public sealed class ResetSemanticInterventionManager : MonoBehaviour
 {
+    private const int RecentHistoryLimit = 4;
+
     [Header("Reset 语义干预")]
     [SerializeField, Tooltip("是否启用 OURS 的 Reset 语义旁路。")]
     private bool interventionEnabled = true;
-    [SerializeField, Range(0f, 180f), Tooltip("Medium 等级下限，单位：度。")]
-    private float mediumThresholdDegrees = 60f;
-    [SerializeField, Range(0f, 360f), Tooltip("High 等级下限，单位：度。")]
-    private float highThresholdDegrees = 120f;
 
     private PauseResetController resetController;
     private GuidanceCoordinator guidanceCoordinator;
     private IResetSemanticInterventionClient client;
     private NarrationPlayer narrationPlayer;
     private ExperimentLogger experimentLogger;
+    private readonly Queue<string> recentNarrations = new Queue<string>();
+    private readonly Queue<string> recentContentKeys = new Queue<string>();
     private bool resetActive;
 
     /// <summary>当前 Reset 语义旁路是否正在等待或展示话术。</summary>
     public bool IsResetInterventionActive => resetActive;
-    /// <summary>Reset 语义话术已通过协议校验并可交给 Participant UI 显示时触发。</summary>
+    /// <summary>本地或后端 Reset 语义话术可交给 Participant UI 显示时触发。</summary>
     public event Action<string> ResetSemanticNarrationReceived;
-    /// <summary>最近一次 Reset 按转角确定的等级。</summary>
-    public ResetSemanticInterventionLevel CurrentLevel { get; private set; }
-    /// <summary>Medium 阈值，单位：度。</summary>
-    public float MediumThresholdDegrees => Mathf.Clamp(mediumThresholdDegrees, 0f, 180f);
-    /// <summary>High 阈值，单位：度。</summary>
-    public float HighThresholdDegrees => Mathf.Clamp(highThresholdDegrees, MediumThresholdDegrees, 360f);
+
+    /// <summary>仅当 Inspector 开关启用且实验 Profile 为 OURS 语义 Reset 时返回 true。</summary>
+    public bool IsEnabledForProfile(ExperimentProfile profile)
+    {
+        return interventionEnabled &&
+               profile != null &&
+               profile.resetMode == ExperimentResetMode.SemanticContextualized;
+    }
 
     /// <summary>注入 Reset、上下文、传输与字幕依赖。</summary>
     public void Configure(
@@ -182,9 +191,7 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
         IResetSemanticInterventionClient interventionClient,
         NarrationPlayer player,
         ExperimentLogger logger = null,
-        bool enabled = true,
-        float mediumThresholdDegrees = 60f,
-        float highThresholdDegrees = 120f)
+        bool enabled = true)
     {
         Unbind();
         resetController = controller;
@@ -193,20 +200,7 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
         narrationPlayer = player;
         experimentLogger = logger;
         interventionEnabled = enabled;
-        this.mediumThresholdDegrees = mediumThresholdDegrees;
-        this.highThresholdDegrees = highThresholdDegrees;
         Bind();
-    }
-
-    /// <summary>按 Reset 相对转角确定干预等级；不读取或修改安全状态。</summary>
-    public ResetSemanticInterventionLevel Classify(float resetAngleDegrees)
-    {
-        var angle = Mathf.Abs(Mathf.Clamp(resetAngleDegrees, 0f, 360f));
-        return angle >= HighThresholdDegrees
-            ? ResetSemanticInterventionLevel.High
-            : angle >= MediumThresholdDegrees
-                ? ResetSemanticInterventionLevel.Medium
-                : ResetSemanticInterventionLevel.Low;
     }
 
     private void OnEnable()
@@ -260,27 +254,37 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
     private void HandleResetStarted(ResetEventInfo info)
     {
         StopIntervention();
-        if (!interventionEnabled ||
-            guidanceCoordinator?.CurrentExperimentProfile?.plannerMode != ExperimentPlannerMode.RdwGroundedTopK)
+        if (!IsEnabledForProfile(guidanceCoordinator?.CurrentExperimentProfile) ||
+            !HasValidSemanticReset(info))
         {
             return;
         }
 
-        var context = guidanceCoordinator.CreateResetSemanticContext(info);
-        if (context == null || client == null)
+        var context = guidanceCoordinator.CreateResetSemanticContext(
+            info,
+            recentNarrations.ToArray(),
+            recentContentKeys.ToArray());
+        if (context == null || string.IsNullOrWhiteSpace(context.semantic_hint) ||
+            string.IsNullOrWhiteSpace(context.semantic_hint_key))
         {
             return;
         }
 
-        CurrentLevel = Classify(context.reset_angle);
         resetActive = true;
+        PresentNarration(context.semantic_hint, context.semantic_hint_key, "local");
+        context.recent_narrations = AppendRequestHistory(
+            context.recent_narrations,
+            context.semantic_hint);
+        context.recent_content_keys = AppendRequestHistory(
+            context.recent_content_keys,
+            context.semantic_hint_key);
         experimentLogger?.LogStatus(
             "reset_semantic_intervention_requested",
             null,
             guidanceCoordinator.RuntimeState,
             null,
-            $"level={CurrentLevel.ToString().ToLowerInvariant()}; angle={context.reset_angle:F1} deg");
-        client.RequestResetSemanticIntervention(context);
+            $"reset_id={context.reset_id}; local_content_key={context.semantic_hint_key}");
+        client?.RequestResetSemanticIntervention(context);
     }
 
     private void HandleInterventionReceived(ResetSemanticInterventionResponse response)
@@ -291,15 +295,7 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
             return;
         }
 
-        // 等级由本地转角确定；后端返回的等级只保留为协议字段，不参与控制。
-        narrationPlayer?.PlayReset(response.narration);
-        ResetSemanticNarrationReceived?.Invoke(response.narration);
-        experimentLogger?.LogStatus(
-            "reset_semantic_intervention_received",
-            null,
-            guidanceCoordinator != null ? guidanceCoordinator.RuntimeState : null,
-            null,
-            $"level={CurrentLevel.ToString().ToLowerInvariant()}");
+        PresentNarration(response.narration, response.content_key, "backend");
     }
 
     private void HandleInterventionFailed(string reason)
@@ -315,7 +311,7 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
             guidanceCoordinator != null ? guidanceCoordinator.RuntimeState : null,
             null,
             string.IsNullOrWhiteSpace(reason) ? "ordinary reset fallback" : reason);
-        resetActive = false;
+        // 保留已经展示的本地语义回退，直到本次 Reset 正常结束。
     }
 
     private void HandleResetCompleted(ResetEventInfo _)
@@ -336,5 +332,68 @@ public sealed class ResetSemanticInterventionManager : MonoBehaviour
         resetActive = false;
         client?.CancelPendingResetSemanticIntervention();
         narrationPlayer?.ClearReset();
+    }
+
+    private static bool HasValidSemanticReset(ResetEventInfo info)
+    {
+        return info != null &&
+               !string.IsNullOrWhiteSpace(info.ResetId) &&
+               info.RecoveryPlan != null &&
+               info.RecoveryPlan.IsSuccess &&
+               Mathf.Abs(info.RelativeYawDegrees) > 0.1f;
+    }
+
+    private void PresentNarration(string narration, string contentKey, string source)
+    {
+        var normalizedNarration = narration?.Trim();
+        var normalizedKey = contentKey?.Trim();
+        if (!resetActive || string.IsNullOrWhiteSpace(normalizedNarration) ||
+            string.IsNullOrWhiteSpace(normalizedKey) ||
+            recentNarrations.Contains(normalizedNarration) ||
+            recentContentKeys.Contains(normalizedKey))
+        {
+            return;
+        }
+
+        Remember(recentNarrations, normalizedNarration);
+        Remember(recentContentKeys, normalizedKey);
+        narrationPlayer?.PlayReset(normalizedNarration);
+        ResetSemanticNarrationReceived?.Invoke(normalizedNarration);
+        experimentLogger?.LogStatus(
+            "reset_semantic_intervention_presented",
+            null,
+            guidanceCoordinator != null ? guidanceCoordinator.RuntimeState : null,
+            null,
+            $"source={source}; content_key={normalizedKey}");
+    }
+
+    private static void Remember(Queue<string> history, string value)
+    {
+        history.Enqueue(value);
+        while (history.Count > RecentHistoryLimit)
+        {
+            history.Dequeue();
+        }
+    }
+
+    private static string[] AppendRequestHistory(string[] history, string value)
+    {
+        const int RequestHistoryLimit = 6;
+        var merged = new List<string>();
+        if (history != null)
+        {
+            foreach (var item in history)
+            {
+                if (!string.IsNullOrWhiteSpace(item) && !merged.Contains(item)) merged.Add(item);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(value) && !merged.Contains(value)) merged.Add(value);
+        if (merged.Count > RequestHistoryLimit)
+        {
+            merged.RemoveRange(0, merged.Count - RequestHistoryLimit);
+        }
+
+        return merged.ToArray();
     }
 }

@@ -397,22 +397,44 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public string ActiveNarration => resetInterruptedResponse?.narration ?? activeResponse?.narration ?? string.Empty;
 
     /// <summary>
-    /// 从 Reset 开始前已经冻结的导览状态创建最小语义上下文；不暴露物理安全事实。
+    /// 从 Reset 开始前已经冻结的导览状态创建语义上下文；不暴露方向、角度或安全事实。
     /// </summary>
-    public ResetSemanticContext CreateResetSemanticContext(ResetEventInfo resetInfo)
+    /// <param name="resetInfo">本次 Reset 的稳定事件快照。</param>
+    /// <param name="recentNarrations">最近展示过的 Reset 语义话术。</param>
+    /// <param name="recentContentKeys">最近展示过的 Reset 内容键。</param>
+    /// <returns>存在有效会话与静态语义事实时返回上下文，否则返回 null。</returns>
+    public ResetSemanticContext CreateResetSemanticContext(
+        ResetEventInfo resetInfo,
+        IReadOnlyCollection<string> recentNarrations = null,
+        IReadOnlyCollection<string> recentContentKeys = null)
     {
         var state = RuntimeState;
-        if (state == null || resetInfo == null)
+        var sessionId = rdwPlanningLogger?.Session?.sessionId ?? string.Empty;
+        if (state == null || resetInfo == null || string.IsNullOrWhiteSpace(resetInfo.ResetId) ||
+            string.IsNullOrWhiteSpace(sessionId) || semanticPlanningGraph == null)
         {
             return null;
         }
 
         var currentId = state.currentExhibitId ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(currentId) && state.visitedExhibitIds != null &&
+            state.visitedExhibitIds.Length > 0)
+        {
+            currentId = state.visitedExhibitIds[state.visitedExhibitIds.Length - 1];
+        }
+
         var nextId = !string.IsNullOrWhiteSpace(resetTargetId)
             ? resetTargetId
-            : state.nextTargetId ?? string.Empty;
-        var currentExhibit = semanticPlanningGraph?.GetExhibit(currentId);
-        var nextExhibit = semanticPlanningGraph?.GetExhibit(nextId);
+            : !string.IsNullOrWhiteSpace(state.nextTargetId)
+                ? state.nextTargetId
+                : CurrentGuidanceTarget?.TargetId ?? string.Empty;
+        var currentExhibit = semanticPlanningGraph.GetExhibit(currentId);
+        var nextExhibit = semanticPlanningGraph.GetExhibit(nextId);
+        if (currentExhibit == null)
+        {
+            return null;
+        }
+
         var topic = state.userTask ?? string.Empty;
         if (string.IsNullOrWhiteSpace(topic) && currentExhibit?.knowledge?.themes != null)
         {
@@ -429,27 +451,282 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             topic = string.Join("、", themeNames);
         }
 
+        var seed = ComputeResetVariationSeed(sessionId, resetInfo.ResetId, currentId, nextId);
+        var candidates = BuildResetSemanticCandidates(
+            currentId,
+            currentExhibit,
+            nextId,
+            nextExhibit);
+        var selected = SelectResetSemanticCandidate(candidates, recentContentKeys, seed);
+        if (string.IsNullOrWhiteSpace(selected.Key) || string.IsNullOrWhiteSpace(selected.Value))
+        {
+            return null;
+        }
+
         return new ResetSemanticContext
         {
-            current_exhibit = DescribeResetExhibit(currentId, currentExhibit),
+            session_id = sessionId,
+            reset_id = resetInfo.ResetId,
+            variation_seed = seed,
+            current_exhibit_id = currentId,
+            current_exhibit_name = currentExhibit.name ?? currentId,
+            next_target_id = nextId,
+            next_target_name = nextExhibit?.name ?? nextId,
             current_topic = string.IsNullOrWhiteSpace(topic) ? "当前展览主题" : topic,
-            next_target = DescribeResetExhibit(nextId, nextExhibit),
-            recent_narration = ActiveNarration,
-            reset_angle = resetInfo.ApproximateTurnDegrees,
-            reset_reason = resetInfo.Reason
+            semantic_hint = selected.Value,
+            semantic_hint_key = selected.Key,
+            recent_narrations = CopyResetSemanticHistory(recentNarrations, ActiveNarration),
+            recent_content_keys = CopyResetSemanticHistory(recentContentKeys)
         };
     }
 
-    private static string DescribeResetExhibit(string id, SceneExhibitDefinition exhibit)
+    private List<KeyValuePair<string, string>> BuildResetSemanticCandidates(
+        string currentId,
+        SceneExhibitDefinition currentExhibit,
+        string nextTargetId,
+        SceneExhibitDefinition nextTarget)
     {
-        if (exhibit == null || string.IsNullOrWhiteSpace(exhibit.name))
+        var candidates = new List<KeyValuePair<string, string>>();
+        if (nextTarget != null && !string.IsNullOrWhiteSpace(nextTargetId))
         {
-            return id ?? string.Empty;
+            foreach (var edge in semanticPlanningGraph.SemanticEdges)
+            {
+                string relatedId = null;
+                if (string.Equals(edge.source, nextTargetId, StringComparison.Ordinal))
+                {
+                    relatedId = edge.target;
+                }
+                else if (string.Equals(edge.target, nextTargetId, StringComparison.Ordinal))
+                {
+                    relatedId = edge.source;
+                }
+
+                if (string.IsNullOrWhiteSpace(relatedId) ||
+                    string.Equals(relatedId, currentId, StringComparison.Ordinal) ||
+                    string.Equals(relatedId, nextTargetId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var relatedExhibit = semanticPlanningGraph.GetExhibit(relatedId);
+                if (relatedExhibit == null) continue;
+                AddResetSemanticCandidate(
+                    candidates,
+                    $"target-edge:{edge.id}",
+                    BuildResetTargetRelationHint(
+                        nextTarget.name,
+                        relatedExhibit.name,
+                        edge.relation_type));
+            }
         }
 
-        return string.IsNullOrWhiteSpace(id) || string.Equals(id, exhibit.name, StringComparison.Ordinal)
-            ? exhibit.name
-            : $"{id} {exhibit.name}";
+        // 有目标关联展品时只引导观察这些“其他展品”；无关联时才回退到当前展品语义。
+        if (candidates.Count > 0)
+        {
+            return candidates;
+        }
+
+        var knowledge = currentExhibit.knowledge;
+        if (knowledge?.visual_features != null)
+        {
+            for (var index = 0; index < knowledge.visual_features.Length; index++)
+            {
+                AddResetSemanticCandidate(
+                    candidates,
+                    $"exhibit:{currentId}:visual:{index}",
+                    $"观察{currentExhibit.name}时，可以特别留意{knowledge.visual_features[index]}这一造型细节。");
+            }
+        }
+
+        if (knowledge?.key_concepts != null)
+        {
+            for (var index = 0; index < knowledge.key_concepts.Length; index++)
+            {
+                AddResetSemanticCandidate(
+                    candidates,
+                    $"exhibit:{currentId}:concept:{index}",
+                    $"回想{currentExhibit.name}时，可以注意“{knowledge.key_concepts[index]}”这一关键线索。");
+            }
+        }
+
+        if (knowledge?.themes != null)
+        {
+            foreach (var themeId in knowledge.themes)
+            {
+                var theme = semanticPlanningGraph.GetTheme(themeId);
+                if (theme == null) continue;
+                AddResetSemanticCandidate(
+                    candidates,
+                    $"theme:{theme.id}",
+                    $"{currentExhibit.name}也与“{theme.name}”这一主题相连，可以回想其中的线索。");
+            }
+        }
+
+        foreach (var edge in semanticPlanningGraph.GetOutgoingSemanticEdges(currentId))
+        {
+            var neighborId = string.Equals(edge.source, currentId, StringComparison.Ordinal)
+                ? edge.target
+                : edge.source;
+            var neighbor = semanticPlanningGraph.GetExhibit(neighborId);
+            if (neighbor == null) continue;
+            AddResetSemanticCandidate(
+                candidates,
+                $"edge:{edge.id}",
+                BuildResetEdgeHint(currentExhibit.name, neighbor.name, edge.relation_type));
+        }
+
+        if (candidates.Count == 0 && !string.IsNullOrWhiteSpace(knowledge?.category))
+        {
+            AddResetSemanticCandidate(
+                candidates,
+                $"exhibit:{currentId}:category",
+                $"{currentExhibit.name}属于{knowledge.category}，可以留意它独特的文化表达。");
+        }
+
+        return candidates;
+    }
+
+    private static string BuildResetTargetRelationHint(
+        string targetName,
+        string relatedName,
+        string relationType)
+    {
+        switch (relationType)
+        {
+            case "thematic_association":
+                return $"{targetName}与{relatedName}都关联自然象征，可以一起看看。";
+            case "compare_with":
+                return $"{targetName}与{relatedName}适合比较造型细节，可以留意差异。";
+            case "same_category":
+                return $"{targetName}与{relatedName}属于相近类型，可以比较造型。";
+            case "variant_of":
+                return $"{targetName}与{relatedName}可比较材质与形制，值得留意。";
+            case "context_of":
+                return $"{relatedName}可以补充理解{targetName}的背景线索。";
+            case "synthesis_into":
+                return $"{targetName}与{relatedName}都能补充祭祀世界的线索。";
+            default:
+                return $"{targetName}与{relatedName}之间有语义联系，可以一起看看。";
+        }
+    }
+
+    private static string BuildResetEdgeHint(string currentName, string neighborName, string relationType)
+    {
+        switch (relationType)
+        {
+            case "context_of":
+                return $"{currentName}为理解{neighborName}提供了背景线索，可以留意两者的联系。";
+            case "same_category":
+                return $"{currentName}与{neighborName}属于相近类型，可以比较它们的造型。";
+            case "variant_of":
+                return $"{currentName}与{neighborName}构成变体关系，可以比较材质与造型。";
+            case "compare_with":
+                return $"{currentName}与{neighborName}适合相互比较，可以留意造型差异。";
+            case "thematic_association":
+                return $"{currentName}与{neighborName}共享一条主题线索，可以想想其中的联系。";
+            case "synthesis_into":
+                return $"{currentName}为理解{neighborName}提供了一条重要的文化线索。";
+            default:
+                return $"{currentName}与{neighborName}之间存在值得留意的文化联系。";
+        }
+    }
+
+    private static void AddResetSemanticCandidate(
+        ICollection<KeyValuePair<string, string>> candidates,
+        string key,
+        string narration)
+    {
+        var normalized = NormalizeResetSemanticHint(narration);
+        if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(normalized))
+        {
+            candidates.Add(new KeyValuePair<string, string>(key, normalized));
+        }
+    }
+
+    private static KeyValuePair<string, string> SelectResetSemanticCandidate(
+        IReadOnlyList<KeyValuePair<string, string>> candidates,
+        IReadOnlyCollection<string> recentContentKeys,
+        int seed)
+    {
+        if (candidates == null || candidates.Count == 0)
+        {
+            return default;
+        }
+
+        var recent = recentContentKeys != null
+            ? new HashSet<string>(recentContentKeys, StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+        var available = new List<KeyValuePair<string, string>>();
+        foreach (var candidate in candidates)
+        {
+            if (!recent.Contains(candidate.Key)) available.Add(candidate);
+        }
+
+        var pool = available.Count > 0 ? available : candidates;
+        return pool[Math.Abs(seed) % pool.Count];
+    }
+
+    private static string[] CopyResetSemanticHistory(
+        IReadOnlyCollection<string> source,
+        string additionalValue = null)
+    {
+        const int HistoryLimit = 6;
+        var values = new List<string>();
+        if (source != null)
+        {
+            foreach (var value in source)
+            {
+                if (!string.IsNullOrWhiteSpace(value) && !values.Contains(value)) values.Add(value.Trim());
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(additionalValue) && !values.Contains(additionalValue.Trim()))
+        {
+            values.Add(additionalValue.Trim());
+        }
+
+        if (values.Count > HistoryLimit)
+        {
+            values.RemoveRange(0, values.Count - HistoryLimit);
+        }
+
+        return values.ToArray();
+    }
+
+    private static int ComputeResetVariationSeed(params string[] values)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (var value in values)
+            {
+                foreach (var character in value ?? string.Empty)
+                {
+                    hash ^= character;
+                    hash *= 16777619;
+                }
+            }
+
+            return (int)(hash & 0x7fffffff);
+        }
+    }
+
+    private static string NormalizeResetSemanticHint(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        while (normalized.Contains("  ")) normalized = normalized.Replace("  ", " ");
+        if (normalized.Length < 20)
+        {
+            normalized = normalized.TrimEnd('。') + "，这也是理解当前主题的一条线索。";
+        }
+
+        if (normalized.Length > 45)
+        {
+            normalized = normalized.Substring(0, 44).TrimEnd('，', '、', '；', '：', '。') + "。";
+        }
+
+        return normalized;
     }
     /// <summary>当前会话已真正启动的自动 Reset 次数。</summary>
     public int AutomaticResetAttempts => automaticResetAttempts;
@@ -3455,7 +3732,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 predictedVirtualYawDelta,
                 fixedTarget,
                 riskEvaluator,
-                fixedPlan.Score);
+                fixedPlan.Score,
+                allowNonCriticalTarget: true);
             if (!bestContinuation.IsTargetExecutable)
             {
                 return null;
@@ -3681,7 +3959,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return false;
         }
 
-        if (!assessment.IsExecutable)
+        var allowNonCriticalTarget = pauseResetController != null &&
+                                     pauseResetController.IsFixedTwoOneTurn;
+        if (!assessment.IsExecutable && !allowNonCriticalTarget)
         {
             reason = "The locked target is not executable from the actual post-Reset pose: " +
                      assessment.Reason;
@@ -3712,7 +3992,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 riskState,
                 out _,
                 out _,
-                out reason))
+                out reason,
+                allowNonCriticalTarget))
         {
             response = null;
             return false;
@@ -3846,7 +4127,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         PhysicalRiskState riskState,
         out string physicalDirection,
         out float clearanceMeters,
-        out string reason)
+        out string reason,
+        bool allowNonCriticalTarget = false)
     {
         physicalDirection = string.Empty;
         clearanceMeters = 0f;
@@ -3868,7 +4150,10 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
         clearanceMeters = heading.ClearanceMeters;
 
-        if (!PhysicalRiskEvaluator.IsMovementSafe(heading))
+        var targetExecutable = allowNonCriticalTarget
+            ? heading.Safety != HeadingSafety.Critical
+            : PhysicalRiskEvaluator.IsMovementSafe(heading);
+        if (!targetExecutable)
         {
             reason =
                 $"Guidance Physical Action Gate rejected exact target direction because its safety is {heading.Safety}.";
