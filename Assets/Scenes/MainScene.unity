@@ -36331,10 +36331,10 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   resetSemanticInterventionManager: {fileID: 0}
-  resetSemanticInterventionEnabled: 1
+  resetSemanticInterventionEnabled: 0
   rotationGainController: {fileID: 1039273993}
-  continuousRdwEnabled: 0
-  continuousRedirectorMode: 1
+  continuousRdwEnabled: 1
+  continuousRedirectorMode: 3
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5
   s2cCurvatureRadiusMeters: 10
@@ -36357,7 +36357,7 @@ MonoBehaviour:
   thomasApfMaxForceMagnitude: 100
   rdwPlanningSettings:
     mode: 2
-    hardClearanceMeters: 1.6
+    hardClearanceMeters: 0.8
     maximumGainCost: 0.5
     routeSearch:
       maximumDepth: 3
@@ -39201,7 +39201,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 1896314442}
-  inputMode: 1
+  inputMode: 0
   stableSamplesRequired: 2
   headsetTransform: {fileID: 0}
   simulatedMoveSpeedMetersPerSecond: 1.5

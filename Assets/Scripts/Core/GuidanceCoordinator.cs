@@ -787,6 +787,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <summary>当前路线选择调用门。</summary>
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
+    /// <summary>
+    /// OURS 路线首步采用语义放行，由本地碰撞预测在真实移动轨迹进入危险走廊时触发 Reset。
+    /// </summary>
+    private bool UsesRuntimeResetAdmissionForOurs =>
+        experimentProfile != null &&
+        experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
+        experimentProfile.rdwPlanningMode == RdwPlanningMode.RdwConstrained;
     private static bool UsesAutonomousCollisionPredictionSafety => true;
 
     private void Update()
@@ -1492,6 +1499,13 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <param name="response">后端返回的 guidance；null 会被本地校验拒绝。</param>
     public void HandleGuidanceResponse(GuidanceResponse response)
     {
+        HandleGuidanceResponse(response, false);
+    }
+
+    private void HandleGuidanceResponse(
+        GuidanceResponse response,
+        bool allowRuntimeResetAdmission)
+    {
         var runtimeState = taskController != null ? taskController.RuntimeState : null;
         var riskState = riskEvaluator != null ? riskEvaluator.CurrentRiskState : null;
 
@@ -1535,6 +1549,14 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        if (allowRuntimeResetAdmission && !HasTrustedRecoveryFacts(riskState))
+        {
+            TriggerRuntimeIntervention(
+                response,
+                "Runtime Reset admission requires trusted tracking, calibration, boundary, and risk identity facts.");
+            return;
+        }
+
         var candidateReservation = runtimeState.ActiveCandidateSetReservation;
         var conditionPolicy = ExperimentConditionMatrix.GetPolicy(taskController.CurrentCondition);
         if (candidateReservation == null ||
@@ -1550,7 +1572,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (!TryValidateSelectedTargetExactHeading(
+        NavigationCandidate selectedCandidate;
+        if (!allowRuntimeResetAdmission && !TryValidateSelectedTargetExactHeading(
                 response.selected_target,
                 riskState,
                 out var exactHeadingReason))
@@ -1560,7 +1583,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         // 只重验模型实际选择的目标；其他候选变化不应使仍安全的响应过期。
-        if (!semanticTargetSelector.IsSelectedCandidateCurrent(
+        if (!allowRuntimeResetAdmission && !semanticTargetSelector.IsSelectedCandidateCurrent(
                 candidateReservation,
                 response.selected_target,
                 runtimeState,
@@ -1574,20 +1597,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         }
 
         // 后端只选择语义目标；最终身体动作始终由最新连续偏航和本地物理安全层生成。
-        if (!semanticTargetSelector.TryAssessCandidate(
-                response.selected_target,
-                frozenCandidate.TargetRole,
-                riskState,
-                out var selectedAssessment) ||
-            !selectedAssessment.IsExecutable)
+        if (!allowRuntimeResetAdmission)
         {
-            ExpireAndReplan(response, "Selected candidate cannot produce an executable local action.");
-            return;
-        }
-        response.movement_instruction =
-            GuidanceActionProtocolMapper.ToMovementInstruction(selectedAssessment.SuggestedAction);
+            if (!semanticTargetSelector.TryAssessCandidate(
+                    response.selected_target,
+                    frozenCandidate.TargetRole,
+                    riskState,
+                    out var selectedAssessment) ||
+                !selectedAssessment.IsExecutable)
+            {
+                ExpireAndReplan(response, "Selected candidate cannot produce an executable local action.");
+                return;
+            }
 
-        if (localValidator != null &&
+            response.movement_instruction =
+                GuidanceActionProtocolMapper.ToMovementInstruction(selectedAssessment.SuggestedAction);
+        }
+
+        if (!allowRuntimeResetAdmission && localValidator != null &&
             !localValidator.Validate(response, activeSnapshot, runtimeState, riskState, out var reason))
         {
             if (reason.IndexOf("changed", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1600,15 +1627,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        if (conditionPolicy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled &&
+        if (!allowRuntimeResetAdmission && conditionPolicy.UseSafeCandidateFilter == ConditionCapabilityMode.Enabled &&
             !Contains(candidateReservation.AllowedCandidateIds, response.selected_target))
         {
             TriggerRuntimeIntervention(response, "Guidance selected_target is outside allowed_candidate_ids.");
             return;
         }
 
-        // 提交前统一复验目标方向、动作方向和最新物理净空，避免先执行再由下一帧安全层终止。
-        if (!TryValidateExecutablePhysicalAction(
+        // 正式链路提交前复验精确物理净空；运行期放行模式改由碰撞预测触发 Reset。
+        if (!allowRuntimeResetAdmission && !TryValidateExecutablePhysicalAction(
                 response,
                 riskState,
                 out _,
@@ -1619,10 +1646,24 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
+        if (allowRuntimeResetAdmission)
+        {
+            if (navigationTargets == null ||
+                !navigationTargets.TryGetTargetBearing(response.selected_target, out var runtimeBearing))
+            {
+                TriggerRuntimeIntervention(response, "Runtime Reset admission could not resolve the selected target bearing.");
+                return;
+            }
+
+            response.movement_instruction = GuidanceActionProtocolMapper.ToMovementInstruction(
+                new GuidanceActionPlanner().Plan(runtimeBearing));
+            response.physical_intent = "collision_prediction_runtime_reset";
+        }
+
         if (!taskController.TryValidateCandidateSelection(
                 candidateReservation,
                 response.selected_target,
-                out var selectedCandidate) ||
+                out selectedCandidate) ||
             !taskController.CommitCurrentSubgoal(
                 candidateReservation,
                 selectedCandidate,
@@ -1648,7 +1689,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
         ResetRuntimeSafetySampling();
         SetRequestPhase(GuidanceRequestPhase.Executing);
         GuidanceExecuted?.Invoke(response);
-        // Candidate Set 存在不等于物理动作可执行；执行状态成立后才结束恢复门控。
+        // 运行期放行模式不预判目标净空；执行状态成立后由碰撞预测继续监测。
         CompletePostResetNavigationRecovery("executable_guidance_started");
         if (CurrentGuidanceTarget != null &&
             CurrentGuidanceTarget.TargetRole == NavigationTargetRole.TurnCueAnchor)
@@ -1869,7 +1910,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        HandleGuidanceResponse(adapted);
+        var runtimeResetAdmission = UsesRuntimeResetAdmissionForOurs;
+        HandleGuidanceResponse(adapted, runtimeResetAdmission);
         if (requestPhase == GuidanceRequestPhase.Executing &&
             ReferenceEquals(activeResponse, adapted))
         {
@@ -1885,7 +1927,9 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 result,
                 response,
                 plan,
-                "Unity Exact Safety accepted the selected route first step.");
+                runtimeResetAdmission
+                    ? "Route first step admitted; runtime collision prediction owns Reset."
+                    : "Unity Exact Safety accepted the selected route first step.");
         }
         ClearPendingRdwPlanning();
     }
