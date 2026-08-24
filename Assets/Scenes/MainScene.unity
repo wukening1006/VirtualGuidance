@@ -677,7 +677,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   userPoseTracker: {fileID: 2100100002}
   navigationTargets: {fileID: 19950178}
-  arrivalDistanceMeters: 1
+  arrivalDistanceMeters: 1.3
 --- !u!114 &19950177
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -36334,7 +36334,7 @@ MonoBehaviour:
   resetSemanticInterventionEnabled: 0
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 1
-  continuousRedirectorMode: 3
+  continuousRedirectorMode: 1
   s2cMovementThresholdMetersPerSecond: 0.2
   s2cRotationThresholdDegreesPerSecond: 1.5
   s2cCurvatureRadiusMeters: 10

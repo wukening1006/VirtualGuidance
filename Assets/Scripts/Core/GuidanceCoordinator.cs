@@ -788,12 +788,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
     /// <summary>
-    /// OURS 路线首步采用语义放行，由本地碰撞预测在真实移动轨迹进入危险走廊时触发 Reset。
+    /// 正式实验条件统一采用运行期 Reset 准入，由本地碰撞预测在真实移动轨迹
+    /// 进入危险走廊时触发 Reset，不在执行前按目标方向 Safe 等级拒绝 Guidance。
     /// </summary>
-    private bool UsesRuntimeResetAdmissionForOurs =>
+    private bool UsesRuntimeResetAdmission =>
         experimentProfile != null &&
-        experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
-        experimentProfile.rdwPlanningMode == RdwPlanningMode.RdwConstrained;
+        (string.Equals(experimentProfile.conditionId, "B1_semantic_only", StringComparison.Ordinal) ||
+         string.Equals(experimentProfile.conditionId, "B2_semantic_only_continuous", StringComparison.Ordinal) ||
+         string.Equals(experimentProfile.conditionId, "ours_rdw_grounded_topk", StringComparison.Ordinal) ||
+         string.Equals(experimentProfile.conditionId, "ours_full", StringComparison.Ordinal));
     private static bool UsesAutonomousCollisionPredictionSafety => true;
 
     private void Update()
@@ -1499,7 +1502,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     /// <param name="response">后端返回的 guidance；null 会被本地校验拒绝。</param>
     public void HandleGuidanceResponse(GuidanceResponse response)
     {
-        HandleGuidanceResponse(response, false);
+        HandleGuidanceResponse(response, UsesRuntimeResetAdmission);
     }
 
     private void HandleGuidanceResponse(
@@ -1910,7 +1913,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        var runtimeResetAdmission = UsesRuntimeResetAdmissionForOurs;
+        var runtimeResetAdmission = UsesRuntimeResetAdmission;
         HandleGuidanceResponse(adapted, runtimeResetAdmission);
         if (requestPhase == GuidanceRequestPhase.Executing &&
             ReferenceEquals(activeResponse, adapted))

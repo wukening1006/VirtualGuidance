@@ -80,75 +80,77 @@ LAYOUTS = {
 
 # (layout_id, Williams sequence, route-order sequence)
 #
-# 64 个唯一组合构成一个完整块。前 40 个位置经过固定的约束分配，保证
-# N=20...40 的任意停止点上，L1--L4、A--D、RO1--RO4 三组边际计数
-# 的最大差均不超过 1；每个 layout × Williams cell 的差也不超过 1。
+# 64 个唯一组合构成一个完整块。P001--P004 覆盖 L1--L4，后续布局持续
+# 交错分配。前 40 个位置经过固定的约束分配，保证
+# N=20...40 的任意停止点上，布局、Williams
+# 序列、路线序列，以及 layout × Williams、layout × route-order 单元格
+# 的最大计数差均不超过 1。
 # 该表在任何参与者数据产生前固定，不使用实验结果进行自适应换组。
 MASTER_SCHEDULE: tuple[tuple[str, str, str], ...] = (
     ("L2", "B", "RO1"),
-    ("L1", "D", "RO3"),
-    ("L3", "C", "RO4"),
-    ("L3", "A", "RO2"),
-    ("L1", "A", "RO4"),
-    ("L2", "C", "RO2"),
-    ("L3", "B", "RO3"),
-    ("L2", "D", "RO1"),
-    ("L1", "B", "RO2"),
-    ("L3", "D", "RO4"),
-    ("L1", "C", "RO1"),
-    ("L2", "A", "RO3"),
-    ("L2", "D", "RO2"),
-    ("L1", "B", "RO4"),
-    ("L3", "A", "RO1"),
-    ("L1", "C", "RO3"),
-    ("L2", "A", "RO4"),
-    ("L3", "C", "RO2"),
-    ("L1", "D", "RO1"),
-    ("L2", "B", "RO3"),
     ("L3", "D", "RO3"),
-    ("L3", "B", "RO1"),
-    ("L2", "C", "RO4"),
+    ("L4", "C", "RO4"),
     ("L1", "A", "RO2"),
-    ("L2", "C", "RO1"),
+    ("L3", "A", "RO4"),
+    ("L2", "C", "RO2"),
+    ("L4", "B", "RO3"),
+    ("L1", "D", "RO1"),
+    ("L3", "B", "RO2"),
+    ("L2", "D", "RO4"),
+    ("L3", "C", "RO1"),
+    ("L2", "A", "RO3"),
+    ("L4", "D", "RO2"),
+    ("L1", "B", "RO4"),
+    ("L4", "A", "RO1"),
+    ("L1", "C", "RO3"),
+    ("L4", "A", "RO4"),
+    ("L1", "C", "RO2"),
+    ("L2", "D", "RO1"),
+    ("L3", "B", "RO3"),
+    ("L4", "D", "RO3"),
+    ("L1", "B", "RO1"),
+    ("L3", "C", "RO4"),
+    ("L2", "A", "RO2"),
+    ("L4", "C", "RO1"),
     ("L1", "A", "RO3"),
     ("L3", "D", "RO2"),
     ("L2", "B", "RO4"),
-    ("L3", "C", "RO3"),
+    ("L2", "C", "RO3"),
     ("L1", "D", "RO4"),
-    ("L2", "A", "RO1"),
-    ("L3", "B", "RO2"),
-    ("L1", "C", "RO2"),
-    ("L3", "A", "RO4"),
-    ("L1", "B", "RO1"),
-    ("L2", "D", "RO3"),
-    ("L2", "A", "RO2"),
+    ("L3", "A", "RO1"),
+    ("L4", "B", "RO2"),
+    ("L3", "C", "RO2"),
+    ("L2", "A", "RO4"),
+    ("L4", "B", "RO1"),
+    ("L1", "D", "RO3"),
+    ("L4", "A", "RO2"),
     ("L3", "D", "RO1"),
-    ("L1", "B", "RO3"),
+    ("L2", "B", "RO3"),
     ("L1", "C", "RO4"),
     ("L3", "B", "RO4"),
-    ("L2", "C", "RO3"),
-    ("L1", "D", "RO2"),
+    ("L4", "C", "RO3"),
+    ("L2", "D", "RO2"),
     ("L1", "A", "RO1"),
     ("L3", "A", "RO3"),
-    ("L2", "D", "RO4"),
-    ("L3", "C", "RO1"),
-    ("L2", "B", "RO2"),
-    ("L4", "A", "RO1"),
-    ("L4", "A", "RO2"),
+    ("L4", "D", "RO4"),
+    ("L2", "C", "RO1"),
+    ("L1", "B", "RO2"),
+    ("L2", "A", "RO1"),
+    ("L3", "A", "RO2"),
     ("L4", "A", "RO3"),
-    ("L4", "A", "RO4"),
-    ("L4", "B", "RO1"),
-    ("L4", "B", "RO2"),
-    ("L4", "B", "RO3"),
+    ("L1", "A", "RO4"),
+    ("L3", "B", "RO1"),
+    ("L2", "B", "RO2"),
+    ("L1", "B", "RO3"),
     ("L4", "B", "RO4"),
-    ("L4", "C", "RO1"),
+    ("L1", "C", "RO1"),
     ("L4", "C", "RO2"),
-    ("L4", "C", "RO3"),
-    ("L4", "C", "RO4"),
+    ("L3", "C", "RO3"),
+    ("L2", "C", "RO4"),
     ("L4", "D", "RO1"),
-    ("L4", "D", "RO2"),
-    ("L4", "D", "RO3"),
-    ("L4", "D", "RO4"),)
+    ("L1", "D", "RO2"),
+    ("L2", "D", "RO3"),
+    ("L3", "D", "RO4"),)
 
 
 @dataclass(frozen=True)
@@ -400,6 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
 def self_check() -> None:
     assert len(MASTER_SCHEDULE) == 64
     assert len(set(MASTER_SCHEDULE)) == 64
+    # 首批参与者必须覆盖全部布局，避免 L4 被推迟到后半程。
+    assert {layout for layout, _, _ in MASTER_SCHEDULE[:4]} == set(LAYOUTS)
     assert all(set(order) == set(CONDITIONS) for order in CONDITION_SEQUENCES.values())
     assert all(
         set(order) == {"R1", "R2", "R3", "R4"}
@@ -407,8 +411,11 @@ def self_check() -> None:
     )
     for total in range(20, 41):
         differences = audit(total)["max_min_differences"]
+        assert differences["layout"] <= 1
         assert differences["williams_sequence"] <= 1
         assert differences["route_sequence"] <= 1
+        assert differences["layout_x_williams"] <= 1
+        assert differences["layout_x_route_sequence"] <= 1
         assert differences["condition_x_route"] <= 2
 
 
@@ -444,7 +451,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-

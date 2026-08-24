@@ -1,9 +1,9 @@
 {
   "id": "narrow_room",
   "calibration": {
-    "point": [1.0, 2.5],
+    "point": [1.5, 2.5],
     "forward_yaw_degrees": 0.0
   },
-  "boundary": [[0, 0], [2, 0], [2, 5], [0, 5]],
+  "boundary": [[0, 0], [3, 0], [3, 5], [0, 5]],
   "obstacles": []
 }

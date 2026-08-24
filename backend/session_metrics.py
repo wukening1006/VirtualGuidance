@@ -72,6 +72,7 @@ def _event_type(row: dict[str, Any]) -> str:
     aliases = {
         "session.started": "session_started",
         "session.ended": "session_ended",
+        "task.completed": "task_completed",
         "guidance.requested": "guidance_requested",
         "guidance.received": "guidance_received",
         "guidance.holding_for_replan": "holding_for_replan",
@@ -364,6 +365,27 @@ def _candidate_reduction_enabled(condition: str) -> bool:
     return normalized == "ours_rdw_grounded_topk" or normalized == "c3" or normalized == "c4" or normalized.startswith(("c3_", "c4_"))
 
 
+def _experiment_completed(meta: dict[str, Any], events: Iterable[dict[str, Any]]) -> bool:
+    """根据任务终态事件或自动完成原因判断实验是否顺利完成。"""
+    end_reason = str(meta.get("end_reason", "")).strip().lower()
+    return end_reason == "completed_auto" or any(
+        _event_type(row) == "task_completed" for row in events
+    )
+
+
+def _visited_exhibit_ids(events: Iterable[dict[str, Any]]) -> list[str]:
+    """读取日志中最后一次有效的展品访问顺序快照。"""
+    visited: list[str] = []
+    for row in sorted(events, key=_timestamp):
+        value = _payload(row).get("visited_exhibit_ids")
+        if not isinstance(value, list):
+            continue
+        snapshot = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if snapshot:
+            visited = snapshot
+    return visited
+
+
 def build_session_result(session_dir: str | Path) -> dict[str, Any]:
     """重建一个 Session 的可计算指标并写入 ``result.json``。"""
     directory = Path(session_dir)
@@ -503,6 +525,8 @@ def build_session_result(session_dir: str | Path) -> dict[str, Any]:
         "participant_id": meta.get("participant_id", ""),
         "condition": condition,
         "route_id": meta.get("route_id", ""),
+        "experiment_completed": _experiment_completed(meta, events),
+        "visited_exhibit_ids": _visited_exhibit_ids(events),
         "navigation": {
             "virtual_distance_m": distance,
             "navigation_time_s": navigation_time,

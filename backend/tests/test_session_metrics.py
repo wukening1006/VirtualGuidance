@@ -97,6 +97,45 @@ def test_build_session_result_is_rebuildable_and_keeps_valid_counts(tmp_path: Pa
     assert first["llm_efficiency"]["blocking_ratio"] == pytest.approx(0.5)
     assert first["source_counts"]["planner_waiting_valid_n"] == 2
     assert first["llm_efficiency"]["candidate_reduction_rate"] == pytest.approx(0.6)
+    assert first["experiment_completed"] is False
+    assert first["visited_exhibit_ids"] == []
+
+
+def test_result_keeps_last_non_empty_visited_exhibit_order(tmp_path: Path) -> None:
+    session = _session(tmp_path, "P1_S4", reset_count=0)
+    events_path = session / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    events.insert(-1, {"elapsed_s": 2, "data": {"visited_exhibit_ids": ["E1", "E3"]}})
+    events.insert(-1, {"elapsed_s": 8, "data": {"visited_exhibit_ids": ["E1", "E3", "E4", "E5"]}})
+    _write_jsonl(events_path, events)
+
+    result = build_session_result(session)
+
+    assert result["visited_exhibit_ids"] == ["E1", "E3", "E4", "E5"]
+
+
+def test_result_marks_experiment_completed_from_task_terminal_event(tmp_path: Path) -> None:
+    session = _session(tmp_path, "P1_S2", reset_count=0)
+    events_path = session / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    events.insert(-1, {"elapsed_s": 9, "data": {"event_type": "task_completed"}})
+    _write_jsonl(events_path, events)
+
+    result = build_session_result(session)
+
+    assert result["experiment_completed"] is True
+
+
+def test_result_accepts_legacy_completed_auto_end_reason(tmp_path: Path) -> None:
+    session = _session(tmp_path, "P1_S3", reset_count=0)
+    meta_path = session / "session_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["end_reason"] = "completed_auto"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    result = build_session_result(session)
+
+    assert result["experiment_completed"] is True
 
 
 def test_single_reset_session_is_not_dropped(tmp_path: Path) -> None:
