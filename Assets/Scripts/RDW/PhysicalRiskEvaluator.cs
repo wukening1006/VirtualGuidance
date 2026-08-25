@@ -257,6 +257,17 @@ public sealed class PhysicalRiskEvaluator : MonoBehaviour, IPhysicalHeadingEvalu
     /// <summary>判断精确 Heading Evaluation 是否达到可移动的 Safe 等级。</summary>
     public static bool IsMovementSafe(HeadingSample sample) => sample.Safety == HeadingSafety.Safe;
 
+    /// <summary>
+    /// 判断普通动作是否有可用的精确物理航向事实。
+    /// 普通执行不再由 Safe/Unknown/Unsafe 标签决定，自动 Reset 由 CollisionPrediction 触发。
+    /// </summary>
+    public static bool IsMovementExecutable(HeadingSample sample)
+    {
+        return sample.PhysicalForward.sqrMagnitude > 0.0001f &&
+               !float.IsNaN(sample.ClearanceMeters) &&
+               !float.IsInfinity(sample.ClearanceMeters);
+    }
+
     /// <summary>判断精确 Heading Evaluation 是否可作为原地转向后的恢复朝向。</summary>
     public static bool IsRecoveryHeadingAcceptable(HeadingSample sample)
     {

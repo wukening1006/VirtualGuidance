@@ -445,18 +445,14 @@ public sealed class SemanticTargetSelector : MonoBehaviour
             return CandidateExecutionState.Unknown;
         }
 
-        if (heading.Safety == HeadingSafety.Safe)
+        if (PhysicalRiskEvaluator.IsMovementExecutable(heading))
         {
             reason = string.Empty;
             return CandidateExecutionState.Executable;
         }
 
-        reason = heading.Safety == HeadingSafety.Unknown
-            ? "exact_direction_requires_hold"
-            : "exact_direction_clearance_blocked";
-        return heading.Safety == HeadingSafety.Unknown
-            ? CandidateExecutionState.TemporarilyBlocked
-            : CandidateExecutionState.Blocked;
+        reason = "exact_direction_physical_facts_invalid";
+        return CandidateExecutionState.Blocked;
     }
 
     private static Vector2 RotatePhysicalForward(Vector2 forward, float yawDegrees)

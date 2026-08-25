@@ -118,7 +118,7 @@ public sealed class LocalGuidanceValidator : MonoBehaviour
                 currentRiskState,
                 exactPhysicalDirection,
                 out var exactHeading) ||
-            !PhysicalRiskEvaluator.IsMovementSafe(exactHeading))
+            !PhysicalRiskEvaluator.IsMovementExecutable(exactHeading))
         {
             reason = "Local RDW check rejected the selected target exact physical direction.";
             return false;

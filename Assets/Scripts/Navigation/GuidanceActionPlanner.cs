@@ -121,9 +121,9 @@ public sealed class GuidanceActionSafetyEvaluator
         switch (action.Type)
         {
             case GuidanceActionType.MoveForward:
-                return EvaluateHeading(action, riskState, null, 0f, true, out reason);
+                return EvaluateHeading(action, riskState, null, 0f, out reason);
             case GuidanceActionType.TurnInPlace:
-                return EvaluateHeading(action, riskState, null, action.TargetYawDegrees, false, out reason);
+                return EvaluateHeading(action, riskState, null, action.TargetYawDegrees, out reason);
             case GuidanceActionType.Hold:
             case GuidanceActionType.Reevaluate:
                 reason = "action_requires_reevaluation";
@@ -150,9 +150,9 @@ public sealed class GuidanceActionSafetyEvaluator
         switch (action.Type)
         {
             case GuidanceActionType.MoveForward:
-                return EvaluateHeading(action, riskState, evaluator, 0f, true, out reason);
+                return EvaluateHeading(action, riskState, evaluator, 0f, out reason);
             case GuidanceActionType.TurnInPlace:
-                return EvaluateHeading(action, riskState, evaluator, action.TargetYawDegrees, false, out reason);
+                return EvaluateHeading(action, riskState, evaluator, action.TargetYawDegrees, out reason);
             case GuidanceActionType.Hold:
             case GuidanceActionType.Reevaluate:
                 reason = "action_requires_reevaluation";
@@ -168,7 +168,6 @@ public sealed class GuidanceActionSafetyEvaluator
         PhysicalRiskState riskState,
         IPhysicalHeadingEvaluator evaluator,
         float relativeYawDegrees,
-        bool requireMovementSafe,
         out string reason)
     {
         var currentForward = riskState.user_physical_forward.sqrMagnitude > 0.0001f
@@ -200,21 +199,15 @@ public sealed class GuidanceActionSafetyEvaluator
             return CandidateExecutionState.Unknown;
         }
 
-        var executable = requireMovementSafe
-            ? PhysicalRiskEvaluator.IsMovementSafe(heading)
-            : PhysicalRiskEvaluator.IsRecoveryHeadingAcceptable(heading);
+        var executable = PhysicalRiskEvaluator.IsMovementExecutable(heading);
         if (executable)
         {
             reason = string.Empty;
             return CandidateExecutionState.Executable;
         }
 
-        reason = heading.Safety == HeadingSafety.Unknown
-            ? "heading_requires_hold"
-            : "heading_clearance_blocked";
-        return heading.Safety == HeadingSafety.Unknown
-            ? CandidateExecutionState.TemporarilyBlocked
-            : CandidateExecutionState.Blocked;
+        reason = "heading_physical_facts_invalid";
+        return CandidateExecutionState.Blocked;
     }
 }
 

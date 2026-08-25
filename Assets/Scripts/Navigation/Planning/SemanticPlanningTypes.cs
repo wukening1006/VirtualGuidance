@@ -698,11 +698,9 @@ public sealed class GuidanceExecutionSafetyEvaluator
             return false;
         }
 
-        var executionState = heading.Safety == HeadingSafety.Safe
+        var executionState = PhysicalRiskEvaluator.IsMovementExecutable(heading)
             ? CandidateExecutionState.Executable
-            : heading.Safety == HeadingSafety.Unknown
-                ? CandidateExecutionState.TemporarilyBlocked
-                : CandidateExecutionState.Blocked;
+            : CandidateExecutionState.Blocked;
         candidate = new ExecutableTargetCandidate(
             targetId,
             targetRole,

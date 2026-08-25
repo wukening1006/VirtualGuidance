@@ -36331,7 +36331,7 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   resetSemanticInterventionManager: {fileID: 0}
-  resetSemanticInterventionEnabled: 0
+  resetSemanticInterventionEnabled: 1
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 1
   continuousRedirectorMode: 1
@@ -39269,7 +39269,7 @@ MonoBehaviour:
   physicalSpaceManager: {fileID: 2100100001}
   userPoseTracker: {fileID: 2100100002}
   physicalSpaceCalibration: {fileID: 0}
-  evaluationIntervalSeconds: 0.1
+  evaluationIntervalSeconds: 0.2
   maxClearanceMeters: 3
   unsafeClearanceMeters: 0.8
   safeClearanceMeters: 0.8

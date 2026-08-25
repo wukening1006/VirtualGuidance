@@ -587,10 +587,6 @@ public sealed class RotationGainController : MonoBehaviour
         {
             AbortGain("tracking_invalid");
         }
-        else if (riskState.reset_required)
-        {
-            AbortGain("reset_required");
-        }
         else if (riskState.boundary_context != null &&
                  riskState.boundary_context.Count >= 3 &&
                  !PhysicalSpaceGeometry.ContainsPoint(
@@ -598,17 +594,6 @@ public sealed class RotationGainController : MonoBehaviour
                      riskState.user_physical_position))
         {
             AbortGain("outside_physical_boundary");
-        }
-        else if (riskEvaluator != null &&
-                 riskEvaluator.TryEvaluateAbsoluteHeading(
-                     riskState,
-                     RotatePhysicalForward(
-                         riskState.user_physical_forward,
-                         expectedDirectionSign * Mathf.Min(180f, currentTargetPhysicalYawDegrees)),
-                     out var plannedHeading) &&
-                 plannedHeading.Safety == HeadingSafety.Critical)
-        {
-            AbortGain("planned_heading_critical");
         }
     }
 

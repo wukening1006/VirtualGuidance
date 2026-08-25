@@ -181,7 +181,7 @@ public sealed class S2CPlanningCostEstimator : IRdwPlanningCostEstimator
         var predictedTravel = Mathf.Min(edgeDistance, heading.ClearanceMeters * 0.8f);
         var predictedPhysicalPosition = traversal.PhysicalPositionXZ +
                                         predictedPhysicalHeading * Mathf.Max(0f, predictedTravel);
-        var feasible = heading.Safety == HeadingSafety.Safe;
+        var feasible = PhysicalRiskEvaluator.IsMovementExecutable(heading);
         return new RdwEdgeEvaluation(
             relativeYaw,
             predictedPhysicalHeading,
@@ -346,7 +346,7 @@ internal static class RdwPlanningCostEstimatorMath
         var predictedTravel = Mathf.Min(inputs.VirtualDelta.magnitude, inputs.Heading.ClearanceMeters * 0.8f);
         var predictedPhysicalPosition = traversal.PhysicalPositionXZ +
                                         inputs.PredictedPhysicalHeading * Mathf.Max(0f, predictedTravel);
-        var feasible = inputs.Heading.Safety == HeadingSafety.Safe;
+        var feasible = PhysicalRiskEvaluator.IsMovementExecutable(inputs.Heading);
         return new RdwEdgeEvaluation(
             inputs.RelativeYawDegrees,
             inputs.PredictedPhysicalHeading,
