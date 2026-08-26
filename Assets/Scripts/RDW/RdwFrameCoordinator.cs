@@ -388,7 +388,7 @@ public sealed class RdwFrameCoordinator : IRdwGainCommandSink
             return default;
         }
 
-        var anchor = metadata.ViewPoint != null ? metadata.ViewPoint : metadata.transform;
+        var anchor = metadata.GazeTarget != null ? metadata.GazeTarget : metadata.transform;
         var targetPosition = new Vector2(anchor.position.x, anchor.position.z);
         return new RdwNavigationIntent(
             target.TargetId,

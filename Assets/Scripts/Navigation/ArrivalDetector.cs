@@ -96,15 +96,15 @@ public sealed class ArrivalDetector : MonoBehaviour
     {
         var hasValidCollider = false;
         var closestDistanceSquared = float.PositiveInfinity;
-        var viewPoint = target.ViewPoint;
+        var gazeTarget = target.GazeTarget;
 
         foreach (var collider in watchedTargetColliders)
         {
             if (collider == null ||
                 !collider.enabled ||
                 !collider.gameObject.activeInHierarchy ||
-                (viewPoint != null &&
-                 (collider.transform == viewPoint || collider.transform.IsChildOf(viewPoint))))
+                (gazeTarget != null &&
+                 (collider.transform == gazeTarget || collider.transform.IsChildOf(gazeTarget))))
             {
                 continue;
             }

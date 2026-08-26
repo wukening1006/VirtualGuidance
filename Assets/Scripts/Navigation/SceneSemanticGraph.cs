@@ -105,7 +105,7 @@ public sealed class SceneBindingDefinition
     [JsonProperty("scene_path", Required = Required.Always)] public string scene_path;
     /// <summary>Anchor 世界坐标，单位：米。</summary>
     [JsonProperty("position", Required = Required.Always)] public float[] position;
-    /// <summary>ViewPoint 世界坐标，单位：米。</summary>
+    /// <summary>兼容保留的 ViewPoint 世界坐标，单位：米。</summary>
     [JsonProperty("viewpoint", Required = Required.Always)] public float[] viewpoint;
     /// <summary>GazeTarget 世界坐标，单位：米。</summary>
     [JsonProperty("gaze_target", Required = Required.Always)] public float[] gaze_target;
@@ -473,7 +473,7 @@ public sealed class SceneSemanticsLoader : MonoBehaviour
 }
 
 /// <summary>
-/// v4 静态场景语义图。只保存内容语义关系；导航几何来自运行时 ViewPoint。
+/// v4 静态场景语义图。只保存内容语义关系；导航几何来自运行时 GazeTarget。
 /// </summary>
 public sealed class StaticSceneSemanticGraph
 {

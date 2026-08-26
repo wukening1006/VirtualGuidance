@@ -167,7 +167,7 @@ public sealed class NavigationTargetManager : MonoBehaviour
             return false;
         }
 
-        var anchor = target.ViewPoint != null ? target.ViewPoint : target.transform;
+        var anchor = target.GazeTarget != null ? target.GazeTarget : target.transform;
         var userPosition = userPoseTracker.UserVirtualPosition;
         var userForward = Vector3.ProjectOnPlane(userPoseTracker.UserVirtualForward, Vector3.up);
         var toTarget = Vector3.ProjectOnPlane(anchor.position - userPosition, Vector3.up);

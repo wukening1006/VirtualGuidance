@@ -106,7 +106,7 @@ public sealed class RdwPlanningSnapshotFactory
 /// </summary>
 public sealed class RdwPlanningNodeFactory
 {
-    /// <summary>把 Candidate Set 与运行时 ViewPoint 转换为规划节点集合。</summary>
+    /// <summary>把 Candidate Set 与运行时 GazeTarget 转换为规划节点集合。</summary>
     public IReadOnlyList<PlanningNode> Capture(
             RdwPlanningSnapshot snapshot,
             NavigationCandidateSet candidateSet,
@@ -128,7 +128,7 @@ public sealed class RdwPlanningNodeFactory
             {
                 continue;
             }
-            var anchor = metadata.ViewPoint != null ? metadata.ViewPoint : metadata.transform;
+            var anchor = metadata.GazeTarget != null ? metadata.GazeTarget : metadata.transform;
             var position = anchor.position;
             result.Add(new PlanningNode(
                 candidate.TargetId,
@@ -142,7 +142,7 @@ public sealed class RdwPlanningNodeFactory
             !ContainsNode(result, snapshot.CurrentNodeId))
         {
             var currentAnchor = navigationTargets.TryGetTarget(snapshot.CurrentNodeId, out var currentMetadata)
-                ? (currentMetadata.ViewPoint != null ? currentMetadata.ViewPoint : currentMetadata.transform)
+                ? (currentMetadata.GazeTarget != null ? currentMetadata.GazeTarget : currentMetadata.transform)
                 : null;
             var currentPosition = currentAnchor != null
                 ? new Vector2(currentAnchor.position.x, currentAnchor.position.z)
