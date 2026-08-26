@@ -8,7 +8,7 @@
   "obstacles": [
     {
       "id": "obstacle_01",
-      "center": [2.0, 3.2],
+      "center": [1.0, 1.2],
       "radius": 0.20
     }
   ]
