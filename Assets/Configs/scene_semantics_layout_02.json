@@ -1,0 +1,798 @@
+﻿{
+  "schema_version": 4,
+  "scene_id": "sanxingdui_gallery",
+  "scene_name": "三星堆古蜀文明虚拟展厅",
+  "coordinate_system": "Unity X-Z ground plane, Y-up",
+  "layout": {
+    "units": "meters",
+    "floor_origin": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "floor_center": [
+      0.0,
+      0.0,
+      7.0
+    ],
+    "floor_size_m": {
+      "width": 12.0,
+      "length": 14.0
+    },
+    "floor_bounds": {
+      "x_min": -6.0,
+      "x_max": 6.0,
+      "z_min": 0.0,
+      "z_max": 14.0
+    },
+    "entrance_side": "z_min"
+  },
+  "themes": [
+    {
+      "id": "TH_CIVILIZATION",
+      "name": "古蜀文明与三星堆",
+      "description": "围绕三星堆遗址、古蜀文明及其在中国青铜时代区域文明发展中的独特面貌建立整体背景。"
+    },
+    {
+      "id": "TH_BRONZE",
+      "name": "青铜艺术与铸造",
+      "description": "关注三星堆大型青铜器、人物形青铜器和复杂复合造型所体现的工艺与审美特征。"
+    },
+    {
+      "id": "TH_HUMAN_IMAGE",
+      "name": "人物、面具与身份表达",
+      "description": "通过人头像、纵目面具、大立人和戴金面罩人头像比较人物形象、身份差异与神圣化表达。"
+    },
+    {
+      "id": "TH_RITUAL",
+      "name": "祭祀、礼仪与神圣秩序",
+      "description": "从人物、面具、神树、金饰等器物组合讨论三星堆遗址中礼仪活动与神圣表达的考古语境。"
+    },
+    {
+      "id": "TH_COSMOLOGY",
+      "name": "自然象征与宇宙观",
+      "description": "以神树、太阳形器、纵目形象等为线索讨论古蜀文化中可能涉及的天地、太阳、树木和超自然观念；具体对应关系保留解释边界。"
+    },
+    {
+      "id": "TH_GOLD",
+      "name": "金与青铜的复合表达",
+      "description": "关注金面罩与青铜人头像的材料组合、视觉差异及其可能涉及的身份和仪式意义。"
+    },
+    {
+      "id": "TH_ARCHAEOLOGY",
+      "name": "考古证据与解释边界",
+      "description": "强调器物形制、材料、出土语境属于可观察证据，而人物身份、神祇名称和具体宗教含义需要区分不同程度的学术解释。"
+    }
+  ],
+  "exhibits": [
+    {
+      "id": "E1",
+      "name": "古蜀文明序章",
+      "aliases": [
+        "三星堆序章",
+        "古蜀文明导入"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E1_Visual",
+        "position": [
+          4.35,
+          0.0,
+          3.8
+        ],
+        "viewpoint": [
+          4.35,
+          0.0,
+          2.4
+        ],
+        "gaze_target": [
+          4.35,
+          1.25,
+          3.8
+        ]
+      },
+      "knowledge": {
+        "entity_type": "thematic_context",
+        "category": "文明背景",
+        "material": null,
+        "culture": "古蜀文明 / 三星堆文化",
+        "chronology": "中国青铜时代的古蜀文化发展阶段",
+        "archaeological_context": "三星堆遗址位于四川广汉，是认识古蜀文明的重要考古遗址。遗址出土的大量青铜器、金器、玉器、象牙等材料，为理解古蜀社会、艺术与精神世界提供了重要证据。",
+        "description": "本展项建立整个虚拟展厅的知识背景：三星堆最显著的文化面貌来自独特的人物形青铜器、大型面具、青铜神树、金器和其他礼仪性器物。理解这些材料需要同时关注器物本身、考古语境以及解释的不确定性。",
+        "visual_features": [
+          "遗址与古蜀文明背景信息",
+          "代表性人物、面具、神树与金器的组合性视觉导入"
+        ],
+        "cultural_significance": [
+          "展示古蜀文明独特而高度发展的青铜文化面貌",
+          "为人物形象、祭祀礼仪、自然象征与宇宙观等主题提供共同背景",
+          "体现中华文明多元发展的区域文化特征"
+        ],
+        "key_concepts": [
+          "三星堆遗址",
+          "古蜀文明",
+          "青铜时代",
+          "人物形青铜器",
+          "礼仪性器物",
+          "考古解释"
+        ],
+        "themes": [
+          "TH_CIVILIZATION",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "三星堆遗址是认识古蜀文明的重要考古遗址。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "三星堆全部特殊器物都可以对应到确定的历史人物、神祇或神话名称。",
+            "status": "not_established",
+            "note": "具体身份和宗教含义仍存在多种解释，不应作为确定事实。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E2",
+      "name": "青铜人头像",
+      "aliases": [
+        "三星堆青铜人头像"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E2_Visual",
+        "position": [
+          0.0,
+          0.0,
+          12.45
+        ],
+        "viewpoint": [
+          0.0,
+          0.0,
+          10.85
+        ],
+        "gaze_target": [
+          0.0,
+          1.35,
+          12.45
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "青铜人物头像",
+        "material": [
+          "青铜"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "三星堆遗址出土了多件人物形青铜头像，不同个体在发式、冠饰、脸形和附加装饰等方面存在差异。",
+        "description": "青铜人头像以高度概括和几何化的方式塑造人物面貌，是理解三星堆人物形象体系的基础。不同头像之间的造型差异为讨论身份、角色与社会区分提供了重要线索，但目前无法仅凭头像确定其具体历史身份。",
+        "visual_features": [
+          "几何化、概括化的面部轮廓",
+          "突出的眼、眉、鼻、耳等五官",
+          "不同发式、冠式或头部装饰",
+          "部分同类人头像可与金面罩形成材料组合"
+        ],
+        "cultural_significance": [
+          "体现三星堆鲜明的人物造型传统",
+          "为比较普通人物形象与夸张神圣形象提供基准",
+          "为讨论身份、角色与礼仪人物提供视觉证据"
+        ],
+        "key_concepts": [
+          "人物形象",
+          "身份表达",
+          "青铜铸造",
+          "发式与冠饰",
+          "礼仪角色"
+        ],
+        "themes": [
+          "TH_BRONZE",
+          "TH_HUMAN_IMAGE",
+          "TH_RITUAL",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "不同头像之间存在明确的造型差异。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "这些差异可能与身份、角色或等级有关。",
+            "status": "reasonable_inference"
+          },
+          {
+            "statement": "某一类头像能够确定对应某一位具体历史人物。",
+            "status": "not_established"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E3",
+      "name": "青铜纵目面具",
+      "aliases": [
+        "纵目面具",
+        "三星堆青铜纵目面具"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E3_Visual",
+        "position": [
+          2.175,
+          0.0,
+          7.15
+        ],
+        "viewpoint": [
+          3.825,
+          0.0,
+          7.15
+        ],
+        "gaze_target": [
+          2.175,
+          1.3,
+          7.15
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "大型青铜面具",
+        "material": [
+          "青铜"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "大型纵目造型面具是三星堆人物形青铜器中最具辨识度的类型之一，常与祭祀和神圣形象问题一同讨论。",
+        "description": "青铜纵目面具以向前突出的眼部、向两侧展开的耳部和巨大的面部尺度形成强烈的超现实视觉效果。它将普通人脸特征放大并异化，因此是研究三星堆神圣人物形象、视觉象征和古蜀精神世界的重要材料。",
+        "visual_features": [
+          "双眼明显向前突出",
+          "双耳向两侧伸展",
+          "面部尺度巨大",
+          "五官高度夸张并具有强烈对称性"
+        ],
+        "cultural_significance": [
+          "构成三星堆最具代表性的视觉符号之一",
+          "体现人物形象由写实倾向向超常、神圣形象的转化",
+          "为讨论观看、神圣性和超自然观念提供重要材料"
+        ],
+        "key_concepts": [
+          "纵目",
+          "大型青铜面具",
+          "神圣形象",
+          "超自然表达",
+          "祭祀语境",
+          "古蜀信仰"
+        ],
+        "themes": [
+          "TH_BRONZE",
+          "TH_HUMAN_IMAGE",
+          "TH_RITUAL",
+          "TH_COSMOLOGY",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "面具具有明显的纵目和夸张五官特征。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "纵目可能表达超常视觉能力或神圣性。",
+            "status": "interpretive"
+          },
+          {
+            "statement": "纵目面具就是传说中古蜀王蚕丛的确定形象。",
+            "status": "debated",
+            "note": "可作为传统文献与器物解释之间的关联讨论，但缺乏可以直接确认身份的证据。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E4",
+      "name": "青铜大立人像",
+      "aliases": [
+        "青铜大立人",
+        "三星堆青铜立人像"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E4_Visual",
+        "position": [
+          4.35,
+          0.0,
+          10.5
+        ],
+        "viewpoint": [
+          2.7,
+          0.0,
+          10.5
+        ],
+        "gaze_target": [
+          4.35,
+          1.3,
+          10.5
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "大型青铜人物像",
+        "material": [
+          "青铜"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "青铜大立人像是三星堆大型人物形青铜器的重要代表，其冠服、身体姿态、手势和高大的体量长期被用于讨论古蜀社会中的仪式角色与权威表达。",
+        "description": "大立人以完整站立的人体、复杂冠服和双手环握式姿态呈现出强烈的仪式性。双手原本是否持有某种器物、人物究竟代表祭司、首领还是其他神圣角色仍有争议，但其规模与造型都表明它在三星堆人物形象体系中具有特殊地位。",
+        "visual_features": [
+          "完整站立的人体形象",
+          "高大的整体尺度",
+          "复杂的冠服与衣纹",
+          "双手在身体前方呈环握或执持姿态",
+          "整体姿态庄重、稳定"
+        ],
+        "cultural_significance": [
+          "体现三星堆大型青铜人物造型和铸造能力",
+          "为讨论礼仪活动中的人物角色和权威表达提供核心材料",
+          "与青铜人头像和纵目面具共同构成人物形象的多层次谱系"
+        ],
+        "key_concepts": [
+          "立人",
+          "仪式人物",
+          "权威",
+          "冠服",
+          "手势",
+          "大型青铜铸造"
+        ],
+        "themes": [
+          "TH_BRONZE",
+          "TH_HUMAN_IMAGE",
+          "TH_RITUAL",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "人物具有复杂冠服和显著的执持式手势。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "其姿态和体量可能与重要礼仪角色或权威身份有关。",
+            "status": "reasonable_inference"
+          },
+          {
+            "statement": "双手原本所持器物及人物的具体身份已经确定。",
+            "status": "not_established"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E5",
+      "name": "青铜神树",
+      "aliases": [
+        "三星堆青铜神树",
+        "青铜神树"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E5_Visual",
+        "position": [
+          -2.175,
+          0.0,
+          7.15
+        ],
+        "viewpoint": [
+          -2.175,
+          0.0,
+          5.4
+        ],
+        "gaze_target": [
+          -2.175,
+          1.4,
+          7.15
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "大型树形青铜器",
+        "material": [
+          "青铜"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "三星堆出土的青铜神树由树干、枝条以及鸟、果实等多种造型元素构成，是大型复合青铜器的重要代表。",
+        "description": "青铜神树以垂直生长的树体组织多层枝叶和动物、果实等元素，将自然形象转化为高度仪式化的青铜构造。它常被视为理解三星堆自然崇拜、神圣空间和天地想象的重要材料，但与具体古代神话中的某棵神树建立一一对应关系仍属于解释。",
+        "visual_features": [
+          "高大的垂直树形结构",
+          "多层分枝",
+          "枝条上组合鸟形、果实或花蕾等元素",
+          "自然形态与青铜构件高度复合"
+        ],
+        "cultural_significance": [
+          "代表三星堆大型复杂青铜器的突出成就",
+          "将树木、鸟类等自然意象转化为神圣化视觉结构",
+          "是讨论古蜀自然观、天地关系和宇宙观的重要核心材料"
+        ],
+        "key_concepts": [
+          "神树",
+          "树崇拜",
+          "鸟",
+          "自然象征",
+          "天地关系",
+          "宇宙观"
+        ],
+        "themes": [
+          "TH_BRONZE",
+          "TH_RITUAL",
+          "TH_COSMOLOGY",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "器物具有明确的树形结构，并组合鸟、果实等自然形象。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "青铜神树可能与神圣树木、天地沟通或宇宙秩序观念有关。",
+            "status": "interpretive"
+          },
+          {
+            "statement": "该神树可以确定等同于古代文献中的扶桑、建木或若木中的某一种。",
+            "status": "debated",
+            "note": "不同研究存在不同对应解释，缺乏唯一结论。"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E6",
+      "name": "戴金面罩青铜人头像",
+      "aliases": [
+        "金面罩青铜人头像",
+        "戴金面罩人头像"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E6_Visual",
+        "position": [
+          0.0,
+          0.0,
+          2.2
+        ],
+        "viewpoint": [
+          1.8,
+          0.0,
+          2.2
+        ],
+        "gaze_target": [
+          0.0,
+          1.4,
+          2.2
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "金与青铜复合人物头像",
+        "material": [
+          "青铜",
+          "金"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "部分三星堆青铜人头像表面覆有金质面罩，形成金与青铜两种材料结合的人物形象。",
+        "description": "戴金面罩青铜人头像在普通青铜人头像的基础上增加金质覆盖，使人物面部产生明显的材料和视觉等级差异。金面罩可能与特定身份、礼仪角色或神圣化表达有关，但其具体意义仍需谨慎解释。",
+        "visual_features": [
+          "青铜人头像基本形制",
+          "面部覆盖金质面罩",
+          "金色表面与青铜基体形成强烈材质对比",
+          "人物形象因覆金而产生更突出的视觉焦点"
+        ],
+        "cultural_significance": [
+          "体现三星堆金器与青铜人物形象的复合使用",
+          "为比较不同人物形象的材料差异和身份表达提供直接证据",
+          "揭示金在古蜀礼仪与视觉文化中的特殊价值"
+        ],
+        "key_concepts": [
+          "金面罩",
+          "青铜人头像",
+          "复合材料",
+          "身份差异",
+          "神圣化",
+          "礼仪"
+        ],
+        "themes": [
+          "TH_HUMAN_IMAGE",
+          "TH_RITUAL",
+          "TH_GOLD",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "金质面罩与青铜人头像形成明确的材料复合关系。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "覆金可能用于强化身份、权威或神圣属性。",
+            "status": "reasonable_inference"
+          },
+          {
+            "statement": "所有覆金头像都代表同一种确定社会身份。",
+            "status": "not_established"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E7",
+      "name": "青铜太阳形器",
+      "aliases": [
+        "太阳形青铜器",
+        "青铜太阳轮形器"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E7_Visual",
+        "position": [
+          -4.35,
+          0.0,
+          3.8
+        ],
+        "viewpoint": [
+          -6.15,
+          0.0,
+          3.8
+        ],
+        "gaze_target": [
+          -4.35,
+          1.4,
+          3.8
+        ]
+      },
+      "knowledge": {
+        "entity_type": "artifact",
+        "category": "圆形青铜器",
+        "material": [
+          "青铜"
+        ],
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "三星堆文化青铜器集中出现的繁盛阶段",
+        "archaeological_context": "三星堆出土的太阳形青铜器以中心圆毂和向外放射的构件形成鲜明的放射状结构，其具体用途和象征意义仍有讨论。",
+        "description": "青铜太阳形器采用高度规则的圆形和放射状构图，现代观察者很容易将其联想到太阳。太阳崇拜是常见解释之一，但器物名称和视觉相似性不能直接证明其唯一功能，因此更适合作为讨论三星堆自然象征和古蜀宇宙观的开放性证据。",
+        "visual_features": [
+          "整体呈圆形",
+          "中心圆形结构明显",
+          "构件由中心向外放射",
+          "具有强烈的几何秩序和对称性"
+        ],
+        "cultural_significance": [
+          "体现三星堆青铜造型中的几何化与象征性表达",
+          "为讨论太阳、光明、天体与自然崇拜提供重要线索",
+          "与神树共同构成理解古蜀自然象征和宇宙观的重要材料组合"
+        ],
+        "key_concepts": [
+          "太阳形器",
+          "放射结构",
+          "太阳象征",
+          "自然崇拜",
+          "天体",
+          "宇宙观"
+        ],
+        "themes": [
+          "TH_BRONZE",
+          "TH_RITUAL",
+          "TH_COSMOLOGY",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "器物具有显著的圆形与放射状结构。",
+            "status": "well_supported"
+          },
+          {
+            "statement": "其形制可能与太阳意象或太阳崇拜有关。",
+            "status": "interpretive"
+          },
+          {
+            "statement": "该器物的具体用途和宗教含义已经完全确定。",
+            "status": "not_established"
+          }
+        ]
+      }
+    },
+    {
+      "id": "E8",
+      "name": "古蜀祭祀世界",
+      "aliases": [
+        "古蜀信仰综合展项",
+        "三星堆祭祀世界"
+      ],
+      "scene_binding": {
+        "scene_path": "VirtualGuidance_B_Root/ExhibitVisuals/E8_Visual",
+        "position": [
+          -4.35,
+          0.0,
+          10.5
+        ],
+        "viewpoint": [
+          -4.35,
+          0.0,
+          8.7
+        ],
+        "gaze_target": [
+          -4.35,
+          1.45,
+          10.5
+        ]
+      },
+      "knowledge": {
+        "entity_type": "thematic_synthesis",
+        "category": "祭祀与精神世界综合",
+        "material": null,
+        "culture": "三星堆文化 / 古蜀文明",
+        "chronology": "对三星堆青铜时代礼仪与精神文化的主题性综合",
+        "archaeological_context": "以三星堆遗址出土的人物形青铜器、面具、神树、金器、太阳形器及其他礼仪性遗物作为综合讨论的证据基础。",
+        "description": "本展项把人头像、纵目面具、大立人、神树、金面罩和太阳形器放入同一个关系网络中理解。人物形象提供身份和仪式角色线索，神树与太阳形器打开自然象征和宇宙观问题，金面罩体现材料差异和视觉等级。它强调三星堆精神世界可以通过多类器物相互印证，但目前仍不能完整复原其全部宗教体系。",
+        "visual_features": [
+          "人物、面具、神树、太阳与金饰等多类语义元素汇聚",
+          "强调不同器物之间的关系而非单件器物展示"
+        ],
+        "cultural_significance": [
+          "综合呈现三星堆礼仪、人物身份、自然象征和神圣表达之间的关系",
+          "帮助区分考古事实与后世解释",
+          "体现三星堆精神文化研究依赖多类证据共同建构"
+        ],
+        "key_concepts": [
+          "祭祀",
+          "礼仪",
+          "人物身份",
+          "神圣形象",
+          "自然象征",
+          "宇宙观",
+          "证据与解释"
+        ],
+        "themes": [
+          "TH_CIVILIZATION",
+          "TH_HUMAN_IMAGE",
+          "TH_RITUAL",
+          "TH_COSMOLOGY",
+          "TH_GOLD",
+          "TH_ARCHAEOLOGY"
+        ],
+        "interpretation_notes": [
+          {
+            "statement": "多类特殊器物共同显示三星堆文化具有复杂的礼仪和精神表达。",
+            "status": "well_supported_general_context"
+          },
+          {
+            "statement": "可以利用多类器物之间的关系讨论古蜀人的精神世界。",
+            "status": "supported_synthesis"
+          },
+          {
+            "statement": "现有考古材料已经能够完整恢复古蜀宗教体系、神名和全部仪式程序。",
+            "status": "not_established"
+          }
+        ]
+      }
+    }
+  ],
+  "semantic_edges": [
+    {
+      "id": "SE01",
+      "source": "E1",
+      "target": "E2",
+      "relation_type": "context_of",
+      "directed": true,
+      "description": "古蜀文明总体背景为理解三星堆人物形青铜器及其身份表达提供基础。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE02",
+      "source": "E1",
+      "target": "E3",
+      "relation_type": "context_of",
+      "directed": true,
+      "description": "纵目面具是从古蜀文明总体背景进入神圣人物形象与超常视觉表达主题的重要展项。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE03",
+      "source": "E1",
+      "target": "E4",
+      "relation_type": "context_of",
+      "directed": true,
+      "description": "青铜大立人将古蜀文明背景进一步引向大型人物造型、礼仪角色与权威表达。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE04",
+      "source": "E2",
+      "target": "E3",
+      "relation_type": "compare_with",
+      "directed": false,
+      "description": "青铜人头像与纵目面具都以人物面部为核心，但后者通过夸张眼部和巨大尺度形成更强烈的超常与神圣表达。",
+      "evidence_status": "direct"
+    },
+    {
+      "id": "SE05",
+      "source": "E2",
+      "target": "E4",
+      "relation_type": "same_category",
+      "directed": false,
+      "description": "两者都属于人物形青铜器；人头像集中表现头部与面部特征，大立人则扩展到完整身体、冠服、手势和仪式姿态。",
+      "evidence_status": "direct"
+    },
+    {
+      "id": "SE06",
+      "source": "E2",
+      "target": "E6",
+      "relation_type": "variant_of",
+      "directed": false,
+      "description": "戴金面罩青铜人头像以普通青铜人头像为直接比较基础，覆金材料形成清晰的材质与视觉差异。",
+      "evidence_status": "direct"
+    },
+    {
+      "id": "SE07",
+      "source": "E3",
+      "target": "E4",
+      "relation_type": "compare_with",
+      "directed": false,
+      "description": "纵目面具与大立人分别呈现夸张神圣面貌和完整仪式人物，可用于比较三星堆人物形象体系中不同层次的神圣化与礼仪表达。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE08",
+      "source": "E3",
+      "target": "E5",
+      "relation_type": "thematic_association",
+      "directed": false,
+      "description": "纵目面具与青铜神树都常被置于古蜀神圣观念、祭祀和宇宙秩序问题中讨论，但二者之间不存在已被证实的直接宗教对应关系。",
+      "evidence_status": "interpretive"
+    },
+    {
+      "id": "SE09",
+      "source": "E3",
+      "target": "E7",
+      "relation_type": "thematic_association",
+      "directed": false,
+      "description": "纵目形象与太阳形器可共同进入观看、光明、太阳意象等象征性讨论，但二者的直接宗教对应关系尚无确定证据。",
+      "evidence_status": "interpretive"
+    },
+    {
+      "id": "SE10",
+      "source": "E4",
+      "target": "E6",
+      "relation_type": "compare_with",
+      "directed": false,
+      "description": "大立人的冠服、体量与手势，以及戴金面罩人头像的覆金材料，都可作为比较身份、权威和神圣化视觉表达的不同证据。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE11",
+      "source": "E5",
+      "target": "E7",
+      "relation_type": "thematic_association",
+      "directed": false,
+      "description": "神树与太阳形器都将自然意象转化为高度象征化的青铜造型，可共同支撑对古蜀自然观与宇宙观的讨论。",
+      "evidence_status": "contextual"
+    },
+    {
+      "id": "SE12",
+      "source": "E4",
+      "target": "E8",
+      "relation_type": "synthesis_into",
+      "directed": true,
+      "description": "大立人提供仪式人物、礼仪角色和权威表达的核心证据，可汇入对古蜀祭祀世界的综合理解。",
+      "evidence_status": "supported"
+    },
+    {
+      "id": "SE13",
+      "source": "E5",
+      "target": "E8",
+      "relation_type": "synthesis_into",
+      "directed": true,
+      "description": "青铜神树提供树木、鸟、天地关系与神圣自然等线索，可汇入对古蜀祭祀与宇宙观的综合讨论。",
+      "evidence_status": "contextual"
+    },
+    {
+      "id": "SE14",
+      "source": "E6",
+      "target": "E8",
+      "relation_type": "synthesis_into",
+      "directed": true,
+      "description": "金与青铜的复合人物形象为身份差异、视觉等级和神圣化表达提供材料证据，可汇入古蜀祭祀世界的综合理解。",
+      "evidence_status": "supported"
+    }
+  ]
+}

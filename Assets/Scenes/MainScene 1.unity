@@ -36331,7 +36331,7 @@ MonoBehaviour:
   localGuidanceValidator: {fileID: 1039273995}
   pauseResetController: {fileID: 1039273992}
   resetSemanticInterventionManager: {fileID: 0}
-  resetSemanticInterventionEnabled: 1
+  resetSemanticInterventionEnabled: 0
   rotationGainController: {fileID: 1039273993}
   continuousRdwEnabled: 1
   continuousRedirectorMode: 1
@@ -36373,9 +36373,9 @@ MonoBehaviour:
       rdwBenefit: 2
       unvisitedCoverage: 0.1
       gainCost: 3
-      distanceCost: 1
+      distanceCost: 2
       turnCost: 3
-      resetPressure: 3
+      resetPressure: 4
   guidanceExecutor: {fileID: 1780042341}
   experimentDashboard: {fileID: 891366376}
   experimentLogger: {fileID: 891366375}
