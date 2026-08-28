@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from backend.agents.guide_llm import GuideDraftGenerator
-from backend.pipeline import GuidancePipeline
+from backend.pipeline import DEFAULT_SCENE_SEMANTICS_FILENAME, GuidancePipeline
 from backend.route_selection import RouteSelectionGenerator, RouteSelectionPipeline
 from backend.reset_semantic_intervention import (
     ResetSemanticInterventionGenerator,
@@ -31,6 +32,7 @@ VERSION = "0.3.0"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PROJECT_ROOT / "Assets" / "Configs"
 DEFAULT_LOG_DIR = PROJECT_ROOT / "backend" / "logs"
+SCENE_SEMANTICS_FILE_ENV = "VG_SCENE_SEMANTICS_FILE"
 
 
 def create_app(
@@ -40,12 +42,19 @@ def create_app(
     route_selector: RouteSelectionGenerator | None = None,
     semantic_planner: SemanticPlanGenerator | None = None,
     reset_semantic_generator: ResetSemanticInterventionGenerator | None = None,
+    scene_semantics_filename: str | None = None,
 ) -> FastAPI:
+    selected_semantics_filename = (
+        scene_semantics_filename
+        if scene_semantics_filename is not None
+        else os.getenv(SCENE_SEMANTICS_FILE_ENV, DEFAULT_SCENE_SEMANTICS_FILENAME)
+    )
     application = FastAPI(title="RDW-Grounded Virtual Guidance Backend", version=VERSION)
     guidance_pipeline = GuidancePipeline(
         config_dir=config_dir,
         log_dir=log_dir,
         guide=draft_generator,
+        scene_semantics_filename=selected_semantics_filename,
     )
     application.state.pipeline = guidance_pipeline
     application.state.route_selection_pipeline = RouteSelectionPipeline(route_selector)

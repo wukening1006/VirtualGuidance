@@ -788,23 +788,15 @@ public sealed class GuidanceCoordinator : MonoBehaviour
     public PlanningCallGate RdwPlanningCallGate => rdwPlanningCallGate;
     private bool IsResetRecoveryActive => pauseResetController != null && pauseResetController.IsActive;
     /// <summary>
-    /// B1/B2 采用运行期 Reset 准入，由本地碰撞预测在真实移动轨迹
+    /// B1/B2 与 OURS 采用运行期 Reset 准入，由本地碰撞预测在真实移动轨迹
     /// 进入危险走廊时触发 Reset，不在执行前按目标方向 Safe 等级拒绝 Guidance。
     /// </summary>
     private bool UsesRuntimeResetAdmission =>
         experimentProfile != null &&
         (string.Equals(experimentProfile.conditionId, "B1_semantic_only", StringComparison.Ordinal) ||
-         string.Equals(experimentProfile.conditionId, "B2_semantic_only_continuous", StringComparison.Ordinal));
-    private bool UsesFinalTargetRuntimeResetAdmission(string targetId)
-    {
-        var state = taskController != null ? taskController.RuntimeState : null;
-        return experimentProfile != null &&
-               experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
-               CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained &&
-               state != null &&
-               !string.IsNullOrWhiteSpace(state.finalTargetId) &&
-               string.Equals(targetId, state.finalTargetId, StringComparison.Ordinal);
-    }
+         string.Equals(experimentProfile.conditionId, "B2_semantic_only_continuous", StringComparison.Ordinal) ||
+         (experimentProfile.plannerMode == ExperimentPlannerMode.RdwGroundedTopK &&
+          CurrentRdwPlanningMode == RdwPlanningMode.RdwConstrained));
     private static bool UsesAutonomousCollisionPredictionSafety => true;
 
     private void Update()
@@ -1921,10 +1913,8 @@ public sealed class GuidanceCoordinator : MonoBehaviour
             return;
         }
 
-        // OURS 的中间目标保持严格前置校验；最终目标放行后由真实轨迹碰撞预测接管 Reset。
-        var runtimeResetAdmission = UsesRuntimeResetAdmission ||
-                                    UsesFinalTargetRuntimeResetAdmission(selectedRoute.FirstTargetId);
-        HandleGuidanceResponse(adapted, runtimeResetAdmission);
+        // OURS 与 B1/B2 共用运行期 Reset 准入；实际移动轨迹进入危险走廊后再触发 Reset。
+        HandleGuidanceResponse(adapted, UsesRuntimeResetAdmission);
         if (requestPhase == GuidanceRequestPhase.Executing &&
             ReferenceEquals(activeResponse, adapted))
         {
@@ -1940,7 +1930,7 @@ public sealed class GuidanceCoordinator : MonoBehaviour
                 result,
                 response,
                 plan,
-                runtimeResetAdmission
+                UsesRuntimeResetAdmission
                     ? "Route first step admitted; runtime collision prediction owns Reset."
                     : "Unity Exact Safety accepted the selected route first step.");
         }

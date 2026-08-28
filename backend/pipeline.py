@@ -30,6 +30,9 @@ from backend.services.mllm_provider import (
 )
 
 
+DEFAULT_SCENE_SEMANTICS_FILENAME = "scene_semantics.json"
+
+
 class GuidancePipeline:
     """统一六条件运行链，在线物理风险只消费 Unity RiskSnapshot。"""
 
@@ -38,13 +41,14 @@ class GuidancePipeline:
         config_dir: Path,
         log_dir: Path,
         guide: GuideDraftGenerator | None = None,
+        scene_semantics_filename: str = DEFAULT_SCENE_SEMANTICS_FILENAME,
     ) -> None:
         self.config_dir = config_dir
         self.affordance = RDWAffordanceAgent()
         self.guide = guide
         self.verifier = SafetyVerifierAgent()
         self.logger = GuidanceLogger(log_dir)
-        self.scene_semantics = load_scene_semantics(config_dir)
+        self.scene_semantics = load_scene_semantics(config_dir, scene_semantics_filename)
 
     @property
     def physical_spaces(self) -> list[str]:
@@ -165,15 +169,29 @@ def scripted_reset_draft(request: GuidanceRequest) -> GuideDraft:
     )
 
 
-def load_scene_semantics(config_dir: Path) -> SceneSemanticsDocument:
-    """严格加载唯一 v4 场景语义配置；缺失或旧 schema 直接失败。"""
+def load_scene_semantics(
+    config_dir: Path,
+    filename: str = DEFAULT_SCENE_SEMANTICS_FILENAME,
+) -> SceneSemanticsDocument:
+    """从配置目录严格加载指定的 v4 场景语义文件。"""
 
-    path = config_dir / "scene_semantics.json"
-    if not path.exists():
-        raise FileNotFoundError(f"scene_semantics.json not found: {path}")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or filename != filename.strip()
+        or "/" in filename
+        or "\\" in filename
+        or Path(filename).name != filename
+        or Path(filename).suffix.lower() != ".json"
+    ):
+        raise ValueError("scene semantics filename must be a .json basename")
+
+    path = config_dir / filename
+    if not path.is_file():
+        raise FileNotFoundError(f"scene semantics file not found: {path}")
     # utf-8-sig 同时兼容带 BOM 和不带 BOM 的 UTF-8 配置文件。
     with path.open("r", encoding="utf-8-sig") as handle:
         try:
             return SceneSemanticsDocument.model_validate(json.load(handle))
         except ValueError as exc:
-            raise ValueError(f"scene_semantics.json failed strict v4 validation: {exc}") from exc
+            raise ValueError(f"{filename} failed strict v4 validation: {exc}") from exc
